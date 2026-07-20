@@ -23,9 +23,7 @@ use crate::fpapps::FPAPP_STORE;
 use crate::layout::{EvictionCmd, LAYOUT_EVICTION_REQ, LAYOUT_EVICTION_RES, LAYOUT_WATCH};
 use crate::storage::{factory_reset, store_layout};
 use crate::tasks::global_config::{get_global_config, GLOBAL_CONFIG_WATCH};
-use crate::tasks::max::{MaxCmd, MAX_CHANNEL, MAX_VALUES_DAC};
-use crate::tasks::midi::{SharedUsbSender, CONFIG_CABLE};
-use crate::tasks::voct_freq::{VOCT_MEASURE_REQ, VOCT_MEASURE_RES};
+use crate::tasks::midi::{SharedUsbSender, PERF_CABLE};
 use crate::version::FIRMWARE_VERSION;
 use crate::version::FPAPP_FIRMWARE_ABI;
 
@@ -1050,9 +1048,13 @@ impl<'a> ConfigTransport<'a> {
         let frame_len = 1 + SYSEX_HEADER.len() + packed_len + 1;
         self.frame_buf[frame_len - 1] = SYSEX_EOX;
 
-        // Packetize into cable-1 USB-MIDI event packets, flushed per 64-byte
-        // USB packet. The sender mutex is released between USB packets so
-        // performance MIDI (cable 0) interleaves during long transfers.
+        // Packetize into USB-MIDI event packets on the performance cable
+        // (cable 0), flushed per 64-byte USB packet. macOS/CoreMIDI often
+        // exposes only one port mapped to cable 0; sending on both cables
+        // interleaves/corrupts SysEx on that single port. Cable 1 is still
+        // accepted on RX for multi-cable hosts. The sender mutex is released
+        // between USB packets so other MIDI can interleave during long
+        // transfers.
         let mut usb_packet = [0u8; USB_MAX_PACKET_SIZE as usize];
         let mut usb_len = 0;
         let total_chunks = frame_len.div_ceil(3);
@@ -1070,7 +1072,7 @@ impl<'a> ConfigTransport<'a> {
                 // SysEx starts or continues
                 0x4
             };
-            usb_packet[usb_len] = (CONFIG_CABLE << 4) | cin;
+            usb_packet[usb_len] = (PERF_CABLE << 4) | cin;
             usb_packet[usb_len + 1..usb_len + 4].fill(0);
             usb_packet[usb_len + 1..usb_len + 1 + chunk.len()].copy_from_slice(chunk);
             usb_len += 4;
