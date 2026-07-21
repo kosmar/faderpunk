@@ -28,7 +28,7 @@ use crate::{
     state::{is_clock_running, update_state},
     tasks::{
         max::{MaxCmd, MAX_CHANNEL},
-        midi::{MidiRealtimeMsg, MIDI_CLOCK_CHANNEL, MIDI_TRANSPORT_CHANNEL},
+        midi::{MidiClockMsg, MIDI_CLOCK_CHANNEL},
     },
     Spawner, GLOBAL_CONFIG_WATCH,
 };
@@ -380,7 +380,6 @@ async fn metronome() {
 async fn run_clock_gatekeeper() {
     let clock_publisher = CLOCK_PUBSUB.publisher().unwrap();
     let midi_clock_sender = MIDI_CLOCK_CHANNEL.sender();
-    let midi_transport_sender = MIDI_TRANSPORT_CHANNEL.sender();
     let clock_in_receiver = CLOCK_IN_CHANNEL.receiver();
     let mut config_receiver = GLOBAL_CONFIG_WATCH.receiver().unwrap();
 
@@ -504,21 +503,12 @@ async fn run_clock_gatekeeper() {
 
                 if should_send_midi {
                     if let Some(rt_event) = midi_rt_event {
-                        match rt_event {
-                            // Clock ticks are lossy rather than allowing a
-                            // stalled MIDI output to block clock generation.
-                            SystemRealtime::TimingClock => {
-                                let msg =
-                                    MidiRealtimeMsg::new(SystemRealtime::TimingClock, midi_target);
-                                let _ = midi_clock_sender.try_send(msg);
-                            }
-                            // Transport is rare and must not be silently
-                            // discarded or queued behind stale clock ticks.
-                            transport_event => {
-                                let msg = MidiRealtimeMsg::new(transport_event, midi_target);
-                                midi_transport_sender.send(msg).await;
-                            }
-                        }
+                        let msg = MidiClockMsg::new(rt_event, midi_target);
+                        // Dedicated realtime queue: never contended by app
+                        // note/CC traffic, so ticks are not dropped under
+                        // load. try_send keeps the gatekeeper non-blocking;
+                        // the queue only fills if all outputs stall entirely.
+                        let _ = midi_clock_sender.try_send(msg);
                     }
                 }
             }

@@ -114,6 +114,11 @@ impl MidiRealtimeMsg {
 }
 
 #[derive(Clone, Copy)]
+pub enum MidiOutEvent {
+    Event(MidiMsg),
+}
+
+#[derive(Clone, Copy)]
 pub enum MidiEvent {
     Live(LiveEvent<'static>),
     Nrpn { channel: u4, param: u16, value: u16 },
@@ -122,20 +127,16 @@ pub enum MidiEvent {
 pub static MIDI_CHANNEL: Channel<CriticalSectionRawMutex, MidiMsg, MIDI_CHANNEL_SIZE> =
     Channel::new();
 
-/// Dedicated lossy queue for MIDI timing clock ticks. Its bounded depth
-/// absorbs a normal output operation without allowing a long stale backlog.
+/// Dedicated high-priority queue for MIDI realtime (clock/transport)
+/// messages. Kept separate from `MIDI_CHANNEL` so note/CC bursts from apps
+/// can never fill the queue and cause clock ticks to be dropped, which
+/// external gear perceives as wildly wrong BPM. Drained with priority by
+/// `midi_out_task`.
+const MIDI_CLOCK_CHANNEL_SIZE: usize = 32;
 pub static MIDI_CLOCK_CHANNEL: Channel<
     CriticalSectionRawMutex,
-    MidiRealtimeMsg,
+    MidiClockMsg,
     MIDI_CLOCK_CHANNEL_SIZE,
-> = Channel::new();
-
-/// Reliable queue for Start/Stop/Continue/Reset. Transport is kept separate
-/// so it cannot be dropped or delayed behind a backlog of timing clock ticks.
-pub static MIDI_TRANSPORT_CHANNEL: Channel<
-    CriticalSectionRawMutex,
-    MidiRealtimeMsg,
-    MIDI_TRANSPORT_CHANNEL_SIZE,
 > = Channel::new();
 
 // Channel for apps (Core 1) to send MIDI to the distributor task (Core 1)
@@ -305,11 +306,12 @@ pub async fn midi_distributor() {
     }
 }
 
-async fn write_realtime_msg<'a>(
+/// Writes a realtime clock/transport message to all its target outputs.
+async fn write_clock_msg<'a>(
     usb_tx: &SharedUsbSender<'a>,
     uart0_tx: &mut UartTx<'static, Async>,
     uart1_tx: &mut BufferedUartTx,
-    msg: MidiRealtimeMsg,
+    msg: MidiClockMsg,
 ) {
     let event = LiveEvent::Realtime(msg.event);
     let usb_fut = async {
@@ -338,7 +340,6 @@ pub async fn midi_out_task<'a>(
     let mut config_receiver = GLOBAL_CONFIG_WATCH.receiver().unwrap();
     let midi_receiver = MIDI_CHANNEL.receiver();
     let clock_receiver = MIDI_CLOCK_CHANNEL.receiver();
-    let transport_receiver = MIDI_TRANSPORT_CHANNEL.receiver();
 
     let config = config_receiver.get().await;
     let mut disabled_outs_for_local = config.midi.outs.map(|c| {
@@ -355,16 +356,37 @@ pub async fn midi_out_task<'a>(
     });
 
     loop {
-        // Realtime messages are drained before normal MIDI. Transport comes
-        // first so Stop cannot sit behind stale timing clock ticks.
-        if let Ok(msg) = transport_receiver.try_receive() {
-            write_realtime_msg(usb_tx, &mut uart0_tx, &mut uart1_tx, msg).await;
+        // Realtime clock first: drain any pending ticks before touching the
+        // note/CC queue so heavy app traffic can never delay or starve them.
+        if let Ok(clock_msg) = clock_receiver.try_receive() {
+            write_clock_msg(usb_tx, &mut uart0_tx, &mut uart1_tx, clock_msg).await;
             continue;
         }
-        if let Ok(msg) = clock_receiver.try_receive() {
-            write_realtime_msg(usb_tx, &mut uart0_tx, &mut uart1_tx, msg).await;
-            continue;
-        }
+
+        match select3(
+            clock_receiver.receive(),
+            midi_receiver.receive(),
+            config_receiver.changed(),
+        )
+        .await
+        {
+            Either3::First(clock_msg) => {
+                write_clock_msg(usb_tx, &mut uart0_tx, &mut uart1_tx, clock_msg).await;
+            }
+            Either3::Second(midi_out_msg) => {
+                match midi_out_msg {
+                    MidiOutEvent::Event(MidiMsg::Live {
+                        event,
+                        mut target,
+                        source,
+                    }) => {
+                        // Disable targets where we have a strict THRU port or no output.
+                        // Only for local events; passthrough and clock are handled elsewhere.
+                        if let MidiEventSource::Local = source {
+                            for (i, disabled) in disabled_outs_for_local.iter().enumerate() {
+                                target.0[i] = target.0[i] && !disabled;
+                            }
+                        }
 
         match select4(
             transport_receiver.receive(),
@@ -461,8 +483,8 @@ pub async fn midi_out_task<'a>(
                         }
                     }
                 }
-            },
-            Either4::Fourth(new_config) => {
+            }
+            Either3::Third(new_config) => {
                 disabled_outs_for_local = new_config.midi.outs.map(|c| {
                     matches!(
                         c,
