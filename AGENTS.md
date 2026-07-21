@@ -50,15 +50,13 @@ Follow this for **every** task, in order. Do not skip steps.
 
    Then **STOP.** Wait for the user to review and adjust the code. Do not commit.
 
-3. **On the user's go: commit.** A single one-line message in
+3. **On the user's go: commit.** A single one-line subject in
    conventional-commit format (`feat:`, `fix:`, `chore:`, `refactor:`, …,
-   optionally scoped e.g. `feat(genseq):`). The `(scope)` only routes the
-   entry to the right package's `CHANGELOG.md` (see `knope.toml`) — knope
-   never prints it. If the change is specific to one app or one surface, name
-   it in the summary text itself (`feat: Sequencer — ...`, `fix: Configurator
-   — ...`), not only in the scope, or it reads as unattributed in the
-   changelog. Commit with the system git user (commits are signed). Do
-   **not** add a `Co-authored-by: Claude` trailer.
+   optionally scoped e.g. `feat(genseq):`). Commit with the system git user
+   (commits are signed). Do **not** add a `Co-authored-by: Claude` trailer.
+   In the commit body, state clearly that an AI coding agent authored the
+   change on the user's behalf (e.g. `Authored by an AI coding agent on
+   behalf of <user>.`).
 
 4. **After committing, ask again** before opening a PR.
 
@@ -72,6 +70,11 @@ Follow this for **every** task, in order. Do not skip steps.
    - **Configurator fix** → steps for how to confirm the fix in the
      **configurator** (browser + live device).
    - Anything else → no checklist.
+
+6. **Never merge, approve, or otherwise accept a PR.** Open the PR and hand
+   it to the user. Merging, approving, enabling auto-merge, or closing via
+   merge is exclusively the user's decision — even if the user asks you to
+   "finish" or "land" the change.
 
 ## Environment & Toolchain
 
@@ -376,9 +379,9 @@ manually in a Chromium browser with a live device connection.
 6. **FRAM address ranges**: Don't overlap storage regions in `storage.rs`.
 7. **Atomic ordering**: Use `Ordering::Relaxed` for non-synchronized state, `Acquire`/`Release` for synchronized.
 8. **Web MIDI requirements**: Browser must support Web MIDI with SysEx (Chromium, Firefox); HTTPS required for non-localhost. The user must grant the MIDI/SysEx permission.
-9. **Commit trailers**: One-line conventional-commit messages; do not add a `Co-authored-by: Claude` trailer.
-10. **App-facing types not re-exported**: if a new `App<N>`/`Leds<N>`/etc. method takes or returns a type from `crate::tasks::*`, add it to `app.rs`'s `pub use crate::{…}` re-export block in the same change — otherwise apps have to reach around the facade with a direct `crate::tasks::` import.
-11. **Changelog area attribution**: knope drops the conventional-commit `(scope)` from the rendered changelog — it's a package-routing filter only, never rendered text. Name the affected app/surface in the commit summary itself when the change is specific to one, or a reader of `CHANGELOG.md` can't tell where it happened (e.g. a change scoped `configurator` still appears, unlabeled, in `faderpunk/CHANGELOG.md` too, since that package has no scope filter).
+9. **Commit messages**: Conventional-commit subject; body must note AI authorship
+   on the user's behalf. Do not add a `Co-authored-by: Claude` trailer. Never
+   merge/approve/accept PRs — only open them for the user.
 
 ## File Structure Summary
 
