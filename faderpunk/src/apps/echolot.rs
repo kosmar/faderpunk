@@ -28,8 +28,11 @@ pub const PARAMS: usize = 15;
 
 const LED_BRIGHTNESS: Brightness = Brightness::Mid;
 const MAX_REPEATS: u8 = 8;
-const VELOCITY_FLOOR: u16 = 300;
+/// Stop re-queueing once delayed velocity falls below this (≈ MIDI vel 6).
+const VELOCITY_FLOOR: u16 = 200;
 const QUEUE_CAP: usize = 32;
+/// Leave headroom so NoteOffs can still land when feedback floods the queue.
+const QUEUE_FEEDBACK_RESERVE: usize = 4;
 const SOUNDING_CAP: usize = 32;
 const GATE_THRESH: u16 = 406;
 /// Peak white button flash on note/gate in (full scale).
@@ -38,6 +41,11 @@ const INPUT_FLASH_PEAK: u8 = 255;
 const INPUT_FLASH_MUTED_SCALE: u16 = 51; // 51/255 ≈ 20%
 /// Straight note-length table for clock-synced delay (same as clk_div "Straight").
 const CLOCK_DIVISION_MODE: usize = 0;
+/// Ignore own delayed MIDI coming back via host/DIN loopback (In CH == Out CH).
+const LOOPBACK_IGNORE_MS: u64 = 40;
+const RECENT_EMIT_CAP: usize = 24;
+/// Floor free-running delay so feedback can't collapse into a solid tone.
+const MIN_DELAY_MS: u64 = 1;
 
 /// I/O routing mode.
 const IO_MIDI_MIDI: usize = 0;
@@ -71,7 +79,7 @@ pub static CONFIG: Config<PARAMS> = Config::new(
 })
 .add_param(Param::Enum {
     name: "Interval mode",
-    variants: &["Fixed", "Stack", "Pong"],
+    variants: &["Fixed", "Stack", "Bounce"],
 })
 .add_param(Param::Enum {
     name: "Routing",
@@ -104,10 +112,10 @@ pub static CONFIG: Config<PARAMS> = Config::new(
 })
 .add_param(Param::MidiOut)
 .add_param(Param::MidiChannel {
-    name: "MIDI Out A",
+    name: "MIDI Out",
 })
 .add_param(Param::MidiChannel {
-    name: "MIDI Out B",
+    name: "MIDI Out Pong",
 })
 .add_param(Param::MidiCc { name: "MIDI CC" })
 .add_param(Param::MidiNote { name: "MIDI Note" });
@@ -223,7 +231,99 @@ fn fader_to_delay_ms(fader: u16, max_ms: i32) -> u64 {
     let max = max_ms.clamp(10, 2000) as u32;
     // Match clock-mode / rate UX: fader up = faster (shorter delay).
     let inverted = 4095u32.saturating_sub(fader as u32);
-    (inverted * max / 4095) as u64
+    ((inverted * max / 4095) as u64).max(MIN_DELAY_MS)
+}
+
+/// Shift+Fader → per-repeat velocity retention (0 = single delay only, 4095 ≈ hold).
+///
+/// Quadratic ease toward unity so the middle of the fader yields several audible
+/// diminishing taps instead of dying after the first echo.
+fn feedback_retention(fader: u16) -> u16 {
+    if fader == 0 {
+        return 0;
+    }
+    let x = fader as u32;
+    let inv = 4095u32.saturating_sub(x);
+    (4095u32.saturating_sub((inv * inv) / 4095)) as u16
+}
+
+/// Next-echo velocity after applying feedback retention; None = trail is done.
+fn next_feedback_velocity(velocity: u16, feedback_fader: u16) -> Option<u16> {
+    let retention = feedback_retention(feedback_fader);
+    if retention == 0 {
+        return None;
+    }
+    let next = ((velocity as u32 * retention as u32) / 4095) as u16;
+    (next >= VELOCITY_FLOOR).then_some(next)
+}
+
+/// How many feedback repeats a full-scale note can produce (caps NoteOff trail).
+fn max_feedback_repeats(feedback_fader: u16) -> u8 {
+    let mut vel = 4095u16;
+    let mut n = 0u8;
+    while n < MAX_REPEATS {
+        match next_feedback_velocity(vel, feedback_fader) {
+            Some(next) => {
+                vel = next;
+                n = n.saturating_add(1);
+            }
+            None => break,
+        }
+    }
+    n
+}
+
+/// True when MIDI In shares a port with MIDI Out (USB↔USB or DIN↔DIN).
+fn ports_can_loop(midi_in: MidiIn, midi_out: MidiOut) -> bool {
+    let MidiIn([usb_in, din_in]) = midi_in;
+    let MidiOut([usb_out, din1_out, din2_out]) = midi_out;
+    (usb_in && usb_out) || (din_in && (din1_out || din2_out))
+}
+
+/// In CH matches an active Out CH — host/DIN thru will re-inject our own echoes.
+fn same_channel_loop_risk(
+    midi_in_ch: MidiChannel,
+    midi_out_a: MidiChannel,
+    midi_out_b: MidiChannel,
+    ping_pong: bool,
+) -> bool {
+    midi_in_ch == midi_out_a || (ping_pong && midi_in_ch == midi_out_b)
+}
+
+#[derive(Clone, Copy)]
+struct RecentEmit {
+    note: u8,
+    /// true = NoteOn / GateHigh, false = NoteOff / GateLow
+    is_on: bool,
+    at_ms: u64,
+}
+
+fn record_emit(recent: &mut Vec<RecentEmit, RECENT_EMIT_CAP>, note: u8, is_on: bool, now_ms: u64) {
+    // Drop stale entries first so capacity stays available for fresh sends.
+    let mut i = 0;
+    while i < recent.len() {
+        if now_ms.saturating_sub(recent[i].at_ms) >= LOOPBACK_IGNORE_MS {
+            recent.swap_remove(i);
+        } else {
+            i += 1;
+        }
+    }
+    if recent.is_full() {
+        let _ = recent.remove(0);
+    }
+    let _ = recent.push(RecentEmit {
+        note,
+        is_on,
+        at_ms: now_ms,
+    });
+}
+
+fn is_own_echo(recent: &[RecentEmit], note: u8, is_on: bool, now_ms: u64) -> bool {
+    recent.iter().any(|e| {
+        e.note == note
+            && e.is_on == is_on
+            && now_ms.saturating_sub(e.at_ms) < LOOPBACK_IGNORE_MS
+    })
 }
 
 fn fader_to_interval(fader: u16) -> i8 {
@@ -312,7 +412,7 @@ fn effective_signal(io_mode: usize, signal: usize) -> usize {
     }
 }
 
-#[embassy_executor::task(pool_size = 4)]
+#[embassy_executor::task(pool_size = 16 / CHANNELS)]
 pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMutex, bool>) {
     let ch = app.start_channel as u8;
     let param_store = ParamStore::<Params>::new(
@@ -330,8 +430,9 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
             midi_in: MidiIn::default(),
             midi_in_ch: MidiChannel::default(),
             midi_out: MidiOut::default(),
-            midi_out_a: MidiChannel::default(),
-            midi_out_b: MidiChannel::from(2),
+            // Default Out A off In CH so a host/DIN loopback doesn't instantly feed back.
+            midi_out_a: MidiChannel::from(2),
+            midi_out_b: MidiChannel::from(3),
             midi_cc: MidiCc::from(32u8.saturating_add(ch)),
             midi_note: MidiNote::from(60),
         },
@@ -401,6 +502,9 @@ pub async fn run(
     let sig = effective_signal(io_mode, signal);
     let resolution = resolution_for_mode(CLOCK_DIVISION_MODE);
     let base_note_cfg = midi_note_u8(midi_note);
+    let loop_guard = io_mode == IO_MIDI_MIDI
+        && ports_can_loop(midi_in_cfg, midi_out_cfg)
+        && same_channel_loop_risk(midi_in_ch, midi_out_a, midi_out_b, ping_pong);
 
     let fader = app.use_faders();
     let buttons = app.use_buttons();
@@ -463,6 +567,7 @@ pub async fn run(
     let engine = async {
         let mut queue: Vec<PendingEvent, QUEUE_CAP> = Vec::new();
         let mut sounding: Vec<(u8, u8), SOUNDING_CAP> = Vec::new();
+        let mut recent_emit: Vec<RecentEmit, RECENT_EMIT_CAP> = Vec::new();
         let mut prev_gate = false;
         let mut last_cc_gate: u16 = u16::MAX;
         // Free-running delay-period metronome (blinks even with empty queue).
@@ -479,18 +584,40 @@ pub async fn run(
                        delay_ms: u64,
                        delay_ticks: u32,
                        now_ms: u64,
-                       now_tick: u32| {
-            let _ = queue.push(PendingEvent {
-                kind,
-                base_note,
-                velocity,
-                cv_value,
-                interval: interval_for_gen(base_interval, generation, interval_mode),
-                out_target: out_target_for_gen(generation, ping_pong),
-                due_ms: now_ms.saturating_add(delay_ms),
-                due_tick: now_tick.wrapping_add(delay_ticks),
-                generation,
-            });
+                       now_tick: u32|
+         -> bool {
+            // Feedback gens yield to NoteOff / fresh input when the queue is tight.
+            if generation > 0 && queue.len() + QUEUE_FEEDBACK_RESERVE >= QUEUE_CAP {
+                return false;
+            }
+            // Prefer landing NoteOffs: drop oldest feedback NoteOn if full.
+            if queue.is_full() {
+                if matches!(kind, EventKind::NoteOff | EventKind::GateLow) {
+                    if let Some(pos) = queue
+                        .iter()
+                        .position(|e| e.generation > 0 && matches!(e.kind, EventKind::NoteOn | EventKind::GateHigh))
+                    {
+                        queue.swap_remove(pos);
+                    } else {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            }
+            queue
+                .push(PendingEvent {
+                    kind,
+                    base_note,
+                    velocity,
+                    cv_value,
+                    interval: interval_for_gen(base_interval, generation, interval_mode),
+                    out_target: out_target_for_gen(generation, ping_pong),
+                    due_ms: now_ms.saturating_add(delay_ms),
+                    due_tick: now_tick.wrapping_add(delay_ticks),
+                    generation,
+                })
+                .is_ok()
         };
 
         loop {
@@ -539,14 +666,41 @@ pub async fn run(
                         _,
                         MidiMessage::NoteOn { key, vel },
                     ) if vel > 0 => {
-                        // Always flash on NoteOn so MIDI In is verifiable (even when muted).
-                        input_flash_glob.set(INPUT_FLASH_PEAK);
-                        if accept_new {
+                        let key_n = key.as_int();
+                        // Host/DIN loopback of our own Out on the same CH — don't re-arm.
+                        if loop_guard && is_own_echo(&recent_emit, key_n, true, now_ms) {
+                            // still flash so the loop is visible as activity
+                            input_flash_glob.set(INPUT_FLASH_PEAK);
+                        } else {
+                            // Always flash on NoteOn so MIDI In is verifiable (even when muted).
+                            input_flash_glob.set(INPUT_FLASH_PEAK);
+                            if accept_new {
+                                enqueue(
+                                    &mut queue,
+                                    EventKind::NoteOn,
+                                    key_n,
+                                    scale_bits_7_12(vel),
+                                    0,
+                                    0,
+                                    base_interval,
+                                    delay_ms,
+                                    delay_ticks,
+                                    now_ms,
+                                    now_tick,
+                                );
+                            }
+                        }
+                    }
+                    (IO_MIDI_MIDI, _, MidiMessage::NoteOn { key, .. })
+                    | (IO_MIDI_MIDI, _, MidiMessage::NoteOff { key, .. }) => {
+                        let key_n = key.as_int();
+                        if !(loop_guard && is_own_echo(&recent_emit, key_n, false, now_ms)) {
+                            // Note-offs always accepted so held notes can release during ring-out.
                             enqueue(
                                 &mut queue,
-                                EventKind::NoteOn,
-                                key.as_int(),
-                                scale_bits_7_12(vel),
+                                EventKind::NoteOff,
+                                key_n,
+                                0,
                                 0,
                                 0,
                                 base_interval,
@@ -556,23 +710,6 @@ pub async fn run(
                                 now_tick,
                             );
                         }
-                    }
-                    (IO_MIDI_MIDI, _, MidiMessage::NoteOn { key, .. })
-                    | (IO_MIDI_MIDI, _, MidiMessage::NoteOff { key, .. }) => {
-                        // Note-offs always accepted so held notes can release during ring-out.
-                        enqueue(
-                            &mut queue,
-                            EventKind::NoteOff,
-                            key.as_int(),
-                            0,
-                            0,
-                            0,
-                            base_interval,
-                            delay_ms,
-                            delay_ticks,
-                            now_ms,
-                            now_tick,
-                        );
                     }
 
                     // ── MIDI → CV Pitch (hold last delayed note) ───────────
@@ -748,6 +885,7 @@ pub async fn run(
 
                 sounding.clear();
                 queue.clear();
+                recent_emit.clear();
                 if let Some(jack) = out_jack.as_ref() {
                     jack.set_value(0);
                 }
@@ -789,13 +927,13 @@ pub async fn run(
                         } else {
                             midi_b.send_note_on(note, event.velocity).await;
                         }
+                        record_emit(&mut recent_emit, n, true, now_ms);
                         let _ = sounding.push((event.out_target, n));
                         activity_glob.set(pulse);
                         pong_side_glob.set(event.out_target);
-                        if feedback_ok && feedback > 0 && event.generation < MAX_REPEATS {
-                            let next_vel =
-                                ((event.velocity as u32 * feedback as u32) / 4095) as u16;
-                            if next_vel >= VELOCITY_FLOOR {
+                        if feedback_ok && event.generation < MAX_REPEATS {
+                            if let Some(next_vel) = next_feedback_velocity(event.velocity, feedback)
+                            {
                                 let next_gen = event.generation.saturating_add(1);
                                 enqueue(
                                     &mut queue,
@@ -819,13 +957,15 @@ pub async fn run(
                         } else {
                             midi_b.send_note_off(note).await;
                         }
+                        record_emit(&mut recent_emit, n, false, now_ms);
                         if let Some(pos) = sounding
                             .iter()
                             .position(|(o, sn)| *o == event.out_target && *sn == n)
                         {
                             sounding.swap_remove(pos);
                         }
-                        if feedback_ok && feedback > 0 && event.generation < MAX_REPEATS {
+                        // Mirror NoteOn trail length so orphan NoteOffs don't cut a re-struck note.
+                        if feedback_ok && event.generation < max_feedback_repeats(feedback) {
                             let next_gen = event.generation.saturating_add(1);
                             enqueue(
                                 &mut queue,
@@ -859,10 +999,9 @@ pub async fn run(
                         }
                         activity_glob.set(pulse);
                         pong_side_glob.set(0);
-                        if feedback_ok && feedback > 0 && event.generation < MAX_REPEATS {
-                            let next_vel =
-                                ((event.velocity as u32 * feedback as u32) / 4095) as u16;
-                            if next_vel >= VELOCITY_FLOOR {
+                        if feedback_ok && event.generation < MAX_REPEATS {
+                            if let Some(next_vel) = next_feedback_velocity(event.velocity, feedback)
+                            {
                                 let next_gen = event.generation.saturating_add(1);
                                 enqueue(
                                     &mut queue,
@@ -884,7 +1023,7 @@ pub async fn run(
                         if let Some(jack) = out_jack.as_ref() {
                             jack.set_value(0);
                         }
-                        if feedback_ok && feedback > 0 && event.generation < MAX_REPEATS {
+                        if feedback_ok && event.generation < max_feedback_repeats(feedback) {
                             let next_gen = event.generation.saturating_add(1);
                             enqueue(
                                 &mut queue,
