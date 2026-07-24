@@ -1606,6 +1606,11 @@ On load, both registers are restored at the next phrase boundary so the recalled
       "Speed",
       "Color",
       "MIDI Out",
+      "Jack",
+      "Range",
+      "CV Dest",
+      "CV Att",
+      "Mode",
     ],
     storage: [
       "Fibonacci depth",
@@ -1631,7 +1636,7 @@ At shallow depth the hits are denser and more regular; deeper Fibonacci values o
 | **Short press** | Reset to downbeat |
 | **Long press** | Mute (no fader move) |
 | **Shift + short** | Reverse this cycle’s gap order (Button LED: white↔off fade) |
-| **Shift + long** | Cycle output mode: gate+note (app color) → gate+CC (orange) → 12-TET pitch (red) → φ pitch (pink) |
+| **Shift + long** | Cycle output mode: Note → CC → 12-TET pitch → φ pitch (also a **Mode** parameter) |
 
 #### Faders & LEDs
 

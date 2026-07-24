@@ -707,6 +707,20 @@ impl<P: AppParams> ParamStore<P> {
         accessor(&*guard)
     }
 
+    /// Mutate params from the device (e.g. gesture shortcuts), persist, and
+    /// notify the configurator — without respawning the app.
+    pub async fn modify_and_save<F>(&self, modifier: F)
+    where
+        F: FnOnce(&mut P),
+    {
+        {
+            let mut inner = self.inner.borrow_mut();
+            modifier(&mut *inner);
+        }
+        self.save().await;
+        self.send_values().await;
+    }
+
     pub async fn param_handler(&self) {
         APP_PARAM_SIGNALS[self.layout_id as usize].reset();
         loop {
