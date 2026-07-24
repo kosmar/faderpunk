@@ -26,11 +26,18 @@ const LED_BRIGHTNESS: Brightness = Brightness::Mid;
 const REVERSE_FADE_MS: u16 = 500;
 
 /// Fibonacci gaps (in steps) between consecutive hits.
-const FIB: [u16; 10] = [1, 1, 2, 3, 5, 8, 13, 21, 34, 55];
+const FIB: [u16; 11] = [1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89];
 const MIN_CYCLE: u32 = 8;
-const MAX_CYCLE: u32 = 32;
+/// Max phrase length in steps. Hit mask is `u128`, so this must be ≤ 128.
+const MAX_CYCLE: u32 = 128;
 /// Pitch mode: cap intervals to two octaves.
 const MAX_SEMIS: u16 = 24;
+
+/// Same grid as Heat Pump: tick spacing at 24 PPQN, slow → fast.
+const SPEED_DIVS: [u32; 10] = [96, 48, 36, 24, 18, 16, 12, 8, 6, 3];
+const SPEED_COUNT: u8 = SPEED_DIVS.len() as u8;
+/// Default Speed enum index = 16th (div 6).
+const SPEED_DEFAULT: u8 = 8;
 
 /// Output modes, cycled on the device via shift + long press.
 const MODE_GATE_NOTE: u8 = 0;
@@ -76,7 +83,10 @@ pub static CONFIG: Config<PARAMS> = Config::new(
 })
 .add_param(Param::Enum {
     name: "Speed",
-    variants: &["16th", "8th", "Quarter"],
+    // Heat Pump divisions (24 PPQN), slow → fast.
+    variants: &[
+        "1/1", "1/2", "1/4.", "1/4", "1/8.", "1/4T", "1/8", "1/8T", "1/16", "1/32",
+    ],
 })
 .add_param(Param::Color {
     name: "Color",
@@ -181,7 +191,7 @@ pub struct Storage {
     reversed: bool,
     /// 0 = gate+note, 1 = gate+CC, 2 = pitch 12-TET, 3 = pitch φ.
     out_mode: u8,
-    /// 0 = 16th, 1 = 8th, 2 = quarter; 255 = follow the Speed param.
+    /// Speed index into `SPEED_DIVS` (0..=9); 255 = follow the Speed param.
     speed_saved: u8,
 }
 
@@ -209,7 +219,7 @@ fn depth_from_value(value: u16) -> u32 {
 }
 
 /// Gaps used to fill one cycle of length `cycle` (forward Fibonacci order).
-fn cycle_gaps(cycle: u32, depth: u32) -> heapless::Vec<u16, 32> {
+fn cycle_gaps(cycle: u32, depth: u32) -> heapless::Vec<u16, { MAX_CYCLE as usize }> {
     let mut gaps = heapless::Vec::new();
     let depth = depth.max(1) as usize;
     let mut pos = 0u32;
@@ -228,18 +238,18 @@ fn cycle_gaps(cycle: u32, depth: u32) -> heapless::Vec<u16, 32> {
 /// Precompute the hit mask for one cycle. Forward: cumulative Fibonacci gaps
 /// until ≥ N. Reverse: the *same* gaps that filled this cycle, in reverse
 /// order (not FIB[depth-1]…0 from the depth window — that ignored N).
-fn build_mask(cycle: u32, depth: u32, reversed: bool) -> u32 {
+fn build_mask(cycle: u32, depth: u32, reversed: bool) -> u128 {
     let mut gaps = cycle_gaps(cycle, depth);
     if reversed {
         gaps.reverse();
     }
-    let mut mask = 0u32;
+    let mut mask = 0u128;
     let mut pos = 0u32;
     for &g in gaps.iter() {
         if pos >= cycle {
             break;
         }
-        mask |= 1 << pos;
+        mask |= 1u128 << pos;
         pos += g as u32;
     }
     mask
@@ -288,12 +298,27 @@ fn is_pitch_mode(mode: u8) -> bool {
     mode == MODE_PITCH || mode == MODE_PITCH_PHI
 }
 
-/// Ticks per step at 24 PPQN: 16th / 8th / quarter.
 fn div_for_speed(speed: u8) -> u32 {
-    match speed {
-        1 => 12,
-        2 => 24,
-        _ => 6,
+    SPEED_DIVS[(speed.min(SPEED_COUNT - 1)) as usize]
+}
+
+/// Map a fader value to a speed index. Top of travel = fastest (Heat Pump order).
+fn speed_from_fader(value: u16) -> u8 {
+    ((value as u32 * SPEED_COUNT as u32) / 4096).min(SPEED_COUNT as u32 - 1) as u8
+}
+
+/// Fader latch target: center of the zone for `speed`.
+fn fader_for_speed(speed: u8) -> u16 {
+    let i = speed.min(SPEED_COUNT - 1) as u32;
+    ((i * 2 + 1) * 4096 / (SPEED_COUNT as u32 * 2)) as u16
+}
+
+/// Top LED while editing speed: orange = triplet, yellow = dotted, cyan = straight.
+fn speed_led_color(speed: u8) -> Color {
+    match div_for_speed(speed) {
+        8 | 16 => Color::Orange,  // 1/8T, 1/4T
+        18 | 36 => Color::Yellow, // dotted
+        _ => Color::Cyan,
     }
 }
 
@@ -317,7 +342,7 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
             note: MidiNote::from(36),
             cc: MidiCc::default(),
             gatel: 50,
-            speed: 0,
+            speed: SPEED_DEFAULT as usize,
             color: Color::Violet,
             cv_jack: CV_JACK_OUT,
             range: Range::_0_10V,
@@ -378,7 +403,7 @@ pub async fn run(
     let glob_reversed = app.make_global(false);
     let glob_cycle = app.make_global(16_u32);
     let glob_depth = app.make_global(5_u32);
-    let glob_mask = app.make_global(0_u32);
+    let glob_mask = app.make_global(0_u128);
     let glob_mode = app.make_global(MODE_GATE_NOTE);
     let glob_speed = app.make_global(0_u8);
     let glob_reset = app.make_global(false);
@@ -448,10 +473,10 @@ pub async fn run(
     glob_muted.set(muted);
     glob_reversed.set(reversed);
     glob_mode.set(out_mode);
-    glob_speed.set(if speed_saved <= 2 {
+    glob_speed.set(if speed_saved < SPEED_COUNT {
         speed_saved
     } else {
-        param_speed as u8
+        (param_speed as u8).min(SPEED_COUNT - 1)
     });
     glob_depth.set(depth_from_value(fader_saved));
     glob_cycle.set(cycle_from_value(shift_fader_saved));
@@ -546,7 +571,7 @@ pub async fn run(
                             step = 0;
                         }
 
-                        let hit = glob_mask.get() & (1 << step) != 0;
+                        let hit = glob_mask.get() & (1u128 << step) != 0;
                         if hit && !glob_muted.get() {
                             match cached_mode {
                                 MODE_GATE_CC => {
@@ -632,12 +657,12 @@ pub async fn run(
                             leds.set(0, Led::Top, Color::Red, Brightness::Custom(norm));
                         }
                         LatchLayer::Third => {
-                            let speed_color = match glob_speed.get() {
-                                0 => Color::Cyan,   // 16th
-                                1 => Color::Yellow, // 8th
-                                _ => Color::Orange, // quarter
-                            };
-                            leds.set(0, Led::Top, speed_color, LED_BRIGHTNESS);
+                            leds.set(
+                                0,
+                                Led::Top,
+                                speed_led_color(glob_speed.get()),
+                                LED_BRIGHTNESS,
+                            );
                         }
                     }
                 }
@@ -725,8 +750,7 @@ pub async fn run(
             let target_value = match latch_layer {
                 LatchLayer::Main => storage.query(|s| s.fader_saved),
                 LatchLayer::Alt => storage.query(|s| s.shift_fader_saved),
-                // Center of the current speed's fader zone (up = 16th, down = quarter)
-                LatchLayer::Third => (2 - glob_speed.get()) as u16 * 1365 + 683,
+                LatchLayer::Third => fader_for_speed(glob_speed.get()),
             };
 
             if let Some(new_value) = latch.update(faders.get_value(), latch_layer, target_value) {
@@ -752,9 +776,9 @@ pub async fn run(
                         storage.modify_and_save(|s| s.shift_fader_saved = new_value);
                     }
                     LatchLayer::Third => {
-                        // Button held + fader: pick speed (up = 16th, down = quarter).
+                        // Button held + fader: pick speed (up = fast, Heat Pump grid).
                         glob_fader_moved.set(true);
-                        let speed = (2u8).saturating_sub((new_value / 1366).min(2) as u8);
+                        let speed = speed_from_fader(new_value);
                         if speed != glob_speed.get() {
                             glob_speed.set(speed);
                             storage.modify_and_save(|s| s.speed_saved = speed);
@@ -785,8 +809,10 @@ pub async fn run(
                     glob_muted.set(muted);
                     glob_reversed.set(reversed);
                     glob_mode.set(out_mode);
-                    if speed_saved <= 2 {
+                    if speed_saved < SPEED_COUNT {
                         glob_speed.set(speed_saved);
+                    } else {
+                        glob_speed.set((param_speed as u8).min(SPEED_COUNT - 1));
                     }
                     glob_fader_raw.set(fader_saved);
                     glob_cycle_raw.set(shift_fader_saved);

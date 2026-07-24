@@ -35,11 +35,7 @@ function splitMarkdownTables(src: string): Segment[] {
 
   let i = 0;
   while (i < lines.length) {
-    if (
-      isRow(lines[i]) &&
-      i + 1 < lines.length &&
-      isSep(lines[i + 1])
-    ) {
+    if (isRow(lines[i]) && i + 1 < lines.length && isSep(lines[i + 1])) {
       flushMd();
       const headers = cells(lines[i]);
       i += 2;
@@ -116,7 +112,7 @@ const ManualTable = ({
           {headers.map((h) => (
             <th
               key={h}
-              className="px-2 py-1.5 font-vox font-semibold whitespace-nowrap"
+              className="font-vox px-2 py-1.5 font-semibold whitespace-nowrap"
             >
               <InlineMd text={h} />
             </th>

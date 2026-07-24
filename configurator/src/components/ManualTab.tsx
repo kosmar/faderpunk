@@ -1608,8 +1608,8 @@ On load, both registers are restored at the next phrase boundary so the recalled
       "MIDI Out",
     ],
     storage: [
-      "Cycle length",
       "Fibonacci depth",
+      "Cycle length",
       "Muted",
       "Reversed",
       "Output mode",
@@ -1625,9 +1625,9 @@ At shallow depth the hits are denser and more regular; deeper Fibonacci values o
 
 | Control | Action |
 | --- | --- |
-| **Fader** | Cycle length N in steps (bar-aligned; Fibonacci gaps fill, then reset) |
-| **Shift + Fader** | Fibonacci depth — how many sequence values rotate |
-| **Button + Fader** | Speed — up = 16th, middle = 8th, down = quarter (overrides Configurator **Speed**) |
+| **Fader** | Fibonacci depth — how many sequence values rotate |
+| **Shift + Fader** | Cycle length N in steps (bar-aligned; Fibonacci gaps fill, then reset) |
+| **Button + Fader** | Speed — Heat Pump grid (1/1 … 1/32, incl. dotted & triplets); overrides Configurator **Speed** |
 | **Short press** | Reset to downbeat |
 | **Long press** | Mute (no fader move) |
 | **Shift + short** | Reverse this cycle’s gap order (Button LED: white↔off fade) |
@@ -1637,24 +1637,24 @@ At shallow depth the hits are denser and more regular; deeper Fibonacci values o
 
 | Control | Edits | Visual feedback |
 | --- | --- | --- |
-| **Fader** | Cycle length | **Top LED** = cycle progress in app color. **Bottom LED** flashes on each hit |
-| **Shift + Fader** | Depth | No dedicated meter — Top stays on cycle progress while you edit |
-| **Button + Fader** | Speed | No dedicated meter — Top stays on cycle progress while you edit |
+| **Fader** | Depth | **Top LED** = cycle progress in app color. **Bottom LED** flashes on each hit |
+| **Shift + Fader** | Cycle length | **Top LED** = cycle length (red) while Shift is held |
+| **Button + Fader** | Speed | **Top LED** = division type (cyan straight / yellow dotted / orange triplet) |
 | **Button LED** | — | Output mode color (app color / orange / red / pink); white↔off on reverse; off when muted |`,
     channels: [
       {
         jackTitle: "Gate / Pitch Out",
         jackDescription:
           "Note and CC modes: gate pulse. Pitch modes: 1V/oct CV (MIDI note in parallel).",
-        faderTitle: "Cycle length",
+        faderTitle: "Fibonacci depth",
         faderDescription:
-          "How many steps before the pattern wraps (about 8–32).",
-        faderPlusShiftTitle: "Fibonacci depth",
+          "How far into 1, 1, 2, 3, 5 … 89 the gaps go — shallow = denser, deep = sparser.",
+        faderPlusShiftTitle: "Cycle length",
         faderPlusShiftDescription:
-          "How far into 1, 1, 2, 3, 5 and beyond the gaps go — shallow = denser, deep = sparser.",
+          "How many steps before the pattern wraps (about 8–128).",
         faderPlusFnTitle: "Speed",
         faderPlusFnDescription:
-          "Upper third: 16th · Middle: 8th · Lower third: quarter. Overrides the Speed parameter.",
+          "Clock division (same as Heat Pump): 1/1, 1/2, 1/4., 1/4, 1/8., 1/4T, 1/8, 1/8T, 1/16, 1/32. Up = faster. Overrides the Speed parameter.",
         fnTitle: "Reset / Mute",
         fnDescription:
           "Short press: restart at the downbeat. Long press: mute (do not move the fader).",
@@ -1662,10 +1662,9 @@ At shallow depth the hits are denser and more regular; deeper Fibonacci values o
         fnPlusShiftDescription:
           "Short: reverse this cycle’s gaps. Long: cycle Note → CC → 12-TET pitch → φ pitch.",
         ledTop: "Progress through the cycle (app color)",
-        ledTopPlusShift:
-          "No depth meter — stays on cycle progress while Shift is held",
+        ledTopPlusShift: "Cycle length (red) while Shift is held",
         ledTopPlusFn:
-          "No speed meter — stays on cycle progress while the button is held",
+          "Speed division: cyan = straight, yellow = dotted, orange = triplet",
         ledBottom: "Flash on each hit",
       },
     ],
