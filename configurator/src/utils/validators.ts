@@ -86,10 +86,12 @@ export const getParamSchema = (param: Param) => {
         .default({ tag: "MidiCc", value: [32] });
     }
     case "MidiChannel": {
+      // Firmware MidiChannel is 1–16 (u4 wire = value-1). max(15) rejected CH16
+      // on Load Setup and fell back to default [1].
       return z
         .object({
           tag: z.literal("MidiChannel"),
-          value: z.tuple([z.number().int().min(0).max(15)]),
+          value: z.tuple([z.number().int().min(1).max(16)]),
         })
         .default({ tag: "MidiChannel", value: [1] });
     }
