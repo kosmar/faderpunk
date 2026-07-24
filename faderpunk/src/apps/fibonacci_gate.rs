@@ -19,7 +19,7 @@ use crate::app::{
 };
 
 pub const CHANNELS: usize = 1;
-pub const PARAMS: usize = 11;
+pub const PARAMS: usize = 12;
 
 const LED_BRIGHTNESS: Brightness = Brightness::Mid;
 /// Reverse gesture LED feedback length (white↔off fade), same as Heat Pump invert.
@@ -118,6 +118,10 @@ pub static CONFIG: Config<PARAMS> = Config::new(
     name: "CV Att",
     min: 0,
     max: 100,
+})
+.add_param(Param::Enum {
+    name: "Mode",
+    variants: &["Note", "CC", "Pitch", "Phi"],
 });
 
 pub struct Params {
@@ -132,6 +136,8 @@ pub struct Params {
     range: Range,
     cv_dest: usize,
     cv_att: i32,
+    /// 0 = Note, 1 = CC, 2 = Pitch 12-TET, 3 = φ pitch.
+    mode: usize,
 }
 
 impl AppParams for Params {
@@ -139,7 +145,8 @@ impl AppParams for Params {
         if values.len() < 7 {
             return None;
         }
-        let (cv_jack, range, cv_dest, cv_att) = if values.len() >= PARAMS {
+        // Indices 7..=10 added with CV jack; 11 = Mode. Accept older layouts.
+        let (cv_jack, range, cv_dest, cv_att) = if values.len() >= 11 {
             (
                 usize::from_value(values[7]).min(1),
                 Range::from_value(values[8]),
@@ -148,6 +155,11 @@ impl AppParams for Params {
             )
         } else {
             (CV_JACK_OUT, Range::_0_10V, DEST_DEPTH, 100)
+        };
+        let mode = if values.len() >= PARAMS {
+            usize::from_value(values[11]).min(3)
+        } else {
+            MODE_GATE_NOTE as usize
         };
         Some(Self {
             midi_channel: MidiChannel::from_value(values[0]),
@@ -161,6 +173,7 @@ impl AppParams for Params {
             range,
             cv_dest,
             cv_att,
+            mode,
         })
     }
 
@@ -177,6 +190,7 @@ impl AppParams for Params {
         vec.push(self.range.into()).unwrap();
         vec.push(self.cv_dest.into()).unwrap();
         vec.push(self.cv_att.into()).unwrap();
+        vec.push(self.mode.into()).unwrap();
         vec
     }
 }
@@ -348,6 +362,7 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
             range: Range::_0_10V,
             cv_dest: DEST_DEPTH,
             cv_att: 100,
+            mode: MODE_GATE_NOTE as usize,
         },
     );
     let storage = ManagedStorage::<Storage>::new(app.app_id, app.layout_id);
@@ -374,7 +389,7 @@ pub async fn run(
     params: &ParamStore<Params>,
     storage: &ManagedStorage<Storage>,
 ) {
-    let (midi_out, midi_chan, note, cc, gatel, param_speed, led_color, cv_jack, range, cv_dest, cv_att) =
+    let (midi_out, midi_chan, note, cc, gatel, param_speed, led_color, cv_jack, range, cv_dest, cv_att, param_mode) =
         params.query(|p| {
             (
                 p.midi_out,
@@ -388,6 +403,7 @@ pub async fn run(
                 p.range,
                 p.cv_dest.min(DEST_COUNT - 1),
                 att_from_pct(p.cv_att),
+                p.mode.min(3) as u8,
             )
         });
 
@@ -415,7 +431,7 @@ pub async fn run(
     // true = none→white, false = white→none.
     let glob_reverse_fade_up = app.make_global(false);
 
-    let (fader_saved, shift_fader_saved, muted, reversed, out_mode, speed_saved) =
+    let (fader_saved, shift_fader_saved, muted, reversed, _stored_mode, speed_saved) =
         storage.query(|s| {
             (
                 s.fader_saved,
@@ -450,6 +466,11 @@ pub async fn run(
     } else {
         None
     };
+    // Mode param is source of truth on spawn (configurator / editor / Shift+long
+    // all write it). Keep scene storage in sync so LoadScene stays coherent.
+    let out_mode = param_mode;
+    storage.modify_and_save(|s| s.out_mode = out_mode);
+
     if cv_jack == CV_JACK_OUT && is_pitch_mode(out_mode) {
         app.make_out_jack(0, range).await;
         if let Some(ref j) = cv_out {
@@ -724,10 +745,13 @@ pub async fn run(
             long_press_fired.set(true);
 
             if buttons.is_shift_pressed() {
-                // Shift + long press: cycle output mode (Note / CC / Pitch).
+                // Shift + long press: cycle output mode (Note / CC / Pitch / Phi).
                 let mode = (glob_mode.get() + 1) % 4;
                 glob_mode.set(mode);
                 storage.modify_and_save(|s| s.out_mode = mode);
+                params
+                    .modify_and_save(|p| p.mode = mode as usize)
+                    .await;
                 if !glob_muted.get() {
                     leds.set(0, Led::Button, mode_color(mode, led_color), LED_BRIGHTNESS);
                 }
@@ -809,6 +833,9 @@ pub async fn run(
                     glob_muted.set(muted);
                     glob_reversed.set(reversed);
                     glob_mode.set(out_mode);
+                    params
+                        .modify_and_save(|p| p.mode = out_mode as usize)
+                        .await;
                     if speed_saved < SPEED_COUNT {
                         glob_speed.set(speed_saved);
                     } else {
