@@ -707,6 +707,20 @@ impl<P: AppParams> ParamStore<P> {
         accessor(&*guard)
     }
 
+    /// Mutate params from the app (e.g. Shift+long genre cycle), persist, and
+    /// push to the configurator without restarting the app task.
+    pub async fn update<F>(&self, modifier: F)
+    where
+        F: FnOnce(&mut P),
+    {
+        {
+            let mut inner = self.inner.borrow_mut();
+            modifier(&mut *inner);
+        }
+        self.save().await;
+        self.send_values().await;
+    }
+
     pub async fn param_handler(&self) {
         APP_PARAM_SIGNALS[self.layout_id as usize].reset();
         loop {

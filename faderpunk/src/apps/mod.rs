@@ -26,4 +26,12 @@ register_apps!(
     25 => automator,
     26 => genseq,
     27 => bernoulli,
+    // ID 28 = Sift (upstream, not ours — never register here)
+    29 => heat_pump,
+    30 => grooves,
+    31 => fibonacci_gate,
+    32 => super_lfo,
+    33 => echolot,
+    34 => arp_de_levy,
+    35 => vamp,
 );

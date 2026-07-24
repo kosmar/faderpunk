@@ -33,6 +33,7 @@ pub async fn start_transports(
 }
 
 #[embassy_executor::task]
+#[allow(clippy::large_futures)]
 async fn run_transports(
     usb_driver: usb::Driver<'static, USB>,
     uart0_tx: UartTx<'static, Async>,
