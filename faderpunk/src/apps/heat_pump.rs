@@ -33,6 +33,8 @@ const BUTTON_DUCK_MS: u16 = 25;
 const BUTTON_DUCK_MIN_MS: u16 = 4;
 /// Hold off periodic button LED writes so LedMode::Flash can finish.
 const BUTTON_FLASH_MS: u16 = 850;
+/// Ignore tiny fader noise while deciding mute vs button+fader (Third).
+const FADER_MOVE_THRESH: u16 = 64;
 
 const JACK_OUT: usize = 0;
 const JACK_IN: usize = 1;
@@ -265,6 +267,20 @@ fn color_for_division(user: Color, division: usize) -> Color {
     }
 }
 
+fn fader_to_division(v: u16) -> usize {
+    let n = DIVISION_TICKS.len();
+    ((v as usize * n) / 4096).min(n - 1)
+}
+
+fn division_to_fader(d: usize) -> u16 {
+    let n = DIVISION_TICKS.len();
+    if n <= 1 {
+        return 0;
+    }
+    let d = d.min(n - 1) as u32;
+    ((d * 4095) / (n as u32 - 1)) as u16
+}
+
 #[embassy_executor::task(pool_size = 16 / CHANNELS)]
 pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMutex, bool>) {
     let param_store = ParamStore::<Params>::new(
@@ -358,6 +374,10 @@ pub async fn run(
     let glob_dest = app.make_global(dest);
     let glob_in_att = app.make_global(in_att);
     let long_press_fired = app.make_global(false);
+    // Fader sample at channel-button down (non-shift); used to detect Third scrubbing.
+    let glob_fader_at_down = app.make_global(0u16);
+    // True once fader moved past threshold while channel button held → no mute / no duck tap.
+    let glob_fader_moved = app.make_global(false);
     // Remaining ms of invert LED fade; 0 = inactive.
     let glob_invert_fade = app.make_global(0u16);
     // true = none→white, false = white→none.
@@ -378,8 +398,16 @@ pub async fn run(
         loop {
             app.delay_millis(1).await;
 
-            let latch_active_layer =
-                glob_latch_layer.set(LatchLayer::from(buttons.is_shift_pressed()));
+            // Main = fader, Alt = Shift+fader (depth), Third = button+fader (division).
+            let latch_active_layer = if buttons.is_shift_pressed() && !buttons.is_button_pressed(0)
+            {
+                LatchLayer::Alt
+            } else if !buttons.is_shift_pressed() && buttons.is_button_pressed(0) {
+                LatchLayer::Third
+            } else {
+                LatchLayer::Main
+            };
+            glob_latch_layer.set(latch_active_layer);
 
             let invert = glob_invert.get();
             let idle = idle_level(invert);
@@ -531,15 +559,9 @@ pub async fn run(
                     leds.unset(0, Led::Bottom);
                 }
                 LatchLayer::Third => {
-                    if jack_mode == JACK_IN {
-                        let att = glob_in_att.get();
-                        leds.set(
-                            0,
-                            Led::Top,
-                            Color::Cyan,
-                            Brightness::Custom((att / 16) as u8),
-                        );
-                    }
+                    let division = glob_division.get().min(DIVISION_TICKS.len() - 1);
+                    let div_color = color_for_division(led_color, division);
+                    leds.set(0, Led::Top, div_color, Brightness::Mid);
                     leds.unset(0, Led::Bottom);
                 }
             }
@@ -567,21 +589,26 @@ pub async fn run(
 
         loop {
             faders.wait_for_change().await;
+            let fader_val = faders.get_value();
+
+            // Button+fader scrub: any real move cancels mute-on-long and duck-on-tap.
+            if buttons.is_button_pressed(0) && !buttons.is_shift_pressed() {
+                let at_down = glob_fader_at_down.get();
+                let delta = fader_val.abs_diff(at_down);
+                if delta > FADER_MOVE_THRESH {
+                    glob_fader_moved.set(true);
+                }
+            }
+
             let latch_layer = glob_latch_layer.get();
 
             let target_value = match latch_layer {
                 LatchLayer::Main => storage.query(|s| s.release),
                 LatchLayer::Alt => storage.query(|s| s.depth),
-                LatchLayer::Third => {
-                    if jack_mode == JACK_IN {
-                        storage.query(|s| s.in_att)
-                    } else {
-                        0
-                    }
-                }
+                LatchLayer::Third => division_to_fader(glob_division.get()),
             };
 
-            if let Some(new_value) = latch.update(faders.get_value(), latch_layer, target_value) {
+            if let Some(new_value) = latch.update(fader_val, latch_layer, target_value) {
                 match latch_layer {
                     LatchLayer::Main => {
                         glob_release.set(new_value);
@@ -596,12 +623,12 @@ pub async fn run(
                         });
                     }
                     LatchLayer::Third => {
-                        if jack_mode == JACK_IN {
-                            glob_in_att.set(new_value);
-                            storage.modify_and_save(|s| {
-                                s.in_att = new_value;
-                            });
-                        }
+                        let next = fader_to_division(new_value);
+                        glob_division.set(next);
+                        storage.modify_and_save(|s| {
+                            s.division = next;
+                        });
+                        glob_fader_moved.set(true);
                     }
                 }
             }
@@ -636,8 +663,11 @@ pub async fn run(
                 }
             } else {
                 long_press_fired.set(false);
+                glob_fader_moved.set(false);
+                glob_fader_at_down.set(faders.get_value());
                 buttons.wait_for_up(0).await;
-                if !long_press_fired.get() {
+                // Duck tap only if it wasn't a long-press mute and the fader stayed still.
+                if !long_press_fired.get() && !glob_fader_moved.get() {
                     glob_trigger.set(true);
                 }
             }
@@ -660,12 +690,15 @@ pub async fn run(
                 glob_invert_fade_up.set(!invert);
                 glob_invert_fade.set(INVERT_FADE_MS);
             } else {
-                let muted = glob_muted.toggle();
-                storage.modify_and_save(|s| {
-                    s.muted = muted;
-                });
-                if muted {
-                    leds.unset(0, Led::Button);
+                // Mute only when the fader was not scrubbed (button+fader = division).
+                if !glob_fader_moved.get() {
+                    let muted = glob_muted.toggle();
+                    storage.modify_and_save(|s| {
+                        s.muted = muted;
+                    });
+                    if muted {
+                        leds.unset(0, Led::Button);
+                    }
                 }
             }
         }
