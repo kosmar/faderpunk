@@ -28,5 +28,6 @@ export const ParamI32 = ({
     max={max}
     type="number"
     label={name}
+    description={`${min}–${max}`}
   />
 );

@@ -423,7 +423,7 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
         Params {
             io_mode: IO_MIDI_MIDI,
             delay_mode: 0,
-            max_delay_ms: 2000,
+            max_delay_ms: 8000,
             interval_mode: 0,
             routing: 0,
             signal: SIG_PITCH,
