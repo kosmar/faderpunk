@@ -478,12 +478,7 @@ pub async fn run(
     if muted {
         leds.unset(0, Led::Button);
     } else {
-        leds.set(
-            0,
-            Led::Button,
-            octave_color(glob_octaves.get()),
-            LED_BRIGHTNESS,
-        );
+        leds.set(0, Led::Button, led_color, LED_BRIGHTNESS);
     }
 
     let (density0, phrase0, _) = texture_from_value(shift_fader_saved);
@@ -639,12 +634,12 @@ pub async fn run(
                             );
                         }
 
-                        // Top LED: progress through the phrase (Main layer).
+                        // Top LED: phrase progress in octave-span color; Button = Color param.
                         if glob_latch_layer.get() == LatchLayer::Main {
                             leds.set(
                                 0,
                                 Led::Top,
-                                led_color,
+                                octave_color(glob_octaves.get()),
                                 Brightness::Custom(
                                     ((step % phrase_len.max(1)) * 255 / phrase_len.max(1)) as u8,
                                 ),
@@ -740,12 +735,7 @@ pub async fn run(
                         leds.unset(0, Led::Button);
                         leds.unset(0, Led::Bottom);
                     } else {
-                        leds.set(
-                            0,
-                            Led::Button,
-                            octave_color(glob_octaves.get()),
-                            LED_BRIGHTNESS,
-                        );
+                        leds.set(0, Led::Button, led_color, LED_BRIGHTNESS);
                     }
                 }
             }
@@ -763,12 +753,14 @@ pub async fn run(
                 glob_octaves.set(octaves);
                 storage.modify_and_save(|s| s.octaves = octaves);
                 if !glob_muted.get() {
+                    // Octave span cue on Top; Button stays Color param.
                     leds.set(
                         0,
-                        Led::Button,
+                        Led::Top,
                         octave_color(octaves),
-                        LED_BRIGHTNESS,
+                        Brightness::High,
                     );
+                    leds.set(0, Led::Button, led_color, LED_BRIGHTNESS);
                 }
             }
         }
@@ -856,12 +848,7 @@ pub async fn run(
                         midi.send_note_off(base_note).await;
                         leds.unset(0, Led::Button);
                     } else {
-                        leds.set(
-                            0,
-                            Led::Button,
-                            octave_color(glob_octaves.get()),
-                            LED_BRIGHTNESS,
-                        );
+                        leds.set(0, Led::Button, led_color, LED_BRIGHTNESS);
                     }
                 }
                 SceneEvent::SaveScene(scene) => {
@@ -935,12 +922,7 @@ pub async fn run(
                 let next = fade_left.saturating_sub(1);
                 glob_reverse_fade.set(next);
                 if next == 0 && !glob_muted.get() {
-                    leds.set(
-                        0,
-                        Led::Button,
-                        octave_color(glob_octaves.get()),
-                        LED_BRIGHTNESS,
-                    );
+                    leds.set(0, Led::Button, led_color, LED_BRIGHTNESS);
                 } else if next == 0 && glob_muted.get() {
                     leds.unset(0, Led::Button);
                 }
