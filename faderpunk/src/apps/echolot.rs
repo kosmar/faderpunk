@@ -11,10 +11,7 @@ use serde::{Deserialize, Serialize};
 use libfp::{
     ext::FromValue,
     latch::LatchLayer,
-    utils::{
-        bits_7_16, midi_gate, resolution_for_mode, scale_bits_7_12, split_unsigned_value,
-        value_to_resolution,
-    },
+    utils::{bits_7_16, midi_gate, scale_bits_7_12, split_unsigned_value, value_to_resolution},
     AppIcon, Brightness, ClockDivision, Color, Config, MidiCc, MidiChannel, MidiIn, MidiNote,
     MidiOut, Param, Range, Value, APP_MAX_PARAMS,
 };
@@ -27,10 +24,10 @@ pub const CHANNELS: usize = 1;
 pub const PARAMS: usize = 15;
 
 const LED_BRIGHTNESS: Brightness = Brightness::Mid;
-const MAX_REPEATS: u8 = 8;
+const MAX_REPEATS: u8 = 16;
 /// Stop re-queueing once delayed velocity falls below this (≈ MIDI vel 6).
 const VELOCITY_FLOOR: u16 = 200;
-const QUEUE_CAP: usize = 32;
+const QUEUE_CAP: usize = 48;
 /// Leave headroom so NoteOffs can still land when feedback floods the queue.
 const QUEUE_FEEDBACK_RESERVE: usize = 4;
 const SOUNDING_CAP: usize = 32;
@@ -39,13 +36,18 @@ const GATE_THRESH: u16 = 406;
 const INPUT_FLASH_PEAK: u8 = 255;
 /// While muted, show the same flash at ~20% so MIDI In stays visible without looking “live”.
 const INPUT_FLASH_MUTED_SCALE: u16 = 51; // 51/255 ≈ 20%
-/// Straight note-length table for clock-synced delay (same as clk_div "Straight").
-const CLOCK_DIVISION_MODE: usize = 0;
 /// Ignore own delayed MIDI coming back via host/DIN loopback (In CH == Out CH).
 const LOOPBACK_IGNORE_MS: u64 = 40;
 const RECENT_EMIT_CAP: usize = 24;
 /// Floor free-running delay so feedback can't collapse into a solid tone.
 const MIN_DELAY_MS: u64 = 1;
+/// Configurator / clamp ceiling for Max delay (ms) param.
+const MAX_DELAY_MS_CAP: i32 = 8000;
+/// Button+Fader pitch shift range (semitones).
+const INTERVAL_ST_MAX: i32 = 24;
+/// Clock-mode delay lengths at 24 PPQN (fader up = shorter).
+/// 1536 = 16 bars … 1 = 1 tick (~64th at 24 PPQN).
+const CLOCK_DELAY_TICKS: &[u16] = &[1536, 768, 384, 192, 96, 48, 24, 12, 6, 3, 2, 1];
 
 /// I/O routing mode.
 const IO_MIDI_MIDI: usize = 0;
@@ -75,7 +77,7 @@ pub static CONFIG: Config<PARAMS> = Config::new(
 .add_param(Param::i32 {
     name: "Max delay (ms)",
     min: 10,
-    max: 2000,
+    max: 8000,
 })
 .add_param(Param::Enum {
     name: "Interval mode",
@@ -228,7 +230,7 @@ struct PendingEvent {
 }
 
 fn fader_to_delay_ms(fader: u16, max_ms: i32) -> u64 {
-    let max = max_ms.clamp(10, 2000) as u32;
+    let max = max_ms.clamp(10, MAX_DELAY_MS_CAP) as u32;
     // Match clock-mode / rate UX: fader up = faster (shorter delay).
     let inverted = 4095u32.saturating_sub(fader as u32);
     ((inverted * max / 4095) as u64).max(MIN_DELAY_MS)
@@ -328,7 +330,7 @@ fn is_own_echo(recent: &[RecentEmit], note: u8, is_on: bool, now_ms: u64) -> boo
 
 fn fader_to_interval(fader: u16) -> i8 {
     let centered = fader as i32 - 2048;
-    ((centered * 12) / 2048).clamp(-12, 12) as i8
+    ((centered * INTERVAL_ST_MAX) / 2048).clamp(-INTERVAL_ST_MAX, INTERVAL_ST_MAX) as i8
 }
 
 fn interval_for_gen(base: i8, generation: u8, mode: usize) -> i8 {
@@ -368,10 +370,10 @@ fn midi_note_u8(note: MidiNote) -> u8 {
 
 fn split_semitone_leds(interval: i32) -> [u8; 2] {
     if interval >= 0 {
-        let pos = ((interval * 255) / 12).clamp(0, 255) as u8;
+        let pos = ((interval * 255) / INTERVAL_ST_MAX).clamp(0, 255) as u8;
         [pos, 0]
     } else {
-        let neg = (((-interval) * 255) / 12).clamp(0, 255) as u8;
+        let neg = (((-interval) * 255) / INTERVAL_ST_MAX).clamp(0, 255) as u8;
         [0, neg]
     }
 }
@@ -383,12 +385,12 @@ fn pulse_from_feedback(feedback: u16) -> u8 {
     (MIN + (feedback as u32 * (MAX - MIN) / 4095)) as u8
 }
 
-/// Button brightness from |interval|: 10% at unison … 100% at ±12 st.
+/// Button brightness from |interval|: 10% at unison … 100% at ±INTERVAL_ST_MAX.
 fn pulse_from_interval(interval: i8) -> u8 {
     const MIN: u32 = 26;
     const MAX: u32 = 255;
     let mag = interval.unsigned_abs() as u32;
-    (MIN + (mag * (MAX - MIN) / 12)) as u8
+    (MIN + (mag * (MAX - MIN) / INTERVAL_ST_MAX as u32)) as u8
 }
 
 /// Resolve Signal enum in context of I/O mode.
@@ -421,7 +423,7 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
         Params {
             io_mode: IO_MIDI_MIDI,
             delay_mode: 0,
-            max_delay_ms: 1000,
+            max_delay_ms: 2000,
             interval_mode: 0,
             routing: 0,
             signal: SIG_PITCH,
@@ -501,7 +503,7 @@ pub async fn run(
     // Ping-Pong: two MIDI outs. MIDI→MIDI and CV→MIDI (MIDI→CV has only one jack).
     let ping_pong = routing == 1 && matches!(io_mode, IO_MIDI_MIDI | IO_CV_MIDI);
     let sig = effective_signal(io_mode, signal);
-    let resolution = resolution_for_mode(CLOCK_DIVISION_MODE);
+    let resolution = CLOCK_DELAY_TICKS;
     let base_note_cfg = midi_note_u8(midi_note);
     let loop_guard = io_mode == IO_MIDI_MIDI
         && ports_can_loop(midi_in_cfg, midi_out_cfg)
