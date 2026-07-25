@@ -571,12 +571,11 @@ pub async fn run(
         let mut recent_emit: Vec<RecentEmit, RECENT_EMIT_CAP> = Vec::new();
         let mut prev_gate = false;
         let mut last_cc_gate: u16 = u16::MAX;
-        // CV→CC Ping-Pong: alternate successive delayed CC values across A/B
-        // (unlike notes, CC events are gen-0 one-shots — no feedback trail).
-        let mut cc_pong_next = false;
         // Free-running delay-period metronome (blinks even with empty queue).
         let mut next_metro_ms = Instant::now().as_millis();
         let mut next_metro_tick = ticks() as u32;
+        let mut last_metro_delay_ms = u64::MAX;
+        let mut last_metro_delay_ticks = u32::MAX;
 
         let enqueue = |queue: &mut Vec<PendingEvent, QUEUE_CAP>,
                        kind: EventKind,
@@ -649,6 +648,13 @@ pub async fn run(
             // Idle delay metronome: one blink per delay period, no input required.
             // Floor period so near-zero delay still reads as a pulse (~25 Hz max).
             const MIN_METRO_MS: u64 = 40;
+            // Retarget immediately when Main fader changes delay.
+            if delay_ms != last_metro_delay_ms || delay_ticks != last_metro_delay_ticks {
+                last_metro_delay_ms = delay_ms;
+                last_metro_delay_ticks = delay_ticks;
+                next_metro_ms = now_ms.saturating_add(delay_ms.max(MIN_METRO_MS));
+                next_metro_tick = now_tick.wrapping_add(delay_ticks);
+            }
             if !glob_muted.get() {
                 if clocked {
                     if now_tick.wrapping_sub(next_metro_tick) < (u32::MAX / 2) {
@@ -831,18 +837,15 @@ pub async fn run(
                         let g = midi_gate(inval, false);
                         if g != last_cc_gate {
                             last_cc_gate = g;
-                            // Ping-Pong: odd updates → Out B (generation 1).
-                            let gen = if ping_pong && cc_pong_next { 1 } else { 0 };
-                            if ping_pong {
-                                cc_pong_next = !cc_pong_next;
-                            }
+                            // Always Out A (gen 0). Ping-Pong seeds Out B on fire
+                            // so B lags A by one delay period (not simultaneous).
                             enqueue(
                                 &mut queue,
                                 EventKind::CvValue,
                                 0,
                                 0,
                                 inval,
-                                gen,
+                                0,
                                 0,
                                 delay_ms,
                                 delay_ticks,
@@ -1027,6 +1030,23 @@ pub async fn run(
                                 midi_a.send_cc(midi_cc, event.cv_value).await;
                             } else {
                                 midi_b.send_cc(midi_cc, event.cv_value).await;
+                            }
+                            // Ping-Pong: one delayed cross to the other out so A/B
+                            // are offset by Delay (Main fader) — not same-time copies.
+                            if ping_pong && event.generation == 0 {
+                                enqueue(
+                                    &mut queue,
+                                    EventKind::CvValue,
+                                    0,
+                                    0,
+                                    event.cv_value,
+                                    1,
+                                    0,
+                                    delay_ms,
+                                    delay_ticks,
+                                    event.due_ms,
+                                    event.due_tick,
+                                );
                             }
                         }
                         activity_glob.set(pulse);
