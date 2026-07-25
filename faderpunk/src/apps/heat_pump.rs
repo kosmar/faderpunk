@@ -443,7 +443,13 @@ pub async fn run(
 
             let mut level = glob_level.get();
 
-            if glob_trigger.get() {
+            if muted {
+                // Freeze envelope where it is — no snap to idle (that looked like
+                // "max + static" in diagnostics). Discard clock triggers while muted.
+                if glob_trigger.get() {
+                    glob_trigger.set(false);
+                }
+            } else if glob_trigger.get() {
                 glob_trigger.set(false);
                 level = if invert {
                     eff_depth as f32
@@ -452,21 +458,22 @@ pub async fn run(
                 };
             }
 
-            // Fader up = faster recovery: invert the fader before the curve.
-            let release_ms =
-                Curve::Exponential.at(4095u16.saturating_sub(eff_release)) as f32 + MIN_RELEASE_MS;
-            let step = 4095.0 / release_ms;
-            if level < idle {
-                level = (level + step).min(idle);
-            } else if level > idle {
-                level = (level - step).max(idle);
+            if !muted {
+                // Fader up = faster recovery: invert the fader before the curve.
+                let release_ms = Curve::Exponential.at(4095u16.saturating_sub(eff_release))
+                    as f32
+                    + MIN_RELEASE_MS;
+                let step = 4095.0 / release_ms;
+                if level < idle {
+                    level = (level + step).min(idle);
+                } else if level > idle {
+                    level = (level - step).max(idle);
+                }
             }
             glob_level.set(level);
 
             let out = level as u16;
-            // Mute = bypass the pump: hold idle so CV/MIDI don't stick at silence
-            // (e.g. CC7 volume frozen at 0 on a Minitaur).
-            let effective_out = if muted { idle as u16 } else { out };
+            let effective_out = out;
             if let Some(ref output) = output {
                 output.set_value(effective_out);
             }
@@ -543,26 +550,31 @@ pub async fn run(
                 }
             }
 
-            match latch_active_layer {
-                LatchLayer::Main => {
-                    leds.set(0, Led::Top, led_color, Brightness::Custom((out / 16) as u8));
-                    leds.unset(0, Led::Bottom);
-                }
-                LatchLayer::Alt => {
-                    let depth = glob_depth.get();
-                    leds.set(
-                        0,
-                        Led::Top,
-                        Color::Red,
-                        Brightness::Custom((depth / 16) as u8),
-                    );
-                    leds.unset(0, Led::Bottom);
-                }
-                LatchLayer::Third => {
-                    let division = glob_division.get().min(DIVISION_TICKS.len() - 1);
-                    let div_color = color_for_division(led_color, division);
-                    leds.set(0, Led::Top, div_color, Brightness::Mid);
-                    leds.unset(0, Led::Bottom);
+            if muted {
+                leds.unset(0, Led::Top);
+                leds.unset(0, Led::Bottom);
+            } else {
+                match latch_active_layer {
+                    LatchLayer::Main => {
+                        leds.set(0, Led::Top, led_color, Brightness::Custom((out / 16) as u8));
+                        leds.unset(0, Led::Bottom);
+                    }
+                    LatchLayer::Alt => {
+                        let depth = glob_depth.get();
+                        leds.set(
+                            0,
+                            Led::Top,
+                            Color::Red,
+                            Brightness::Custom((depth / 16) as u8),
+                        );
+                        leds.unset(0, Led::Bottom);
+                    }
+                    LatchLayer::Third => {
+                        let division = glob_division.get().min(DIVISION_TICKS.len() - 1);
+                        let div_color = color_for_division(led_color, division);
+                        leds.set(0, Led::Top, div_color, Brightness::Mid);
+                        leds.unset(0, Led::Bottom);
+                    }
                 }
             }
         }
@@ -697,7 +709,10 @@ pub async fn run(
                         s.muted = muted;
                     });
                     if muted {
+                        // Keep current level frozen — do not snap to idle.
                         leds.unset(0, Led::Button);
+                        leds.unset(0, Led::Top);
+                        leds.unset(0, Led::Bottom);
                     }
                 }
             }
