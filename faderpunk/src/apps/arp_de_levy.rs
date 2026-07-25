@@ -32,10 +32,12 @@ const MIN_PHRASE: usize = 4;
 const MAX_PHRASE: usize = 16;
 /// Ticks per 16th at 24 PPQN.
 const STEP_DIV: u32 = 6;
-/// Local Lévy table (semitones): mostly 1–3, rare 5.
-const LEVY_LOCAL: [i8; 16] = [1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 5, 5];
-/// Wild Lévy table: small moves still present, large jumps common.
-const LEVY_WILD: [i8; 16] = [1, 2, 3, 3, 5, 5, 7, 8, 8, 10, 12, 12, 14, 17, 19, 24];
+/// Local Lévy table (semitones): almost only tiny steps at α min.
+const LEVY_LOCAL: [i8; 16] = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3];
+/// Wild Lévy table: large leaps dominate at α max (up to 4 octaves).
+const LEVY_WILD: [i8; 16] = [7, 8, 10, 12, 14, 17, 19, 24, 24, 29, 31, 36, 36, 41, 48, 48];
+/// Pull α toward 0 / 4095 so Third-layer extremes read clearly (< 1 = stronger).
+const ALPHA_LEAN_CURVE: f32 = 0.5;
 
 const OCT_COLORS: [Color; 4] = [Color::Blue, Color::Cyan, Color::Yellow, Color::Red];
 
@@ -281,8 +283,13 @@ fn clamp_note(n: i16) -> u8 {
 }
 
 /// α (0..=4095) blends Local→Wild: probability of sampling the wild table.
+/// Ends are pushed outward so min stays sticky-local and max is jump-heavy.
 fn levy_delta(die: &Die, alpha: u16) -> i8 {
-    let mag = if die.roll() < alpha {
+    let t = alpha as f32 / 4095.0;
+    let centered = (t - 0.5) * 2.0;
+    let lean = libm::copysignf(libm::powf(centered.abs(), ALPHA_LEAN_CURVE), centered);
+    let eff = ((0.5 + lean * 0.5) * 4095.0) as u16;
+    let mag = if die.roll() < eff {
         LEVY_WILD[(die.roll() as usize) % LEVY_WILD.len()]
     } else {
         LEVY_LOCAL[(die.roll() as usize) % LEVY_LOCAL.len()]
