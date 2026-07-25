@@ -1592,6 +1592,95 @@ On load, both registers are restored at the next phrase boundary so the recalled
       },
     ],
   },
+  {
+    appId: 32,
+    title: "Arp de Lévy",
+    description:
+      "Lévy-flight generative arpeggiator — evolve, texture, and expression",
+    color: "Rose",
+    icon: "soft-random",
+    params: [
+      "MIDI Channel",
+      "Base Note",
+      "Color",
+      "MIDI Out",
+      "V/Oct",
+      "Bypass quantizer",
+      "Jack",
+      "Range",
+      "CV Dest",
+      "CV Att",
+    ],
+    storage: [
+      "Mutation rate",
+      "Texture",
+      "Lévy α",
+      "Expression",
+      "Octave span",
+      "Muted",
+      "Reversed",
+      "Note pool",
+      "Phrase length",
+    ],
+    text: `Arp de Lévy is a one-channel generative arpeggiator. It keeps a persistent note pool and walks it with **Lévy-flight** steps — mostly small melodic moves (1–3 semitones), occasionally a larger jump — so the phrase evolves without turning into white-noise pitch. CV (1V/oct, quantized unless **Bypass quantizer**) and MIDI note fire together on each hit. **V/Oct** selects Eurorack 1V/oct or Buchla 1.2V/oct scaling.
+
+#### Mutation, texture, and flight
+
+Mutation rate freezes the pool at the bottom and applies more Lévy edits at each phrase boundary as you raise it. Texture jointly moves density (rests), phrase length (from 16 steps down to 4), and swing — sparse/long/straight at the bottom, dense/short/swung toward the top. **Button + Fader** sets Lévy **α** (local ↔ wild jump character).
+
+#### Expression
+
+There is no dedicated fader for expression. **Short press** (and CV Dest = Reroll) re-rolls the note pool **and** picks a new **expression depth**. That depth controls how much each subsequent note jitters in **velocity** and **gate length** around a fixed base (half-step gate, ~78% velocity). Depth 0 = fixed notes; high depth = more random long/loud variation per hit.
+
+#### Gestures
+
+| Control | Action |
+| --- | --- |
+| **Fader** | Mutation rate (0 = freeze loop) |
+| **Shift + Fader** | Texture macro (density + phrase length + swing) |
+| **Button + Fader** | Lévy α (local ↔ wild) |
+| **Short press** | Reroll pool + expression depth; reset phrase |
+| **Long press** | Mute (no fader move) |
+| **Shift + short** | Reverse playback |
+| **Shift + long** | Cycle octave span 1→2→3→4 |
+
+#### Faders & LEDs
+
+| Control | Edits | Visual feedback |
+| --- | --- | --- |
+| **Fader** | Mutation | **Top LED** = phrase progress in app color. **Bottom LED** flashes on each hit |
+| **Shift + Fader** | Texture | **Top LED** = texture in **orange** (brighter = denser/shorter) |
+| **Button + Fader** | Lévy α | **Top LED** = **violet** (brighter = wilder) |
+| **Button LED** | — | Octave color (blue/cyan/yellow/red); white↔off on reverse; off when muted |
+
+Scenes store the live note pool, phrase length, and expression depth.`,
+    channels: [
+      {
+        jackTitle: "Pitch CV Out / CV In",
+        jackDescription:
+          "Jack mode selects Pitch CV out or CV in (Evolve / Texture / Reroll). MIDI note fires in parallel unless muted.",
+        faderTitle: "Mutation rate",
+        faderDescription:
+          "How strongly the note pool Lévy-walks at each phrase boundary. Bottom = frozen loop.",
+        faderPlusShiftTitle: "Texture",
+        faderPlusShiftDescription:
+          "One macro for density (rests), phrase length (from 16 steps down to 4), and swing.",
+        faderPlusFnTitle: "Lévy α",
+        faderPlusFnDescription:
+          "Flight character — low = local steps, high = wild jumps.",
+        fnTitle: "Reroll / Mute",
+        fnDescription:
+          "Short press: new note pool, new expression depth (vel/gate jitter), restart phrase. Long press: mute.",
+        fnPlusShiftTitle: "Reverse / Octaves",
+        fnPlusShiftDescription:
+          "Short: reverse playback. Long: cycle octave span 1–4.",
+        ledTop: "Phrase position (app color)",
+        ledTopPlusShift: "Texture amount (orange, brighter = denser/shorter)",
+        ledTopPlusFn: "Lévy α (violet, brighter = wilder)",
+        ledBottom: "Flash on each hit",
+      },
+    ],
+  },
 ];
 
 export const ManualTab = () => {

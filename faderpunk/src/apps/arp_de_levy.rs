@@ -184,6 +184,9 @@ pub struct Storage {
     shift_fader_saved: u16,
     /// Button+fader: Lévy α / flight character (raw 12-bit).
     alpha_saved: u16,
+    /// Expression depth (0..=4095): how much per-note velocity/gate jitter.
+    /// Re-rolled on short-press / CV reroll.
+    expression: u16,
     /// Octave span 1..=4 (cycled by Shift+long).
     octaves: u8,
     muted: bool,
@@ -205,6 +208,7 @@ impl Default for Storage {
             fader_saved: 0, // frozen by default
             shift_fader_saved: 2048,
             alpha_saved: 2048, // balanced flight
+            expression: 0, // deterministic until first reroll
             octaves: 2,
             muted: false,
             reversed: false,
@@ -244,6 +248,28 @@ fn texture_from_value(value: u16) -> (u16, usize, u32) {
     // Swing delay on odd steps: 0 .. ~40% of a step.
     let swing = t * (STEP_DIV * 2 / 5) / 4095;
     (density, phrase, swing)
+}
+
+/// Expression depth (0..=4095) → per-note velocity. Base ~78%; jitter scales with depth.
+fn express_velocity(die: &Die, expression: u16) -> u16 {
+    const BASE: u16 = 3200;
+    const MIN_V: u16 = 256;
+    if expression == 0 {
+        return BASE;
+    }
+    let delta = ((die.roll() as i32 - 2048) * expression as i32) / 2048;
+    (BASE as i32 + delta).clamp(MIN_V as i32, 4095) as u16
+}
+
+/// Expression depth → gate length in clock ticks (1..=STEP_DIV-1). Base = half step.
+fn express_gate_ticks(die: &Die, expression: u16) -> u32 {
+    const BASE: u32 = STEP_DIV / 2;
+    if expression == 0 {
+        return BASE.max(1);
+    }
+    let max_j = ((expression as u32) * (STEP_DIV / 2 - 1) / 4095) as i32;
+    let delta = ((die.roll() as i32 - 2048) * max_j) / 2048;
+    (BASE as i32 + delta).clamp(1, (STEP_DIV - 1) as i32) as u32
 }
 
 fn base_midi(note: MidiNote) -> u8 {
@@ -387,6 +413,7 @@ pub async fn run(
         fader_saved,
         shift_fader_saved,
         alpha_saved,
+        expression_saved,
         octaves_saved,
         muted,
         reversed,
@@ -397,6 +424,7 @@ pub async fn run(
             s.fader_saved,
             s.shift_fader_saved,
             s.alpha_saved,
+            s.expression,
             s.octaves,
             s.muted,
             s.reversed,
@@ -410,6 +438,7 @@ pub async fn run(
     let glob_mutation = app.make_global(fader_saved);
     let glob_texture = app.make_global(shift_fader_saved);
     let glob_alpha = app.make_global(alpha_saved);
+    let glob_expression = app.make_global(expression_saved);
     let glob_octaves = app.make_global(clamp_octaves(octaves_saved));
     let glob_phrase =
         app.make_global(phrase_saved.clamp(MIN_PHRASE as u8, MAX_PHRASE as u8) as usize);
@@ -493,9 +522,13 @@ pub async fn run(
                     if glob_reroll.get() {
                         glob_reroll.set(false);
                         reroll_pool(&mut pool, phrase_len, lo, hi, &die);
+                        // Short/CV reroll also picks a new expression depth.
+                        let expression = die.roll();
+                        glob_expression.set(expression);
                         storage.modify_and_save(|s| {
                             s.pool = pool;
                             s.phrase_len = phrase_len as u8;
+                            s.expression = expression;
                         });
                     }
 
@@ -515,6 +548,9 @@ pub async fn run(
                         if clkn >= on_at {
                             if let Some(raw) = pending_note.take() {
                                 if !glob_muted.get() {
+                                    let expression = glob_expression.get();
+                                    let vel = express_velocity(&die, expression);
+                                    let gate_ticks = express_gate_ticks(&die, expression);
                                     fire_note(
                                         &midi,
                                         out_jack.as_ref(),
@@ -524,10 +560,11 @@ pub async fn run(
                                         vpo,
                                         range,
                                         raw,
+                                        vel,
                                         &mut note_on,
                                     )
                                     .await;
-                                    gate_off_at = Some(on_at + STEP_DIV / 2);
+                                    gate_off_at = Some(on_at + gate_ticks);
                                 }
                             }
                             pending_on_at = None;
@@ -577,6 +614,9 @@ pub async fn run(
                                 pending_on_at = Some(clkn + swing);
                                 pending_note = Some(raw);
                             } else {
+                                let expression = glob_expression.get();
+                                let vel = express_velocity(&die, expression);
+                                let gate_ticks = express_gate_ticks(&die, expression);
                                 fire_note(
                                     &midi,
                                     out_jack.as_ref(),
@@ -586,10 +626,11 @@ pub async fn run(
                                     vpo,
                                     range,
                                     raw,
+                                    vel,
                                     &mut note_on,
                                 )
                                 .await;
-                                gate_off_at = Some(clkn + STEP_DIV / 2);
+                                gate_off_at = Some(clkn + gate_ticks);
                             }
                         }
 
@@ -634,7 +675,7 @@ pub async fn run(
                 glob_fader_moved.set(false);
                 buttons.wait_for_up(0).await;
                 if !long_press_fired.get() {
-                    // Short press: reroll the note pool.
+                    // Short press: reroll pool + expression depth (vel/gate jitter).
                     glob_reroll.set(true);
                     glob_reset.set(true);
                 } else if !glob_fader_moved.get() {
@@ -726,20 +767,29 @@ pub async fn run(
             match app.wait_for_scene_event().await {
                 SceneEvent::LoadScene(scene) => {
                     storage.load_from_scene(scene).await;
-                    let (fader_saved, shift_fader_saved, alpha_saved, octaves, muted, reversed) =
-                        storage.query(|s| {
-                            (
-                                s.fader_saved,
-                                s.shift_fader_saved,
-                                s.alpha_saved,
-                                s.octaves,
-                                s.muted,
-                                s.reversed,
-                            )
-                        });
+                    let (
+                        fader_saved,
+                        shift_fader_saved,
+                        alpha_saved,
+                        expression,
+                        octaves,
+                        muted,
+                        reversed,
+                    ) = storage.query(|s| {
+                        (
+                            s.fader_saved,
+                            s.shift_fader_saved,
+                            s.alpha_saved,
+                            s.expression,
+                            s.octaves,
+                            s.muted,
+                            s.reversed,
+                        )
+                    });
                     glob_mutation.set(fader_saved);
                     glob_texture.set(shift_fader_saved);
                     glob_alpha.set(alpha_saved);
+                    glob_expression.set(expression);
                     glob_octaves.set(clamp_octaves(octaves));
                     glob_muted.set(muted);
                     glob_reversed.set(reversed);
@@ -862,6 +912,7 @@ async fn fire_note(
     vpo: VoltPerOct,
     out_range: Range,
     raw: u8,
+    velocity: u16,
     note_on: &mut Option<MidiNote>,
 ) {
     // Quantize via 1V/oct counts derived from the MIDI note, then emit both
@@ -885,7 +936,7 @@ async fn fire_note(
     if let Some(prev) = note_on.take() {
         midi.send_note_off(prev).await;
     }
-    midi.send_note_on(n, 4095).await;
+    midi.send_note_on(n, velocity).await;
     *note_on = Some(n);
     leds.set(0, Led::Bottom, led_color, Brightness::High);
 }
