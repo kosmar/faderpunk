@@ -10,9 +10,10 @@ use serde::{Deserialize, Serialize};
 use libfp::{
     ext::FromValue,
     latch::LatchLayer,
+    quantizer::Pitch,
     utils::{attenuate_bipolar, split_unsigned_value, value_to_index, value_to_resolution},
     AppIcon, Brightness, ClockDivision, Color, Config, Key, MidiCc, MidiChannel, MidiNote, MidiOut,
-    Param, Range, Value, APP_MAX_PARAMS,
+    Note, Param, Range, Value, VoltPerOct, APP_MAX_PARAMS,
 };
 
 use crate::app::{
@@ -20,7 +21,7 @@ use crate::app::{
 };
 
 pub const CHANNELS: usize = 1;
-pub const PARAMS: usize = 13;
+pub const PARAMS: usize = 16;
 
 const LED_BRIGHTNESS: Brightness = Brightness::Mid;
 const VAMP_CAP: usize = 32;
@@ -32,6 +33,9 @@ const NUM_DEGREES: usize = 7;
 /// Shift+Fader index for the Capture clip (after the 8 genres).
 const CAPTURE_SLOT: usize = NUM_GENRES;
 const CAPTURE_COLOR: Color = Color::Rose;
+
+const CV_JACK_OUT: usize = 0;
+const CV_JACK_IN: usize = 1;
 
 /// Same genre set as Grooves (oldest → newest).
 const GENRE_NAMES: &[&str] = &[
@@ -57,9 +61,9 @@ const GENRE_COLORS: [Color; NUM_GENRES] = [
     Color::Blue,   // Dubstep
 ];
 
-const CAPTURE_NAMES: &[&str] = &["16 bars", "8 bars", "4 bars", "2 bars"];
+const CAPTURE_NAMES: &[&str] = &["16 bars", "8 bars", "4 bars", "2 bars", "1 bar"];
 /// Bars for each Capture length enum index.
-const CAPTURE_BARS: [u32; 4] = [16, 8, 4, 2];
+const CAPTURE_BARS: [u32; 5] = [16, 8, 4, 2, 1];
 
 const SCALE_NAMES: &[&str] = &[
     "Ionian",
@@ -106,8 +110,8 @@ const CLOCK_RESOLUTIONS: &[u16] = &[
 ];
 
 pub static CONFIG: Config<PARAMS> = Config::new(
-    "MIDI Vamp",
-    "Chord progressions — perform, capture, or auto vamp",
+    "Chord Vamp",
+    "Chord progressions — perform, shift+long capture, or auto vamp",
     Color::Violet,
     AppIcon::NoteGrid,
 )
@@ -161,6 +165,15 @@ pub static CONFIG: Config<PARAMS> = Config::new(
     ],
 })
 .add_param(Param::Enum {
+    name: "Jack",
+    variants: &["CV Out", "CV In"],
+})
+.add_param(Param::Range {
+    name: "Range",
+    variants: &[Range::_0_10V, Range::_Neg5_5V],
+})
+.add_param(Param::VoltPerOct)
+.add_param(Param::Enum {
     name: "CV Dest",
     variants: &["Macro", "Panic"],
 })
@@ -182,6 +195,9 @@ pub struct Params {
     start_mode: usize,
     capture_len: usize,
     color: Color,
+    cv_jack: usize,
+    range: Range,
+    vpo: VoltPerOct,
     cv_dest: usize,
     cv_att: i32,
 }
@@ -191,13 +207,25 @@ impl AppParams for Params {
         if values.len() < 11 {
             return None;
         }
-        let (cv_dest, cv_att) = if values.len() >= PARAMS {
+        // Legacy (≤13): always CV In, no Jack/Range/VPO. New (16): full jack pack.
+        let (cv_jack, range, vpo, cv_dest, cv_att) = if values.len() >= PARAMS {
             (
+                usize::from_value(values[11]).min(1),
+                Range::from_value(values[12]),
+                VoltPerOct::from_value(values[13]),
+                usize::from_value(values[14]).min(DEST_COUNT - 1),
+                i32::from_value(values[15]).clamp(0, 100),
+            )
+        } else if values.len() >= 13 {
+            (
+                CV_JACK_IN,
+                Range::_Neg5_5V,
+                VoltPerOct::Standard,
                 usize::from_value(values[11]).min(DEST_COUNT - 1),
                 i32::from_value(values[12]).clamp(0, 100),
             )
         } else {
-            (DEST_MACRO, 100)
+            (CV_JACK_IN, Range::_Neg5_5V, VoltPerOct::Standard, DEST_MACRO, 100)
         };
         Some(Self {
             midi_out: MidiOut::from_value(values[0]),
@@ -211,6 +239,9 @@ impl AppParams for Params {
             start_mode: usize::from_value(values[8]),
             capture_len: usize::from_value(values[9]).min(CAPTURE_BARS.len() - 1),
             color: Color::from_value(values[10]),
+            cv_jack,
+            range,
+            vpo,
             cv_dest,
             cv_att,
         })
@@ -229,6 +260,9 @@ impl AppParams for Params {
         vec.push(self.start_mode.into()).unwrap();
         vec.push(self.capture_len.into()).unwrap();
         vec.push(self.color.into()).unwrap();
+        vec.push(self.cv_jack.into()).unwrap();
+        vec.push(self.range.into()).unwrap();
+        vec.push(self.vpo.into()).unwrap();
         vec.push(self.cv_dest.into()).unwrap();
         vec.push(self.cv_att.into()).unwrap();
         vec
@@ -286,7 +320,7 @@ impl AppStorage for Storage {}
 
 #[derive(Clone, Copy)]
 struct GenrePreset {
-    /// Fixed Repeat progression (degrees).
+    /// Classic trope loop — used as default / occasional seed (~20%).
     progression: &'static [u8],
     /// Markov weights from → to (rows sum arbitrary; sampled by weight).
     markov: &'static [[u8; NUM_DEGREES]; NUM_DEGREES],
@@ -410,6 +444,17 @@ fn midi_u8(note: MidiNote) -> u8 {
     u7::from(note).as_int()
 }
 
+fn note_to_pitch(note: u8) -> Pitch {
+    // MIDI note 0 = C-1 → octave -1; MIDI 60 = C4 → octave 4.
+    let note = note.min(127);
+    let octave = (note as i16 / 12) - 1;
+    Pitch {
+        octave: octave as i8,
+        note: Note::from(note % 12),
+        raw: None,
+    }
+}
+
 fn scale_index_to_key(index: usize) -> Key {
     match index {
         1 => Key::Dorian,
@@ -473,21 +518,26 @@ fn build_chord(root_midi: u8, key: Key, degree: u8, voicing: usize) -> Vec<u8, S
 
 fn pick_markov(from: u8, weights: &[[u8; NUM_DEGREES]; NUM_DEGREES], die: &Die) -> u8 {
     let row = &weights[(from as usize) % NUM_DEGREES];
-    let total: u32 = row.iter().map(|&w| w as u32).sum();
+    pick_weighted(row, die).unwrap_or(from)
+}
+
+fn pick_weighted(weights: &[u8; NUM_DEGREES], die: &Die) -> Option<u8> {
+    let total: u32 = weights.iter().map(|&w| w as u32).sum();
     if total == 0 {
-        return from;
+        return None;
     }
     let mut pick = (die.roll() as u32 * total) / 4096;
-    for (i, &w) in row.iter().enumerate() {
+    for (i, &w) in weights.iter().enumerate() {
         if pick < w as u32 {
-            return i as u8;
+            return Some(i as u8);
         }
         pick = pick.saturating_sub(w as u32);
     }
-    (NUM_DEGREES - 1) as u8
+    Some((NUM_DEGREES - 1) as u8)
 }
 
-fn load_genre_into(slots: &mut [u8; VAMP_CAP], genre: usize) -> u8 {
+/// Deterministic classic genre loop (boot / empty storage).
+fn load_classic_into(slots: &mut [u8; VAMP_CAP], genre: usize) -> u8 {
     let g = GenrePreset::get(genre);
     let n = g.progression.len().min(VAMP_CAP);
     slots[..n].copy_from_slice(&g.progression[..n]);
@@ -495,6 +545,52 @@ fn load_genre_into(slots: &mut [u8; VAMP_CAP], genre: usize) -> u8 {
         *s = 0;
     }
     n as u8
+}
+
+/// Genre-biased progression seed: mostly Markov walk, sometimes the classic trope.
+/// Shift+Fader and Auto+Long use this so each pick/reroll feels fresh but on-style.
+fn seed_genre_into(slots: &mut [u8; VAMP_CAP], genre: usize, die: &Die) -> u8 {
+    let g = GenrePreset::get(genre);
+    let n = 8usize.min(VAMP_CAP);
+
+    // ~20%: recognizable canned loop for that genre.
+    if die.roll() < 820 {
+        return load_classic_into(slots, genre);
+    }
+
+    // Start on tonic often; otherwise sample from tonic's Markov row (genre prior).
+    let mut deg = if die.roll() < 2700 {
+        0
+    } else {
+        pick_weighted(&g.markov[0], die).unwrap_or(0)
+    };
+
+    for (i, slot) in slots.iter_mut().enumerate().take(n) {
+        *slot = deg;
+        // Soft phrase reset toward tonic every 4 slots.
+        if (i + 1) % 4 == 0 && die.roll() < 1600 {
+            deg = 0;
+        } else {
+            deg = pick_markov(deg, g.markov, die);
+        }
+    }
+    for s in slots.iter_mut().skip(n) {
+        *s = 0;
+    }
+    // Prefer a dominant/leading tone into the loop-back to i.
+    if die.roll() < 2200 {
+        slots[n - 1] = if die.roll() < 2048 { 4 } else { 6 };
+    }
+    n as u8
+}
+
+/// Fader position at the center of genre/capture bucket `index` of `picks`.
+/// Used only to seed the Alt latch target — live control stores the real fader value.
+fn genre_fader_center(index: usize, picks: usize) -> u16 {
+    let picks = picks.max(1);
+    let i = index.min(picks - 1) as u32;
+    let p = picks as u32;
+    ((((i * 2) + 1) * 4095) / (p * 2)) as u16
 }
 
 /// Build a relative timed clip from the always-record ring (last `bars` bars).
@@ -561,7 +657,7 @@ fn build_clip_from_ring(
     (n as u8, out_deg, out_on, out_dur)
 }
 
-#[embassy_executor::task(pool_size = 4)]
+#[embassy_executor::task(pool_size = 16 / CHANNELS)]
 pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMutex, bool>) {
     let param_store = ParamStore::<Params>::new(
         app.app_id,
@@ -578,6 +674,9 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
             start_mode: 0,
             capture_len: 1, // 8 bars
             color: Color::Violet,
+            cv_jack: CV_JACK_IN,
+            range: Range::_0_10V,
+            vpo: VoltPerOct::Standard,
             cv_dest: DEST_MACRO,
             cv_att: 100,
         },
@@ -618,6 +717,9 @@ pub async fn run(
         start_mode,
         capture_len,
         led_color,
+        cv_jack,
+        range,
+        vpo,
         cv_dest,
         cv_att,
     ) = params.query(|p| {
@@ -633,6 +735,9 @@ pub async fn run(
             p.start_mode,
             p.capture_len.min(CAPTURE_BARS.len() - 1),
             p.color,
+            p.cv_jack.min(1),
+            p.range,
+            p.vpo,
             p.cv_dest.min(DEST_COUNT - 1),
             att_from_pct(p.cv_att),
         )
@@ -649,7 +754,19 @@ pub async fn run(
     let ticks = clock.get_ticker();
     let die = app.use_die();
     let midi = app.use_midi_output(midi_out_cfg, midi_chan, false);
-    let in_jack = app.make_in_jack(0, Range::_Neg5_5V).await;
+    let out_jack = if cv_jack == CV_JACK_OUT {
+        Some(app.make_out_jack(0, range).await)
+    } else {
+        None
+    };
+    let in_jack = if cv_jack == CV_JACK_IN {
+        Some(app.make_in_jack(0, Range::_Neg5_5V).await)
+    } else {
+        None
+    };
+    if let Some(ref jack) = out_jack {
+        jack.set_value(0);
+    }
 
     let glob_latch = app.make_global(LatchLayer::Main);
     let glob_mode_auto = app.make_global(false);
@@ -692,6 +809,9 @@ pub async fn run(
     let glob_clip_bars = app.make_global(8u8);
     let glob_last_genre = app.make_global(genre_param);
     let glob_loop_flash = app.make_global(0u8);
+    // Continuous Alt-layer fader value (not reconstructed from genre index — that
+    // packed all genres into a short span at the top when sweeping down).
+    let glob_genre_fader = app.make_global(0u16);
 
     let (
         st_slots,
@@ -732,7 +852,7 @@ pub async fn run(
     let mut slots = st_slots;
     let mut slot_count = st_count;
     if slot_count == 0 {
-        slot_count = load_genre_into(&mut slots, genre_param);
+        slot_count = load_classic_into(&mut slots, genre_param);
     }
     let genre = if st_genre < NUM_GENRES {
         st_genre
@@ -754,11 +874,15 @@ pub async fn run(
 
     slots_cell.set(slots);
     glob_slot_count.set(slot_count);
-    glob_genre.set(if st_clip_active && st_clip_len > 0 {
-        CAPTURE_SLOT
+    let use_clip_init = st_clip_active && st_clip_len > 0;
+    let genre_init = if use_clip_init { CAPTURE_SLOT } else { genre };
+    let picks_init = if use_clip_init {
+        NUM_GENRES + 1
     } else {
-        genre
-    });
+        NUM_GENRES
+    };
+    glob_genre.set(genre_init);
+    glob_genre_fader.set(genre_fader_center(genre_init, picks_init));
     glob_last_genre.set(genre.min(NUM_GENRES - 1));
     glob_scrub.set(st_scrub);
     glob_tension.set(st_tension);
@@ -1035,7 +1159,7 @@ pub async fn run(
                 // Auto: short = play/pause chord autoplay (global clock is Scene+Shift only)
                 buttons.wait_for_up(0).await;
                 if long_press_fired.get() {
-                    // Capture already handled in long_press
+                    // Long / Shift+Long already handled
                     continue;
                 }
                 let playing = !glob_auto_running.get();
@@ -1057,7 +1181,6 @@ pub async fn run(
 
                 buttons.wait_for_up(0).await;
                 chord_held.set(false);
-                // long-press capture does not need extra handling here
             }
         }
     };
@@ -1066,23 +1189,82 @@ pub async fn run(
         loop {
             let (_chan, shift) = buttons.wait_for_any_long_press().await;
             long_press_fired.set(true);
+
             if shift {
-                // Shift+Long: Panic
-                panic_flag.set(true);
+                if glob_mode_auto.get() {
+                    // Auto Shift+Long: Panic (All Notes/Sound Off)
+                    panic_flag.set(true);
+                    continue;
+                }
+
+                // Perform Shift+Long: capture last N bars → Auto + Play, arm downbeat.
+                // Plain Long stays free so chords can be held indefinitely.
+                close_ring(ticks() as u32);
+                chord_held.set(false);
+                pending_release.set(true);
+
+                let bars = CAPTURE_BARS[capture_len];
+                let now = ticks() as u32;
+                let (n, degs, ons, durs) = build_clip_from_ring(
+                    bars,
+                    now,
+                    ring_len.get() as usize,
+                    ring_write.get() as usize,
+                    &ring_deg.get(),
+                    &ring_on.get(),
+                    &ring_off.get(),
+                    ring_open.get(),
+                );
+
+                if n == 0 {
+                    glob_capture_flash.set(64);
+                    continue;
+                }
+
+                clip_deg_cell.set(degs);
+                clip_on_cell.set(ons);
+                clip_dur_cell.set(durs);
+                glob_clip_len.set(n);
+                glob_clip_bars.set(bars.min(255) as u8);
+                glob_clip_active.set(true);
+                glob_clip_armed.set(true);
+                glob_genre.set(CAPTURE_SLOT);
+                glob_genre_fader.set(genre_fader_center(CAPTURE_SLOT, NUM_GENRES + 1));
+                glob_mode_auto.set(true);
+                glob_auto_running.set(true);
+                glob_capture_flash.set(255);
+
+                storage.modify_and_save(|s| {
+                    s.clip_active = true;
+                    s.clip_len = n;
+                    s.clip_bars = bars.min(255) as u8;
+                    s.clip_deg = degs;
+                    s.clip_on = ons;
+                    s.clip_dur = durs;
+                    s.mode_auto = true;
+                    s.auto_running = true;
+                });
                 continue;
             }
 
             if glob_mode_auto.get() {
-                // Auto Long-Press: clear capture clip, reload genre preset.
+                // Auto Long: clear capture + seed a fresh progression in this genre.
                 glob_clip_active.set(false);
                 glob_clip_armed.set(false);
                 pending_release.set(true);
                 let g = glob_last_genre.get().min(NUM_GENRES - 1);
                 glob_genre.set(g);
+                glob_genre_fader.set(genre_fader_center(g, NUM_GENRES));
                 let mut slots = slots_cell.get();
-                let n = load_genre_into(&mut slots, g);
+                let n = seed_genre_into(&mut slots, g, &die);
                 slots_cell.set(slots);
                 glob_slot_count.set(n);
+                {
+                    let count = n.max(1) as usize;
+                    let idx = value_to_index(glob_scrub.get(), count);
+                    glob_slot_idx.set(idx as u8);
+                    glob_degree.set(slots[idx]);
+                }
                 storage.modify_and_save(|s| {
                     s.clip_active = false;
                     s.clip_len = 0;
@@ -1091,54 +1273,8 @@ pub async fn run(
                     s.slot_count = n;
                 });
                 glob_capture_flash.set(96);
-                continue;
             }
-
-            // Perform Long-Press: capture last N bars as timed clip → Auto + Play, arm downbeat.
-            close_ring(ticks() as u32);
-            chord_held.set(false);
-            pending_release.set(true);
-
-            let bars = CAPTURE_BARS[capture_len];
-            let now = ticks() as u32;
-            let (n, degs, ons, durs) = build_clip_from_ring(
-                bars,
-                now,
-                ring_len.get() as usize,
-                ring_write.get() as usize,
-                &ring_deg.get(),
-                &ring_on.get(),
-                &ring_off.get(),
-                ring_open.get(),
-            );
-
-            if n == 0 {
-                glob_capture_flash.set(64);
-                continue;
-            }
-
-            clip_deg_cell.set(degs);
-            clip_on_cell.set(ons);
-            clip_dur_cell.set(durs);
-            glob_clip_len.set(n);
-            glob_clip_bars.set(bars.min(255) as u8);
-            glob_clip_active.set(true);
-            glob_clip_armed.set(true);
-            glob_genre.set(CAPTURE_SLOT);
-            glob_mode_auto.set(true);
-            glob_auto_running.set(true);
-            glob_capture_flash.set(255);
-
-            storage.modify_and_save(|s| {
-                s.clip_active = true;
-                s.clip_len = n;
-                s.clip_bars = bars.min(255) as u8;
-                s.clip_deg = degs;
-                s.clip_on = ons;
-                s.clip_dur = durs;
-                s.mode_auto = true;
-                s.auto_running = true;
-            });
+            // Perform Long: no-op — chord stays held for as long as the button is down.
         }
     };
 
@@ -1155,22 +1291,7 @@ pub async fn run(
                         storage.query(|s| s.scrub)
                     }
                 }
-                LatchLayer::Alt => {
-                    // Genres + Capture slot (when a clip exists)
-                    let picks = if glob_clip_active.get() && glob_clip_len.get() > 0 {
-                        NUM_GENRES + 1
-                    } else {
-                        NUM_GENRES
-                    };
-                    let g = storage.query(|s| {
-                        if s.clip_active && s.clip_len > 0 && glob_genre.get() == CAPTURE_SLOT {
-                            CAPTURE_SLOT
-                        } else {
-                            s.genre as usize
-                        }
-                    });
-                    ((g * 4095) / picks.max(1)) as u16
-                }
+                LatchLayer::Alt => glob_genre_fader.get(),
                 LatchLayer::Third => storage.query(|s| s.div_fader),
             };
             if let Some(new_value) = latch.update(fader.get_value(), layer, target) {
@@ -1190,7 +1311,9 @@ pub async fn run(
                         }
                     }
                     LatchLayer::Alt => {
-                        let picks = if glob_clip_active.get() && glob_clip_len.get() > 0 {
+                        // Keep continuous fader value as latch target (symmetric up/down).
+                        glob_genre_fader.set(new_value);
+                        let picks = if glob_clip_len.get() > 0 {
                             NUM_GENRES + 1
                         } else {
                             NUM_GENRES
@@ -1211,9 +1334,15 @@ pub async fn run(
                             glob_clip_armed.set(false);
                             pending_release.set(true);
                             let mut slots = slots_cell.get();
-                            let n = load_genre_into(&mut slots, g);
+                            let n = seed_genre_into(&mut slots, g, &die);
                             slots_cell.set(slots);
                             glob_slot_count.set(n);
+                            {
+                                let count = n.max(1) as usize;
+                                let idx = value_to_index(glob_scrub.get(), count);
+                                glob_slot_idx.set(idx as u8);
+                                glob_degree.set(slots[idx]);
+                            }
                             storage.modify_and_save(|s| {
                                 s.genre = g as u8;
                                 s.slots = slots;
@@ -1233,27 +1362,47 @@ pub async fn run(
 
     let led_handler = async {
         let mut prev_gate_high = false;
+        let mut last_pitch_counts = u16::MAX;
         loop {
             app.delay_millis(1).await;
-            let in_val = attenuate_bipolar(in_jack.get_value(), cv_att);
-            glob_cv_val.set(in_val);
-            if cv_dest == DEST_PANIC {
-                let high = in_val >= TRIG_HIGH;
-                if high && !prev_gate_high {
-                    panic_flag.set(true);
+
+            // CV Out: root of the current chord degree (always tracks selection).
+            if let Some(ref jack) = out_jack {
+                let degree = glob_degree.get();
+                let notes = build_chord(root_midi, key, degree, voicing);
+                if let Some(&n) = notes.first() {
+                    let counts = note_to_pitch(n).as_counts(range, vpo);
+                    if counts != last_pitch_counts {
+                        jack.set_value(counts);
+                        last_pitch_counts = counts;
+                    }
                 }
-                prev_gate_high = high;
+            }
+
+            if let Some(ref jack) = in_jack {
+                let in_val = attenuate_bipolar(jack.get_value(), cv_att);
+                glob_cv_val.set(in_val);
+                if cv_dest == DEST_PANIC {
+                    let high = in_val >= TRIG_HIGH;
+                    if high && !prev_gate_high {
+                        panic_flag.set(true);
+                    }
+                    prev_gate_high = high;
+                } else {
+                    prev_gate_high = false;
+                    // Macro: Perform scrub / Auto tension (tension applied at clock read).
+                    if !glob_mode_auto.get() {
+                        let scrub = mod_u16(glob_scrub.get(), in_val);
+                        let count = glob_slot_count.get().max(1) as usize;
+                        let idx = value_to_index(scrub, count);
+                        glob_slot_idx.set(idx as u8);
+                        let slots_now = slots_cell.get();
+                        glob_degree.set(slots_now[idx]);
+                    }
+                }
             } else {
                 prev_gate_high = false;
-                // Macro: Perform scrub / Auto tension (tension applied at clock read).
-                if !glob_mode_auto.get() {
-                    let scrub = mod_u16(glob_scrub.get(), in_val);
-                    let count = glob_slot_count.get().max(1) as usize;
-                    let idx = value_to_index(scrub, count);
-                    glob_slot_idx.set(idx as u8);
-                    let slots_now = slots_cell.get();
-                    glob_degree.set(slots_now[idx]);
-                }
+                glob_cv_val.set(2047);
             }
             let layer = if buttons.is_shift_pressed() && !buttons.is_button_pressed(0) {
                 LatchLayer::Alt
@@ -1306,19 +1455,20 @@ pub async fn run(
                     }
                 }
                 LatchLayer::Alt => {
-                    let picks = if glob_clip_active.get() && glob_clip_len.get() > 0 {
+                    // Live fader preview so colors track both directions across full travel.
+                    let picks = if glob_clip_len.get() > 0 {
                         NUM_GENRES + 1
                     } else {
                         NUM_GENRES
                     };
-                    let g = glob_genre.get().min(picks - 1);
+                    let fader_now = fader.get_value();
+                    let g = value_to_index(fader_now, picks);
                     let color = if g == CAPTURE_SLOT {
                         CAPTURE_COLOR
                     } else {
                         GENRE_COLORS[g.min(NUM_GENRES - 1)]
                     };
-                    let meter = (g as u16 * 4095) / (picks as u16).max(1);
-                    let led = split_unsigned_value(meter);
+                    let led = split_unsigned_value(fader_now);
                     leds.set(0, Led::Top, color, Brightness::Custom(led[0]));
                     leds.set(0, Led::Bottom, color, Brightness::Custom(led[1]));
                     if flash == 0 {
@@ -1396,7 +1546,14 @@ pub async fn run(
                     let use_clip = clip_active && clip_len > 0;
                     glob_clip_active.set(use_clip);
                     glob_clip_armed.set(use_clip);
-                    glob_genre.set(if use_clip { CAPTURE_SLOT } else { g });
+                    let genre_now = if use_clip { CAPTURE_SLOT } else { g };
+                    let picks_now = if clip_len > 0 {
+                        NUM_GENRES + 1
+                    } else {
+                        NUM_GENRES
+                    };
+                    glob_genre.set(genre_now);
+                    glob_genre_fader.set(genre_fader_center(genre_now, picks_now));
                     panic_flag.set(true);
                 }
                 SceneEvent::SaveScene(scene) => {
