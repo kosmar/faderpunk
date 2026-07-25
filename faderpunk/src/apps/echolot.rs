@@ -932,14 +932,34 @@ pub async fn run(
                         activity_glob.set(pulse);
                         pong_side_glob.set(event.out_target);
                         if feedback_ok && event.generation < MAX_REPEATS {
-                            if let Some(next_vel) = next_feedback_velocity(event.velocity, feedback)
+                            let next_gen = event.generation.saturating_add(1);
+                            if let Some(next_vel) =
+                                next_feedback_velocity(event.velocity, feedback)
                             {
-                                let next_gen = event.generation.saturating_add(1);
                                 enqueue(
                                     &mut queue,
                                     EventKind::NoteOn,
                                     event.base_note,
                                     next_vel,
+                                    0,
+                                    next_gen,
+                                    base_interval,
+                                    delay_ms,
+                                    delay_ticks,
+                                    event.due_ms,
+                                    event.due_tick,
+                                );
+                            } else if ping_pong && event.generation == 0 {
+                                // Ping-Pong with Alt feedback at 0: still one cross
+                                // to Out B so Pong is audible (classic stereo tap).
+                                let seed = ((event.velocity as u32 * 3) / 4)
+                                    .max(VELOCITY_FLOOR as u32)
+                                    as u16;
+                                enqueue(
+                                    &mut queue,
+                                    EventKind::NoteOn,
+                                    event.base_note,
+                                    seed,
                                     0,
                                     next_gen,
                                     base_interval,
@@ -965,21 +985,27 @@ pub async fn run(
                             sounding.swap_remove(pos);
                         }
                         // Mirror NoteOn trail length so orphan NoteOffs don't cut a re-struck note.
-                        if feedback_ok && event.generation < max_feedback_repeats(feedback) {
+                        if feedback_ok {
                             let next_gen = event.generation.saturating_add(1);
-                            enqueue(
-                                &mut queue,
-                                EventKind::NoteOff,
-                                event.base_note,
-                                0,
-                                0,
-                                next_gen,
-                                base_interval,
-                                delay_ms,
-                                delay_ticks,
-                                event.due_ms,
-                                event.due_tick,
-                            );
+                            let trail = max_feedback_repeats(feedback);
+                            let seed_pong = ping_pong
+                                && event.generation == 0
+                                && trail == 0;
+                            if event.generation < trail || seed_pong {
+                                enqueue(
+                                    &mut queue,
+                                    EventKind::NoteOff,
+                                    event.base_note,
+                                    0,
+                                    0,
+                                    next_gen,
+                                    base_interval,
+                                    delay_ms,
+                                    delay_ticks,
+                                    event.due_ms,
+                                    event.due_tick,
+                                );
+                            }
                         }
                     }
                     EventKind::CvValue => {
