@@ -498,7 +498,8 @@ pub async fn run(
     });
 
     let clocked = delay_mode == 1;
-    let ping_pong = routing == 1 && io_mode == IO_MIDI_MIDI;
+    // Ping-Pong: two MIDI outs. MIDI→MIDI and CV→MIDI (MIDI→CV has only one jack).
+    let ping_pong = routing == 1 && matches!(io_mode, IO_MIDI_MIDI | IO_CV_MIDI);
     let sig = effective_signal(io_mode, signal);
     let resolution = resolution_for_mode(CLOCK_DIVISION_MODE);
     let base_note_cfg = midi_note_u8(midi_note);
@@ -1014,10 +1015,14 @@ pub async fn run(
                                 jack.set_value(event.cv_value);
                             }
                         } else if io_mode == IO_CV_MIDI {
-                            midi_a.send_cc(midi_cc, event.cv_value).await;
+                            if event.out_target == 0 {
+                                midi_a.send_cc(midi_cc, event.cv_value).await;
+                            } else {
+                                midi_b.send_cc(midi_cc, event.cv_value).await;
+                            }
                         }
                         activity_glob.set(pulse);
-                        pong_side_glob.set(0);
+                        pong_side_glob.set(event.out_target);
                     }
                     EventKind::GateHigh => {
                         if let Some(jack) = out_jack.as_ref() {
