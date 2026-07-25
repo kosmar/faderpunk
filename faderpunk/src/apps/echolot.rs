@@ -571,6 +571,9 @@ pub async fn run(
         let mut recent_emit: Vec<RecentEmit, RECENT_EMIT_CAP> = Vec::new();
         let mut prev_gate = false;
         let mut last_cc_gate: u16 = u16::MAX;
+        // CV→CC Ping-Pong: alternate successive delayed CC values across A/B
+        // (unlike notes, CC events are gen-0 one-shots — no feedback trail).
+        let mut cc_pong_next = false;
         // Free-running delay-period metronome (blinks even with empty queue).
         let mut next_metro_ms = Instant::now().as_millis();
         let mut next_metro_tick = ticks() as u32;
@@ -828,13 +831,18 @@ pub async fn run(
                         let g = midi_gate(inval, false);
                         if g != last_cc_gate {
                             last_cc_gate = g;
+                            // Ping-Pong: odd updates → Out B (generation 1).
+                            let gen = if ping_pong && cc_pong_next { 1 } else { 0 };
+                            if ping_pong {
+                                cc_pong_next = !cc_pong_next;
+                            }
                             enqueue(
                                 &mut queue,
                                 EventKind::CvValue,
                                 0,
                                 0,
                                 inval,
-                                0,
+                                gen,
                                 0,
                                 delay_ms,
                                 delay_ticks,
