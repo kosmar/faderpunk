@@ -13,24 +13,32 @@ use libfp::{
     AppIcon, Brightness, ClockDivision, Color, Config, MidiCc, MidiChannel, MidiNote, MidiOut,
     Param, Range, Value, APP_MAX_PARAMS,
 };
+use midly::num::u7;
 
 use crate::app::{
     App, AppParams, AppStorage, ClockEvent, Led, ManagedStorage, ParamStore, SceneEvent,
 };
 
 pub const CHANNELS: usize = 1;
-pub const PARAMS: usize = 11;
+pub const PARAMS: usize = 12;
 
 const LED_BRIGHTNESS: Brightness = Brightness::Mid;
 /// Reverse gesture LED feedback length (white↔off fade), same as Heat Pump invert.
 const REVERSE_FADE_MS: u16 = 500;
 
 /// Fibonacci gaps (in steps) between consecutive hits.
-const FIB: [u16; 10] = [1, 1, 2, 3, 5, 8, 13, 21, 34, 55];
+const FIB: [u16; 11] = [1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89];
 const MIN_CYCLE: u32 = 8;
-const MAX_CYCLE: u32 = 32;
+/// Max phrase length in steps. Hit mask is `u128`, so this must be ≤ 128.
+const MAX_CYCLE: u32 = 128;
 /// Pitch mode: cap intervals to two octaves.
 const MAX_SEMIS: u16 = 24;
+
+/// Same grid as Heat Pump: tick spacing at 24 PPQN, slow → fast.
+const SPEED_DIVS: [u32; 10] = [96, 48, 36, 24, 18, 16, 12, 8, 6, 3];
+const SPEED_COUNT: u8 = SPEED_DIVS.len() as u8;
+/// Default Speed enum index = 16th (div 6).
+const SPEED_DEFAULT: u8 = 8;
 
 /// Output modes, cycled on the device via shift + long press.
 const MODE_GATE_NOTE: u8 = 0;
@@ -76,7 +84,10 @@ pub static CONFIG: Config<PARAMS> = Config::new(
 })
 .add_param(Param::Enum {
     name: "Speed",
-    variants: &["16th", "8th", "Quarter"],
+    // Heat Pump divisions (24 PPQN), slow → fast.
+    variants: &[
+        "1/1", "1/2", "1/4.", "1/4", "1/8.", "1/4T", "1/8", "1/8T", "1/16", "1/32",
+    ],
 })
 .add_param(Param::Color {
     name: "Color",
@@ -108,6 +119,10 @@ pub static CONFIG: Config<PARAMS> = Config::new(
     name: "CV Att",
     min: 0,
     max: 100,
+})
+.add_param(Param::Enum {
+    name: "Mode",
+    variants: &["Note", "CC", "Pitch", "Phi"],
 });
 
 pub struct Params {
@@ -122,6 +137,8 @@ pub struct Params {
     range: Range,
     cv_dest: usize,
     cv_att: i32,
+    /// 0 = Note, 1 = CC, 2 = Pitch 12-TET, 3 = φ pitch.
+    mode: usize,
 }
 
 impl AppParams for Params {
@@ -129,7 +146,8 @@ impl AppParams for Params {
         if values.len() < 7 {
             return None;
         }
-        let (cv_jack, range, cv_dest, cv_att) = if values.len() >= PARAMS {
+        // Indices 7..=10 added with CV jack; 11 = Mode. Accept older layouts.
+        let (cv_jack, range, cv_dest, cv_att) = if values.len() >= 11 {
             (
                 usize::from_value(values[7]).min(1),
                 Range::from_value(values[8]),
@@ -138,6 +156,11 @@ impl AppParams for Params {
             )
         } else {
             (CV_JACK_OUT, Range::_0_10V, DEST_DEPTH, 100)
+        };
+        let mode = if values.len() >= PARAMS {
+            usize::from_value(values[11]).min(3)
+        } else {
+            MODE_GATE_NOTE as usize
         };
         Some(Self {
             midi_channel: MidiChannel::from_value(values[0]),
@@ -151,6 +174,7 @@ impl AppParams for Params {
             range,
             cv_dest,
             cv_att,
+            mode,
         })
     }
 
@@ -167,6 +191,7 @@ impl AppParams for Params {
         vec.push(self.range.into()).unwrap();
         vec.push(self.cv_dest.into()).unwrap();
         vec.push(self.cv_att.into()).unwrap();
+        vec.push(self.mode.into()).unwrap();
         vec
     }
 }
@@ -181,7 +206,7 @@ pub struct Storage {
     reversed: bool,
     /// 0 = gate+note, 1 = gate+CC, 2 = pitch 12-TET, 3 = pitch φ.
     out_mode: u8,
-    /// 0 = 16th, 1 = 8th, 2 = quarter; 255 = follow the Speed param.
+    /// Speed index into `SPEED_DIVS` (0..=9); 255 = follow the Speed param.
     speed_saved: u8,
 }
 
@@ -209,7 +234,7 @@ fn depth_from_value(value: u16) -> u32 {
 }
 
 /// Gaps used to fill one cycle of length `cycle` (forward Fibonacci order).
-fn cycle_gaps(cycle: u32, depth: u32) -> heapless::Vec<u16, 32> {
+fn cycle_gaps(cycle: u32, depth: u32) -> heapless::Vec<u16, { MAX_CYCLE as usize }> {
     let mut gaps = heapless::Vec::new();
     let depth = depth.max(1) as usize;
     let mut pos = 0u32;
@@ -228,18 +253,18 @@ fn cycle_gaps(cycle: u32, depth: u32) -> heapless::Vec<u16, 32> {
 /// Precompute the hit mask for one cycle. Forward: cumulative Fibonacci gaps
 /// until ≥ N. Reverse: the *same* gaps that filled this cycle, in reverse
 /// order (not FIB[depth-1]…0 from the depth window — that ignored N).
-fn build_mask(cycle: u32, depth: u32, reversed: bool) -> u32 {
+fn build_mask(cycle: u32, depth: u32, reversed: bool) -> u128 {
     let mut gaps = cycle_gaps(cycle, depth);
     if reversed {
         gaps.reverse();
     }
-    let mut mask = 0u32;
+    let mut mask = 0u128;
     let mut pos = 0u32;
     for &g in gaps.iter() {
         if pos >= cycle {
             break;
         }
-        mask |= 1 << pos;
+        mask |= 1u128 << pos;
         pos += g as u32;
     }
     mask
@@ -273,6 +298,21 @@ fn cents_to_counts(cents: u32) -> u16 {
     (cents * 4095 / 12_000).min(4095) as u16
 }
 
+fn midi_note_num(n: MidiNote) -> u8 {
+    u7::from(n).as_int()
+}
+
+/// Absolute 1V/oct CV for a MIDI note (0V ≈ MIDI 0 / C-1).
+fn midi_note_to_counts(n: MidiNote) -> u16 {
+    semis_to_counts(u16::from(midi_note_num(n)).min(120))
+}
+
+/// Absolute 1V/oct CV for base MIDI note + cent offset (φ mode).
+fn midi_cents_to_counts(base: MidiNote, cents_offset: u32) -> u16 {
+    let abs = u32::from(midi_note_num(base)) * 100 + cents_offset;
+    cents_to_counts(abs.min(12_000))
+}
+
 /// Nearest MIDI note + pitch bend (±2 semitone range assumed) for a
 /// cent offset above `base`.
 fn note_and_bend(base: MidiNote, cents_offset: u32) -> (MidiNote, u16) {
@@ -288,12 +328,27 @@ fn is_pitch_mode(mode: u8) -> bool {
     mode == MODE_PITCH || mode == MODE_PITCH_PHI
 }
 
-/// Ticks per step at 24 PPQN: 16th / 8th / quarter.
 fn div_for_speed(speed: u8) -> u32 {
-    match speed {
-        1 => 12,
-        2 => 24,
-        _ => 6,
+    SPEED_DIVS[(speed.min(SPEED_COUNT - 1)) as usize]
+}
+
+/// Map a fader value to a speed index. Top of travel = fastest (Heat Pump order).
+fn speed_from_fader(value: u16) -> u8 {
+    ((value as u32 * SPEED_COUNT as u32) / 4096).min(SPEED_COUNT as u32 - 1) as u8
+}
+
+/// Fader latch target: center of the zone for `speed`.
+fn fader_for_speed(speed: u8) -> u16 {
+    let i = speed.min(SPEED_COUNT - 1) as u32;
+    ((i * 2 + 1) * 4096 / (SPEED_COUNT as u32 * 2)) as u16
+}
+
+/// Top LED while editing speed: orange = triplet, yellow = dotted, cyan = straight.
+fn speed_led_color(speed: u8) -> Color {
+    match div_for_speed(speed) {
+        8 | 16 => Color::Orange,  // 1/8T, 1/4T
+        18 | 36 => Color::Yellow, // dotted
+        _ => Color::Cyan,
     }
 }
 
@@ -317,12 +372,13 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
             note: MidiNote::from(36),
             cc: MidiCc::default(),
             gatel: 50,
-            speed: 0,
+            speed: SPEED_DEFAULT as usize,
             color: Color::Violet,
             cv_jack: CV_JACK_OUT,
             range: Range::_0_10V,
             cv_dest: DEST_DEPTH,
             cv_att: 100,
+            mode: MODE_GATE_NOTE as usize,
         },
     );
     let storage = ManagedStorage::<Storage>::new(app.app_id, app.layout_id);
@@ -349,7 +405,7 @@ pub async fn run(
     params: &ParamStore<Params>,
     storage: &ManagedStorage<Storage>,
 ) {
-    let (midi_out, midi_chan, note, cc, gatel, param_speed, led_color, cv_jack, range, cv_dest, cv_att) =
+    let (midi_out, midi_chan, note, cc, gatel, param_speed, led_color, cv_jack, range, cv_dest, cv_att, param_mode) =
         params.query(|p| {
             (
                 p.midi_out,
@@ -363,6 +419,7 @@ pub async fn run(
                 p.range,
                 p.cv_dest.min(DEST_COUNT - 1),
                 att_from_pct(p.cv_att),
+                p.mode.min(3) as u8,
             )
         });
 
@@ -378,7 +435,7 @@ pub async fn run(
     let glob_reversed = app.make_global(false);
     let glob_cycle = app.make_global(16_u32);
     let glob_depth = app.make_global(5_u32);
-    let glob_mask = app.make_global(0_u32);
+    let glob_mask = app.make_global(0_u128);
     let glob_mode = app.make_global(MODE_GATE_NOTE);
     let glob_speed = app.make_global(0_u8);
     let glob_reset = app.make_global(false);
@@ -390,7 +447,7 @@ pub async fn run(
     // true = none→white, false = white→none.
     let glob_reverse_fade_up = app.make_global(false);
 
-    let (fader_saved, shift_fader_saved, muted, reversed, out_mode, speed_saved) =
+    let (fader_saved, shift_fader_saved, muted, reversed, _stored_mode, speed_saved) =
         storage.query(|s| {
             (
                 s.fader_saved,
@@ -406,52 +463,49 @@ pub async fn run(
     let glob_cycle_raw = app.make_global(shift_fader_saved);
     let glob_cv_val = app.make_global(2047u16);
 
-    // Both handles address the same port; the hardware mode (GPO vs DAC)
-    // follows whichever make_* call ran last. Reconfigured on mode toggle.
+    // Mode param is source of truth on spawn (configurator / editor / Shift+long
+    // all write it). Keep scene storage in sync so LoadScene stays coherent.
+    let out_mode = param_mode;
+    storage.modify_and_save(|s| s.out_mode = out_mode);
+
+    // One jack, one role: Note/CC → gate GPO; Pitch/Phi → pitch DAC; In → CV mod.
+    // Do not configure DAC then GPO on the same port (that left Note mode silent
+    // when the final GPO bring-up raced the DAC setup on some boots).
     // When Jack=CV In, skip outs entirely (MIDI-first).
-    let cv_out = if cv_jack == CV_JACK_OUT {
-        let j = app.make_out_jack(0, range).await;
-        Some(j)
+    let (cv_out, gate_out) = if cv_jack == CV_JACK_OUT {
+        if is_pitch_mode(out_mode) {
+            let j = app.make_out_jack(0, range).await;
+            j.set_value(0);
+            (Some(j), None)
+        } else {
+            let g = app.make_gate_jack(0, 4095).await;
+            // make_gate_jack drives the port high on configure; force known-off
+            // (also clears any note left sounding by a prior run() dropped
+            // mid-gate, e.g. on a param change respawn).
+            g.set_low().await;
+            (None, Some(g))
+        }
     } else {
-        None
-    };
-    let gate_out = if cv_jack == CV_JACK_OUT {
-        Some(app.make_gate_jack(0, 4095).await)
-    } else {
-        None
+        (None, None)
     };
     let cv_in = if cv_jack == CV_JACK_IN {
         Some(app.make_in_jack(0, Range::_Neg5_5V).await)
     } else {
         None
     };
-    if cv_jack == CV_JACK_OUT && is_pitch_mode(out_mode) {
-        app.make_out_jack(0, range).await;
-        if let Some(ref j) = cv_out {
-            j.set_value(0);
-        }
-    }
 
-    // make_gate_jack drives the port high on configure; force a known-off
-    // state (also clears any note left sounding by a prior run() that was
-    // dropped mid-gate, e.g. on a param change respawn).
     midi.send_note_off(note).await;
     if is_pitch_mode(out_mode) {
         midi.send_pitch_bend(8192).await;
-    }
-    if cv_jack == CV_JACK_OUT && !is_pitch_mode(out_mode) {
-        if let Some(ref gate_jack) = gate_out {
-            gate_jack.set_low().await;
-        }
     }
 
     glob_muted.set(muted);
     glob_reversed.set(reversed);
     glob_mode.set(out_mode);
-    glob_speed.set(if speed_saved <= 2 {
+    glob_speed.set(if speed_saved < SPEED_COUNT {
         speed_saved
     } else {
-        param_speed as u8
+        (param_speed as u8).min(SPEED_COUNT - 1)
     });
     glob_depth.set(depth_from_value(fader_saved));
     glob_cycle.set(cycle_from_value(shift_fader_saved));
@@ -506,6 +560,8 @@ pub async fn run(
                     let clkn = ticks() as u32;
 
                     // Mode changed on the device: reconfigure the jack.
+                    // Param save respawns run() shortly after; this covers the
+                    // window until then (and keeps hardware in the right mode).
                     let mode = glob_mode.get();
                     if mode != cached_mode {
                         if cv_jack == CV_JACK_OUT {
@@ -546,7 +602,7 @@ pub async fn run(
                             step = 0;
                         }
 
-                        let hit = glob_mask.get() & (1 << step) != 0;
+                        let hit = glob_mask.get() & (1u128 << step) != 0;
                         if hit && !glob_muted.get() {
                             match cached_mode {
                                 MODE_GATE_CC => {
@@ -561,8 +617,12 @@ pub async fn run(
                                         glob_depth.get(),
                                         glob_reversed.get(),
                                     );
-                                    if let Some(ref cv_jack) = cv_out { cv_jack.set_value(semis_to_counts(semis)); }
                                     let n = { note }.transpose(semis as i8);
+                                    // Absolute 1V/oct for the sounded note (not the
+                                    // tiny interval-only voltage, which read as "no signal").
+                                    if let Some(ref cv_jack) = cv_out {
+                                        cv_jack.set_value(midi_note_to_counts(n));
+                                    }
                                     midi.send_note_on(n, 4095).await;
                                     note_on = Some(n);
                                 }
@@ -574,8 +634,10 @@ pub async fn run(
                                         glob_reversed.get(),
                                     );
                                     let cents = (gap as u32 * PHI_CENTS).min(2400);
-                                    if let Some(ref cv_jack) = cv_out { cv_jack.set_value(cents_to_counts(cents)); }
                                     let (n, bend) = note_and_bend(note, cents);
+                                    if let Some(ref cv_jack) = cv_out {
+                                        cv_jack.set_value(midi_cents_to_counts(note, cents));
+                                    }
                                     midi.send_pitch_bend(bend).await;
                                     midi.send_note_on(n, 4095).await;
                                     note_on = Some(n);
@@ -632,12 +694,12 @@ pub async fn run(
                             leds.set(0, Led::Top, Color::Red, Brightness::Custom(norm));
                         }
                         LatchLayer::Third => {
-                            let speed_color = match glob_speed.get() {
-                                0 => Color::Cyan,   // 16th
-                                1 => Color::Yellow, // 8th
-                                _ => Color::Orange, // quarter
-                            };
-                            leds.set(0, Led::Top, speed_color, LED_BRIGHTNESS);
+                            leds.set(
+                                0,
+                                Led::Top,
+                                speed_led_color(glob_speed.get()),
+                                LED_BRIGHTNESS,
+                            );
                         }
                     }
                 }
@@ -699,10 +761,12 @@ pub async fn run(
             long_press_fired.set(true);
 
             if buttons.is_shift_pressed() {
-                // Shift + long press: cycle output mode (Note / CC / Pitch).
+                // Shift + long press: cycle output mode (Note / CC / Pitch / Phi).
                 let mode = (glob_mode.get() + 1) % 4;
                 glob_mode.set(mode);
                 storage.modify_and_save(|s| s.out_mode = mode);
+                // Playground ParamStore: update() (main renamed this to modify_and_save).
+                params.update(|p| p.mode = mode as usize).await;
                 if !glob_muted.get() {
                     leds.set(0, Led::Button, mode_color(mode, led_color), LED_BRIGHTNESS);
                 }
@@ -725,8 +789,7 @@ pub async fn run(
             let target_value = match latch_layer {
                 LatchLayer::Main => storage.query(|s| s.fader_saved),
                 LatchLayer::Alt => storage.query(|s| s.shift_fader_saved),
-                // Center of the current speed's fader zone (up = 16th, down = quarter)
-                LatchLayer::Third => (2 - glob_speed.get()) as u16 * 1365 + 683,
+                LatchLayer::Third => fader_for_speed(glob_speed.get()),
             };
 
             if let Some(new_value) = latch.update(faders.get_value(), latch_layer, target_value) {
@@ -752,9 +815,9 @@ pub async fn run(
                         storage.modify_and_save(|s| s.shift_fader_saved = new_value);
                     }
                     LatchLayer::Third => {
-                        // Button held + fader: pick speed (up = 16th, down = quarter).
+                        // Button held + fader: pick speed (up = fast, Heat Pump grid).
                         glob_fader_moved.set(true);
-                        let speed = (2u8).saturating_sub((new_value / 1366).min(2) as u8);
+                        let speed = speed_from_fader(new_value);
                         if speed != glob_speed.get() {
                             glob_speed.set(speed);
                             storage.modify_and_save(|s| s.speed_saved = speed);
@@ -785,8 +848,11 @@ pub async fn run(
                     glob_muted.set(muted);
                     glob_reversed.set(reversed);
                     glob_mode.set(out_mode);
-                    if speed_saved <= 2 {
+                    params.update(|p| p.mode = out_mode as usize).await;
+                    if speed_saved < SPEED_COUNT {
                         glob_speed.set(speed_saved);
+                    } else {
+                        glob_speed.set((param_speed as u8).min(SPEED_COUNT - 1));
                     }
                     glob_fader_raw.set(fader_saved);
                     glob_cycle_raw.set(shift_fader_saved);
