@@ -450,6 +450,13 @@ pub async fn run(
     let glob_reverse_fade = app.make_global(0u16);
     let glob_reverse_fade_up = app.make_global(false);
     let glob_reload_pool = app.make_global(false);
+    // Clock watch → voice engine (never await MIDI/quantizer inside the clock subscriber).
+    // Same isolation pattern as Chord Vamp — keeps USB MIDI from stalling the clock path.
+    let pending_fire = app.make_global(false);
+    let pending_raw = app.make_global(0u8);
+    let pending_vel = app.make_global(0u16);
+    let pending_note_off = app.make_global(false);
+    let pending_silence = app.make_global(false);
 
     // Clear any note left sounding by a prior run() that was dropped mid-gate
     // (e.g. on a param-change respawn) — same MIDI hygiene as Golden Gate.
@@ -476,8 +483,29 @@ pub async fn run(
     let _ = density0;
     glob_phrase.set(phrase0);
 
+    let schedule_hit = |clkn: u32,
+                        raw: u8,
+                        swing: u32,
+                        step: usize,
+                        pending_on_at: &mut Option<u32>,
+                        pending_note: &mut Option<u8>,
+                        gate_off_at: &mut Option<u32>| {
+        if glob_muted.get() {
+            return;
+        }
+        if swing > 0 && (step % 2 == 1) {
+            *pending_on_at = Some(clkn + swing);
+            *pending_note = Some(raw);
+        } else {
+            let expression = glob_expression.get();
+            pending_raw.set(raw);
+            pending_vel.set(express_velocity(&die, expression));
+            pending_fire.set(true);
+            *gate_off_at = Some(clkn + express_gate_ticks(&die, expression));
+        }
+    };
+
     let fut_clock = async {
-        let mut note_on: Option<MidiNote> = None;
         let mut pool = storage.query(|s| s.pool);
         let mut step: usize = 0;
         let mut pending_on_at: Option<u32> = None;
@@ -487,17 +515,14 @@ pub async fn run(
         loop {
             match clock.wait_for_event(ClockDivision::_1).await {
                 ClockEvent::Reset | ClockEvent::Stop => {
-                    if let Some(n) = note_on.take() {
-                        midi.send_note_off(n).await;
-                    }
                     pending_on_at = None;
                     pending_note = None;
                     gate_off_at = None;
+                    pending_fire.set(false);
+                    pending_note_off.set(false);
+                    pending_silence.set(true);
                     step = 0;
                     glob_reset.set(false);
-                    if let Some(ref jack) = out_jack {
-        jack.set_value(0);
-    }
                     leds.unset(0, Led::Top);
                     leds.unset(0, Led::Bottom);
                 }
@@ -532,13 +557,10 @@ pub async fn run(
                         });
                     }
 
-                    // Gate off
+                    // Gate off — flag only; voice engine owns MIDI.
                     if let Some(off_at) = gate_off_at {
                         if clkn >= off_at {
-                            if let Some(n) = note_on.take() {
-                                midi.send_note_off(n).await;
-                            }
-                            leds.set(0, Led::Bottom, led_color, Brightness::Off);
+                            pending_note_off.set(true);
                             gate_off_at = None;
                         }
                     }
@@ -549,22 +571,11 @@ pub async fn run(
                             if let Some(raw) = pending_note.take() {
                                 if !glob_muted.get() {
                                     let expression = glob_expression.get();
-                                    let vel = express_velocity(&die, expression);
-                                    let gate_ticks = express_gate_ticks(&die, expression);
-                                    fire_note(
-                                        &midi,
-                                        out_jack.as_ref(),
-                                        &quantizer,
-                                        &leds,
-                                        led_color,
-                                        vpo,
-                                        range,
-                                        raw,
-                                        vel,
-                                        &mut note_on,
-                                    )
-                                    .await;
-                                    gate_off_at = Some(on_at + gate_ticks);
+                                    pending_raw.set(raw);
+                                    pending_vel.set(express_velocity(&die, expression));
+                                    pending_fire.set(true);
+                                    gate_off_at =
+                                        Some(on_at + express_gate_ticks(&die, expression));
                                 }
                             }
                             pending_on_at = None;
@@ -610,28 +621,15 @@ pub async fn run(
                         let hit = die.roll() < density && !glob_muted.get();
 
                         if hit {
-                            if swing > 0 && (step % 2 == 1) {
-                                pending_on_at = Some(clkn + swing);
-                                pending_note = Some(raw);
-                            } else {
-                                let expression = glob_expression.get();
-                                let vel = express_velocity(&die, expression);
-                                let gate_ticks = express_gate_ticks(&die, expression);
-                                fire_note(
-                                    &midi,
-                                    out_jack.as_ref(),
-                                    &quantizer,
-                                    &leds,
-                                    led_color,
-                                    vpo,
-                                    range,
-                                    raw,
-                                    vel,
-                                    &mut note_on,
-                                )
-                                .await;
-                                gate_off_at = Some(clkn + gate_ticks);
-                            }
+                            schedule_hit(
+                                clkn,
+                                raw,
+                                swing,
+                                step,
+                                &mut pending_on_at,
+                                &mut pending_note,
+                                &mut gate_off_at,
+                            );
                         }
 
                         // Top LED: progress through the phrase (Main layer).
@@ -653,6 +651,54 @@ pub async fn run(
                     }
                 }
                 _ => {}
+            }
+        }
+    };
+
+    let voice = async {
+        let mut note_on: Option<MidiNote> = None;
+        loop {
+            app.delay_millis(1).await;
+
+            if pending_silence.get() {
+                pending_silence.set(false);
+                pending_fire.set(false);
+                pending_note_off.set(false);
+                if let Some(n) = note_on.take() {
+                    midi.send_note_off(n).await;
+                }
+                if let Some(ref jack) = out_jack {
+                    jack.set_value(0);
+                }
+                leds.set(0, Led::Bottom, led_color, Brightness::Off);
+                continue;
+            }
+
+            if pending_note_off.get() {
+                pending_note_off.set(false);
+                if let Some(n) = note_on.take() {
+                    midi.send_note_off(n).await;
+                }
+                leds.set(0, Led::Bottom, led_color, Brightness::Off);
+            }
+
+            if pending_fire.get() {
+                pending_fire.set(false);
+                if !glob_muted.get() {
+                    fire_note(
+                        &midi,
+                        out_jack.as_ref(),
+                        &quantizer,
+                        &leds,
+                        led_color,
+                        vpo,
+                        range,
+                        pending_raw.get(),
+                        pending_vel.get(),
+                        &mut note_on,
+                    )
+                    .await;
+                }
             }
         }
     };
@@ -683,7 +729,7 @@ pub async fn run(
                     let muted = glob_muted.toggle();
                     storage.modify_and_save(|s| s.muted = muted);
                     if muted {
-                        midi.send_note_off(base_note).await;
+                        pending_silence.set(true);
                         leds.unset(0, Led::Button);
                         leds.unset(0, Led::Bottom);
                     } else {
@@ -897,7 +943,13 @@ pub async fn run(
 
     join(
         long_press,
-        join5(fut_clock, fut_buttons, fut_faders, scene_handler, shift),
+        join5(
+            join(fut_clock, voice),
+            fut_buttons,
+            fut_faders,
+            scene_handler,
+            shift,
+        ),
     )
     .await;
 }
