@@ -10,8 +10,8 @@ import {
   getDefaultValue,
   getSlots,
   transformParamFormValues,
-  repairUtf8Mojibake,
 } from "../utils/utils";
+import { isEcholotParamVisible } from "../utils/echolot-params";
 import { ButtonPrimary } from "./Button";
 import { Icon } from "./Icon";
 import type { App } from "../utils/types";
@@ -26,6 +26,15 @@ interface Props {
   params: Value[];
 }
 
+function enumFormIndex(raw: unknown, fallback: number): number {
+  if (raw === undefined || raw === null || raw === "") return fallback;
+  if (typeof raw === "object" && raw !== null && "currentKey" in raw) {
+    return Number((raw as { currentKey: unknown }).currentKey);
+  }
+  if (Array.isArray(raw)) return Number(raw[0]);
+  return Number(raw);
+}
+
 export const ActiveApp = ({ app, layoutId, params, startChannel }: Props) => {
   const { device, isSimulator, setParams } = useStore();
   const [saved, setSaved] = useState<boolean>(false);
@@ -33,8 +42,17 @@ export const ActiveApp = ({ app, layoutId, params, startChannel }: Props) => {
     register,
     control,
     handleSubmit,
+    watch,
     formState: { isSubmitting },
   } = useForm();
+
+  const ioFallback =
+    params[0]?.tag === "Enum" ? Number(params[0].value) : 0;
+  // Echolot: I/O is always param 0 — watch so Routing / Out Pong appear for CV→MIDI.
+  const ioMode =
+    app.name === "Echolot"
+      ? enumFormIndex(watch("param-Enum-0"), ioFallback)
+      : ioFallback;
 
   const onSubmit = async (
     data: Record<string, string | boolean | boolean[]>,
@@ -80,7 +98,7 @@ export const ActiveApp = ({ app, layoutId, params, startChannel }: Props) => {
           </div>
           <div className="flex-1">
             <p className="text-yellow-fp text-sm font-bold uppercase">App</p>
-            <p className="text-lg font-medium">{repairUtf8Mojibake(app.name)}</p>
+            <p className="text-lg font-medium">{app.name}</p>
           </div>
           <div className="flex-1">
             <p className="text-yellow-fp text-sm font-bold uppercase">
@@ -123,16 +141,26 @@ export const ActiveApp = ({ app, layoutId, params, startChannel }: Props) => {
                 Parameters
               </h2>
               <div className="grid grid-cols-4 gap-x-8 gap-y-8 px-4">
-                {app.params.map((param, idx) => (
-                  <AppParam
-                    key={`param-${startChannel}-${idx}`}
-                    param={param}
-                    paramIndex={idx}
-                    register={register}
-                    control={control}
-                    defaultValue={getDefaultValue(params[idx])}
-                  />
-                ))}
+                {app.params.map((param, idx) => {
+                  const visible =
+                    app.name !== "Echolot" ||
+                    isEcholotParamVisible(param, ioMode);
+                  return (
+                    <div
+                      key={`param-${startChannel}-${idx}`}
+                      className={visible ? undefined : "hidden"}
+                      aria-hidden={!visible}
+                    >
+                      <AppParam
+                        param={param}
+                        paramIndex={idx}
+                        register={register}
+                        control={control}
+                        defaultValue={getDefaultValue(params[idx])}
+                      />
+                    </div>
+                  );
+                })}
               </div>
             </div>
             <div className="flex justify-end p-4">
