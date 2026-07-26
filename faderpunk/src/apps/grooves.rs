@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use libfp::{
     ext::FromValue,
     latch::LatchLayer,
-    utils::attenuate_bipolar,
+    utils::{attenuate_bipolar, split_unsigned_value, value_to_index},
     AppIcon, Brightness, ClockDivision, Color, Config, MidiChannel, MidiNote, MidiOut, Param,
     Range, Value, APP_MAX_PARAMS,
 };
@@ -17,6 +17,7 @@ use libfp::{
 use crate::app::{
     App, AppParams, AppStorage, ClockEvent, Led, ManagedStorage, ParamStore, SceneEvent,
 };
+use crate::apps::genre_palette::{genre_fader_center, GENRE_COLORS, GENRE_NAMES, NUM_GENRES};
 
 pub const CHANNELS: usize = 1;
 pub const PARAMS: usize = 15;
@@ -43,20 +44,6 @@ const DEST_COUNT: usize = 3;
 
 const TRIG_HIGH: u16 = 2458;
 
-const NUM_GENRES: usize = 8;
-
-/// Genre display colors (cycled briefly on Shift+long).
-const GENRE_COLORS: [Color; NUM_GENRES] = [
-    Color::Orange, // Dub
-    Color::Yellow, // Disco
-    Color::Red,    // Hip-Hop
-    Color::Pink,   // House
-    Color::Cyan,   // Techno
-    Color::Violet, // Trip-Hop
-    Color::Green,  // UK Garage
-    Color::Blue,   // Dubstep
-];
-
 /// Bitmasks: bit N = 16th step N in a bar (0 = downbeat).
 struct Pattern {
     kick: u16,
@@ -71,7 +58,7 @@ struct Pattern {
     hats_fill: u16,
 }
 
-/// Oldest → newest. Indices match Shift+long cycle.
+/// Oldest → newest. Indices match Shift+Fader buckets and Enum param.
 const PATTERNS: [Pattern; NUM_GENRES] = [
     // 0 Dub — sparse kick, snare 2&4, thin offbeat hats
     Pattern {
@@ -145,18 +132,6 @@ const PATTERNS: [Pattern; NUM_GENRES] = [
         snare_fill: 0b0000_1000_0000_0000,
         hats_fill: 0b0101_0100_0101_0100,
     },
-];
-
-/// Genre names — oldest → newest; indices match Shift+long and Enum param.
-const GENRE_NAMES: &[&str] = &[
-    "Dub",
-    "Disco",
-    "Hip-Hop",
-    "House",
-    "Techno",
-    "Trip-Hop",
-    "UK Garage",
-    "Dubstep",
 ];
 
 pub static CONFIG: Config<PARAMS> = Config::new(
@@ -409,7 +384,31 @@ fn midi_vel(mult: u16) -> u16 {
     ((4095u32 * mult as u32) / 100).min(4095) as u16
 }
 
-fn any_pulse_level(kick: bool, snare: bool, hats: bool) -> u16 {
+/// Resting CV for activity pulses. On ±5V, 0 counts = −5V — use mid (0V) as idle
+/// so Echolot / other gates aren't stuck seeing a permanent low.
+fn pulse_idle(range: Range) -> u16 {
+    match range {
+        Range::_Neg5_5V => 2047,
+        _ => 0,
+    }
+}
+
+/// Map a 0–10V-style activity level onto the configured jack range.
+/// ±5V: park idle at 0V (2047) and put hits in the positive half only.
+fn pulse_on_range(unipolar: u16, range: Range) -> u16 {
+    match range {
+        Range::_Neg5_5V => {
+            if unipolar == 0 {
+                2047
+            } else {
+                2047u16.saturating_add(unipolar / 2).min(4095)
+            }
+        }
+        _ => unipolar,
+    }
+}
+
+fn any_pulse_level(kick: bool, snare: bool, hats: bool, range: Range) -> u16 {
     let mut level = 0u16;
     if hats {
         level = level.max(1400);
@@ -420,11 +419,11 @@ fn any_pulse_level(kick: bool, snare: bool, hats: bool) -> u16 {
     if kick {
         level = level.max(4095);
     }
-    level
+    pulse_on_range(level, range)
 }
 
-fn stacked_pulse_level(kick: bool, snare: bool, hats: bool) -> u16 {
-    // ~1V / 2V / 4V on 0–10V (4095 ≈ 10V)
+fn stacked_pulse_level(kick: bool, snare: bool, hats: bool, range: Range) -> u16 {
+    // ~1V / 2V / 4V on 0–10V (4095 ≈ 10V); remapped for ±5V via pulse_on_range.
     let mut units = 0u16;
     if hats {
         units += 1;
@@ -435,7 +434,8 @@ fn stacked_pulse_level(kick: bool, snare: bool, hats: bool) -> u16 {
     if kick {
         units += 4;
     }
-    ((units as u32 * 4095) / 10).min(4095) as u16
+    let uni = ((units as u32 * 4095) / 10).min(4095) as u16;
+    pulse_on_range(uni, range)
 }
 
 #[embassy_executor::task(pool_size = 4)]
@@ -540,7 +540,7 @@ pub async fn run(
         None
     };
     if let Some(ref jack) = out_jack {
-        jack.set_value(0);
+        jack.set_value(pulse_idle(range));
     }
 
     let (swing, density, jack_mode, reversed, muted) =
@@ -552,6 +552,8 @@ pub async fn run(
     let glob_jack_mode = app.make_global(jack_mode);
     let glob_reversed = app.make_global(reversed);
     let glob_genre = app.make_global(genre);
+    // Continuous Alt-layer fader value (not reconstructed from genre index).
+    let glob_genre_fader = app.make_global(genre_fader_center(genre, NUM_GENRES));
     let glob_muted = app.make_global(muted);
     let glob_reset = app.make_global(false);
     let glob_cv_val = app.make_global(2047u16);
@@ -560,7 +562,7 @@ pub async fn run(
     let glob_latch_layer = app.make_global(LatchLayer::Main);
     let glob_reverse_fade = app.make_global(0u16);
     let glob_reverse_fade_up = app.make_global(false);
-    let glob_genre_flash = app.make_global(0u16);
+    let glob_jack_flash = app.make_global(0u16);
 
     // Clear any hanging notes from a prior respawn.
     midi_kick.send_note_off(note_kick).await;
@@ -600,7 +602,7 @@ pub async fn run(
                         hats_on = false;
                     }
                     if let Some(ref jack) = out_jack {
-                        jack.set_value(0);
+                        jack.set_value(pulse_idle(range));
                     }
                     gate_off_at = None;
                     origin_set = false;
@@ -653,8 +655,8 @@ pub async fn run(
                                 hats_on = false;
                             }
                             if let Some(ref jack) = out_jack {
-                        jack.set_value(0);
-                    }
+                                jack.set_value(pulse_idle(range));
+                            }
                             gate_off_at = None;
                             leds.set(0, Led::Bottom, led_color, Brightness::Off);
                         }
@@ -748,9 +750,9 @@ pub async fn run(
 
                             if do_kick || do_snare || do_hats {
                                 let level = if glob_jack_mode.get() == JACK_STACKED {
-                                    stacked_pulse_level(do_kick, do_snare, do_hats)
+                                    stacked_pulse_level(do_kick, do_snare, do_hats, range)
                                 } else {
-                                    any_pulse_level(do_kick, do_snare, do_hats)
+                                    any_pulse_level(do_kick, do_snare, do_hats, range)
                                 };
                                 if let Some(ref jack) = out_jack {
                                     jack.set_value(level);
@@ -761,8 +763,8 @@ pub async fn run(
                         }
                     }
 
-                    // Top LED: bar progress by default; swing amount while
-                    // Shift is held (that's the layer it now controls).
+                    // Top LED: bar progress by default; genre while Shift held;
+                    // swing amount while Button held.
                     match glob_latch_layer.get() {
                         LatchLayer::Main => {
                             leds.set(
@@ -773,16 +775,19 @@ pub async fn run(
                             );
                         }
                         LatchLayer::Alt => {
-                            let s = glob_swing.get();
-                            leds.set(0, Led::Top, Color::Red, Brightness::Custom((s / 16) as u8));
+                            let fader_now = faders.get_value();
+                            let g = value_to_index(fader_now, NUM_GENRES).min(NUM_GENRES - 1);
+                            let color = GENRE_COLORS[g];
+                            let led = split_unsigned_value(fader_now);
+                            leds.set(0, Led::Top, color, Brightness::Custom(led[0]));
+                            leds.set(0, Led::Bottom, color, Brightness::Custom(led[1]));
+                            if glob_reverse_fade.get() == 0 && glob_jack_flash.get() == 0 {
+                                leds.set(0, Led::Button, color, Brightness::High);
+                            }
                         }
                         LatchLayer::Third => {
-                            let mode_color = if glob_jack_mode.get() == JACK_STACKED {
-                                Color::Violet
-                            } else {
-                                Color::Yellow
-                            };
-                            leds.set(0, Led::Top, mode_color, LED_BRIGHTNESS);
+                            let s = glob_swing.get();
+                            leds.set(0, Led::Top, Color::Red, Brightness::Custom((s / 16) as u8));
                         }
                     }
                 }
@@ -818,8 +823,8 @@ pub async fn run(
                     if muted {
                         leds.unset(0, Led::Button);
                         if let Some(ref jack) = out_jack {
-                        jack.set_value(0);
-                    }
+                            jack.set_value(pulse_idle(range));
+                        }
                         midi_kick.send_note_off(note_kick).await;
                         midi_snare.send_note_off(note_snare).await;
                         midi_hats.send_note_off(note_hats).await;
@@ -836,13 +841,22 @@ pub async fn run(
             let (_, is_shift) = buttons.wait_for_any_long_press().await;
             long_press_fired.set(true);
             if is_shift {
-                // Shift + long: cycle genre (oldest → newest); persist to params
-                let next = (glob_genre.get() + 1) % NUM_GENRES;
-                glob_genre.set(next);
-                params.update(|p| p.genre = next).await;
-                glob_genre_flash.set(300);
+                // Shift + long: toggle CV Out jack activity mode (Any ↔ Stacked)
+                let next = if glob_jack_mode.get() == JACK_STACKED {
+                    JACK_ANY
+                } else {
+                    JACK_STACKED
+                };
+                glob_jack_mode.set(next);
+                storage.modify_and_save(|s| s.jack_mode = next);
+                glob_jack_flash.set(300);
                 if !glob_muted.get() {
-                    leds.set(0, Led::Button, GENRE_COLORS[next], Brightness::High);
+                    let color = if next == JACK_STACKED {
+                        Color::Violet
+                    } else {
+                        Color::Yellow
+                    };
+                    leds.set(0, Led::Button, color, Brightness::High);
                 }
             }
         }
@@ -860,14 +874,8 @@ pub async fn run(
 
             let target_value = match latch_layer {
                 LatchLayer::Main => storage.query(|s| s.density),
-                LatchLayer::Alt => storage.query(|s| s.swing),
-                LatchLayer::Third => {
-                    if storage.query(|s| s.jack_mode) == JACK_STACKED {
-                        3072
-                    } else {
-                        1024
-                    }
-                }
+                LatchLayer::Alt => glob_genre_fader.get(),
+                LatchLayer::Third => storage.query(|s| s.swing),
             };
 
             if let Some(new_value) = latch.update(faders.get_value(), latch_layer, target_value) {
@@ -877,18 +885,16 @@ pub async fn run(
                         storage.modify_and_save(|s| s.density = new_value);
                     }
                     LatchLayer::Alt => {
-                        glob_swing.set(new_value);
-                        storage.modify_and_save(|s| s.swing = new_value);
+                        glob_genre_fader.set(new_value);
+                        let g = value_to_index(new_value, NUM_GENRES);
+                        if g != glob_genre.get() {
+                            glob_genre.set(g);
+                            params.update(|p| p.genre = g).await;
+                        }
                     }
                     LatchLayer::Third => {
-                        glob_fader_moved.set(true);
-                        let mode = if new_value > 2048 {
-                            JACK_STACKED
-                        } else {
-                            JACK_ANY
-                        };
-                        glob_jack_mode.set(mode);
-                        storage.modify_and_save(|s| s.jack_mode = mode);
+                        glob_swing.set(new_value);
+                        storage.modify_and_save(|s| s.swing = new_value);
                     }
                 }
             }
@@ -908,7 +914,9 @@ pub async fn run(
                     glob_reversed.set(reversed);
                     glob_muted.set(muted);
                     // Genre lives in params (Configurator); refresh from there.
-                    glob_genre.set(params.query(|p| p.genre.min(NUM_GENRES - 1)));
+                    let g = params.query(|p| p.genre.min(NUM_GENRES - 1));
+                    glob_genre.set(g);
+                    glob_genre_fader.set(genre_fader_center(g, NUM_GENRES));
                     if muted {
                         leds.unset(0, Led::Button);
                     } else {
@@ -968,13 +976,13 @@ pub async fn run(
                 }
             }
 
-            // Genre flash counts down independently of the reverse fade so it
+            // Jack-mode flash counts down independently of the reverse fade so it
             // can't stall behind it; the restore is skipped while a fade is
             // still animating (the fade's own end handler restores the LED).
-            let flash_left = glob_genre_flash.get();
+            let flash_left = glob_jack_flash.get();
             if flash_left > 0 {
                 let left = flash_left.saturating_sub(1);
-                glob_genre_flash.set(left);
+                glob_jack_flash.set(left);
                 if left == 0 && glob_reverse_fade.get() == 0 {
                     if glob_muted.get() {
                         leds.unset(0, Led::Button);

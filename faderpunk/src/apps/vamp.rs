@@ -19,6 +19,7 @@ use libfp::{
 use crate::app::{
     App, AppParams, AppStorage, ClockEvent, Die, Led, ManagedStorage, ParamStore, SceneEvent,
 };
+use crate::apps::genre_palette::{genre_fader_center, GENRE_COLORS, GENRE_NAMES, NUM_GENRES};
 
 pub const CHANNELS: usize = 1;
 pub const PARAMS: usize = 16;
@@ -30,7 +31,6 @@ const SOUNDING_CAP: usize = 8;
 const TICKS_PER_BAR: u32 = 96;
 /// Capture snaps chord *starts* to this grid (16ths at 24 PPQN); hold length stays free.
 const CAPTURE_QUANT_TICKS: u32 = 6;
-const NUM_GENRES: usize = 8;
 const NUM_DEGREES: usize = 7;
 /// Auto / genre-seed progression length (classic vamp loop).
 const NUM_SLOTS: usize = 8;
@@ -44,30 +44,6 @@ const CAPTURE_COLOR: Color = Color::Rose;
 
 const CV_JACK_OUT: usize = 0;
 const CV_JACK_IN: usize = 1;
-
-/// Same genre set as Grooves (oldest → newest).
-const GENRE_NAMES: &[&str] = &[
-    "Dub",
-    "Disco",
-    "Hip-Hop",
-    "House",
-    "Techno",
-    "Trip-Hop",
-    "UK Garage",
-    "Dubstep",
-];
-
-/// Match Grooves so Shift+Fader genre pick is recognizable across apps.
-const GENRE_COLORS: [Color; NUM_GENRES] = [
-    Color::Orange, // Dub
-    Color::Yellow, // Disco
-    Color::Red,    // Hip-Hop
-    Color::Pink,   // House
-    Color::Cyan,   // Techno
-    Color::Violet, // Trip-Hop
-    Color::Green,  // UK Garage
-    Color::Blue,   // Dubstep
-];
 
 const CAPTURE_NAMES: &[&str] = &["16 bars", "8 bars", "4 bars", "2 bars", "1 bar"];
 /// Bars for each Capture length enum index.
@@ -169,6 +145,21 @@ fn groove_duration(raw_dur: u32, feel: u16) -> u32 {
     // Mid feel (~2048) ≈ unity; map unit range onto ~0.55x … 1.35x
     let mid = (FEEL_HIT_LONG + FEEL_HIT_SHORT) / 2;
     (raw_dur.saturating_mul(unit) / mid.max(1)).max(1)
+}
+
+/// Gate length inside a hit segment — short absolute stabs; weight only spaces
+/// onsets. Rest DNA still owns multi-bar breaks.
+/// Laid (~0) ≈ 18 ticks (~3/16); advanced (~4095) ≈ 4 ticks. Never >35% of segment.
+fn hit_gate_ticks(segment: u32, feel: u16, swing_delay: u32) -> u32 {
+    let usable = segment.saturating_sub(swing_delay).max(1);
+    if usable <= 1 {
+        return 1;
+    }
+    const STAB_LAID: u32 = 18;
+    const STAB_ADV: u32 = 4;
+    let stab = STAB_LAID - (u32::from(feel) * (STAB_LAID - STAB_ADV)) / 4095;
+    let cap = (usable.saturating_mul(35) / 100).max(1);
+    stab.min(cap).min(usable.saturating_sub(1).max(1)).max(1)
 }
 
 pub static CONFIG: Config<PARAMS> = Config::new(
@@ -753,15 +744,6 @@ fn seed_genre_into(slots: &mut [u8; VAMP_CAP], genre: usize, die: &Die) -> u8 {
     n as u8
 }
 
-/// Fader position at the center of genre/capture bucket `index` of `picks`.
-/// Used only to seed the Alt latch target — live control stores the real fader value.
-fn genre_fader_center(index: usize, picks: usize) -> u16 {
-    let picks = picks.max(1);
-    let i = index.min(picks - 1) as u32;
-    let p = picks as u32;
-    ((((i * 2) + 1) * 4095) / (p * 2)) as u16
-}
-
 /// Snap a tick to the nearest capture grid (used for note-on only).
 fn quantize_tick_nearest(t: u32, grid: u32) -> u32 {
     if grid <= 1 {
@@ -1109,6 +1091,10 @@ pub async fn run(
     glob_genre.set(genre_init);
     glob_genre_fader.set(genre_fader_center(genre_init, picks_init));
     glob_last_genre.set(genre.min(NUM_GENRES - 1));
+    // Heal ParamStore if hardware/storage genre drifted from the last configurator write.
+    if genre < NUM_GENRES && genre != genre_param {
+        params.update(|p| p.genre = genre).await;
+    }
     glob_scrub.set(st_scrub);
     glob_tension.set(st_tension);
     glob_feel.set(st_div);
@@ -1323,7 +1309,7 @@ pub async fn run(
 
                             let grid_step = (clkn / CAPTURE_QUANT_TICKS) % 16;
                             let delay = swing_delay_ticks(grid_step, swing).min(total.saturating_sub(1));
-                            let gate = total.saturating_sub(delay).max(1);
+                            let gate = hit_gate_ticks(total, feel, delay);
                             pending_on_at.set(clkn.wrapping_add(delay));
                             pending_off_at.set(clkn.wrapping_add(delay).wrapping_add(gate));
                             harm_i = harm_i.wrapping_add(1);
@@ -1686,6 +1672,9 @@ pub async fn run(
                                 s.swing = swing_from_genre(g);
                             });
                             glob_swing.set(swing_from_genre(g));
+                            // Keep ParamStore in sync so Scopepunk / configurator
+                            // GetAppParams reflects the hardware genre pick.
+                            params.update(|p| p.genre = g).await;
                         }
                     }
                     LatchLayer::Third => {

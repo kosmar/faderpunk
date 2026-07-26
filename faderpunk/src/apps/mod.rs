@@ -1,3 +1,5 @@
+mod genre_palette;
+
 register_apps!(
     1 => control,
     2 => lfo,
