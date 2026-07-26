@@ -2057,56 +2057,62 @@ Scenes store the live note pool, phrase length, and expression depth.`,
       "CV Att",
     ],
     storage: [
-      "Vamp slots",
+      "Vamp slots (8-step progression)",
       "Genre",
       "Scrub position",
       "Tension",
-      "Auto division",
+      "Feel (hit length)",
+      "Swing (genre-seeded)",
       "Mode (Perform/Auto)",
       "Auto running",
       "Capture clip",
     ],
-    text: `Chord Vamp plays MIDI chord progressions in two modes. **Perform**: scrub vamp slots with the fader and **hold** the button to sound the current chord. **Auto**: the app steps through the progression on the clock; **short press** play/pauses. Toggle modes with **Shift + short press**.
+    text: `Chord Vamp plays MIDI chord progressions in two modes. **Perform**: scrub a **pitch map** of the genre's unique degrees across ~3 octaves and **hold** the button to sound the chord. **Auto**: a genre **rhythm phrase** (weighted hits + multi-bar rests) loops on the clock while harmony **Repeats** or **Meanders**; **short press** play/pauses. Toggle modes with **Shift + short press**.
 
 #### Perform and capture
 
-In Perform, **Shift + short press** captures the last N bars of harmony (per **Capture length**: 16 / 8 / 4 / 2 / 1 bars) into a timed clip, switches to Auto, and starts playback. **Perform long press** is unused — the chord stays held for as long as the button is down.
+In Perform, **Shift + short press** captures the last N bars of harmony (per **Capture length**: 16 / 8 / 4 / 2 / 1 bars) into a timed clip, switches to Auto, and starts playback. Chord *starts* snap to the 16th grid; empty lead-in is cropped so the first hit lands on the loop downbeat; hold lengths stay free. **Perform long press** is unused — the chord stays held while the button is down (LEDs go blue and track pitch).
 
-In Auto, **long press** clears the capture clip and reloads the genre preset. **Shift + long press** panics (All Notes Off). **Shift + short press** returns to Perform.
+In Auto, **long press** clears the capture clip and reseeds the genre phrase. **Shift + long press** panics (All Notes Off). **Shift + short press** returns to Perform.
+
+#### Groove
+
+- **Feel** (**Button + Fader**): laid back ↔ advanced — scales Auto hit lengths and Capture playback durations. Rests stay Feel-independent (genre multi-bar breaks).
+- **Swing** (scene storage, seeded from genre): delays odd 16ths on Auto hits and Capture playback. Resets to the genre default when you pick/reseed a genre. Stacks with global Scene+Fader 15 clock swing — keep one near zero if the feel gets muddy.
 
 #### Faders
 
-- **Perform — Main**: scrub vamp slots.
-- **Auto — Main**: tension (harmonic drift within the genre).
-- **Shift + Fader**: genre (Dub → … → Dubstep; rose flash for Capture clip slot when a clip exists).
-- **Button + Fader**: autoplay clock division (8/1 down to 1/16).
+- **Perform — Main**: scrub genre degrees × octaves (low → high).
+- **Auto — Main**: tension (Meander harmonic drift; ignored in Repeat).
+- **Shift + Fader**: genre (Dub → … → Dubstep; rose = Capture clip slot when a clip exists).
+- **Button + Fader**: Feel (hit length / Capture dur scale). Auto+Hold LEDs are rose and show phrase position; Perform+Hold LEDs are blue and track chord pitch.
 
 **CV Dest** Macro modulates scrub (Perform) or tension (Auto). Panic can fire from CV when **CV Dest = Panic**. Perform mode uses app color on the button; Auto uses orange (bright = playing).`,
     channels: [
       {
         jackTitle: "CV Out / CV In",
         jackDescription:
-          "CV Out: macro level. CV In: Macro or Panic per CV Dest.",
+          "CV Out: current chord root pitch. CV In: Macro or Panic per CV Dest.",
         faderTitle: "Scrub / Tension",
         faderDescription:
-          "Perform: scrub vamp slots. Auto: tension within the progression.",
+          "Perform: pitch map (genre degrees × 3 octaves). Auto: Meander tension.",
         faderPlusShiftTitle: "Genre",
         faderPlusShiftDescription:
           "Cycle genre preset (Capture clip slot when a timed clip exists).",
-        faderPlusFnTitle: "Auto division",
+        faderPlusFnTitle: "Feel",
         faderPlusFnDescription:
-          "Clock division for Auto playback (8/1 … 1/16).",
+          "Laid back ↔ advanced hit length (Capture durs scale too). Rests unchanged.",
         fnTitle: "Chord / Play",
         fnDescription:
-          "Perform: hold for chord. Auto: short = play/pause. Long (Auto): clear clip.",
+          "Perform: hold for chord. Auto: short = play/pause. Long (Auto): clear clip / reseed.",
         fnPlusShiftTitle: "Mode / Capture / Panic",
         fnPlusShiftDescription:
           "Short: toggle Perform↔Auto; Perform+Shift+short = capture. Long (Auto): panic.",
-        ledTop: "Scrub or tension level",
+        ledTop: "Scrub / phrase / pitch meter",
         ledTopPlusShift: "Genre color (rose = capture clip)",
-        ledTopPlusFn: "Division (cyan)",
-        ledBottom: "Chord voice level",
-        ledBottomPlusFn: "Division meter",
+        ledTopPlusFn: "Feel / pitch (rose Auto, blue Perform)",
+        ledBottom: "Meter pair",
+        ledBottomPlusFn: "Feel / pitch meter",
       },
     ],
   },
