@@ -687,6 +687,8 @@ pub async fn run(
                             // Always flash on NoteOn so MIDI In is verifiable (even when muted).
                             input_flash_glob.set(INPUT_FLASH_PEAK);
                             if accept_new {
+                                // Always Out A (gen 0). Ping-Pong seeds Out B one
+                                // delay later on fire — In→A→B, not simultaneous.
                                 enqueue(
                                     &mut queue,
                                     EventKind::NoteOn,
@@ -964,8 +966,8 @@ pub async fn run(
                                     event.due_tick,
                                 );
                             } else if ping_pong && event.generation == 0 {
-                                // Ping-Pong with Alt feedback at 0: still one cross
-                                // to Out B so Pong is audible (classic stereo tap).
+                                // Ping-Pong with Alt feedback at 0: one delayed cross
+                                // In→A→B (Out B lags Out A by Delay, not simultaneous).
                                 let seed = ((event.velocity as u32 * 3) / 4)
                                     .max(VELOCITY_FLOOR as u32)
                                     as u16;

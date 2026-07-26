@@ -28,6 +28,8 @@ const VAMP_CAP: usize = 32;
 const RING_CAP: usize = 64;
 const SOUNDING_CAP: usize = 8;
 const TICKS_PER_BAR: u32 = 96;
+/// Capture snaps chord *starts* to this grid (16ths at 24 PPQN); hold length stays free.
+const CAPTURE_QUANT_TICKS: u32 = 6;
 const NUM_GENRES: usize = 8;
 const NUM_DEGREES: usize = 7;
 /// Shift+Fader index for the Capture clip (after the 8 genres).
@@ -111,7 +113,7 @@ const CLOCK_RESOLUTIONS: &[u16] = &[
 
 pub static CONFIG: Config<PARAMS> = Config::new(
     "Chord Vamp",
-    "Chord progressions — perform, shift+long capture, or auto vamp",
+    "Chord progressions — perform, shift+tap capture, or auto vamp",
     Color::Violet,
     AppIcon::NoteGrid,
 )
@@ -593,7 +595,22 @@ fn genre_fader_center(index: usize, picks: usize) -> u16 {
     ((((i * 2) + 1) * 4095) / (p * 2)) as u16
 }
 
+/// Snap a tick to the nearest capture grid (used for note-on only).
+fn quantize_tick_nearest(t: u32, grid: u32) -> u32 {
+    if grid <= 1 {
+        return t;
+    }
+    let q = t / grid;
+    let rem = t % grid;
+    if rem * 2 >= grid {
+        q.saturating_add(1).saturating_mul(grid)
+    } else {
+        q.saturating_mul(grid)
+    }
+}
+
 /// Build a relative timed clip from the always-record ring (last `bars` bars).
+/// Starts are quantized to [`CAPTURE_QUANT_TICKS`]; durations keep the played length.
 #[allow(clippy::too_many_arguments)]
 fn build_clip_from_ring(
     bars: u32,
@@ -631,19 +648,26 @@ fn build_clip_from_ring(
         if off == 0 || (open_idx as usize == idx) {
             off = now;
         }
-        // Skip malformed
+        // Actual hold length (not quantized).
         let dur_abs = off.wrapping_sub(on);
         if dur_abs == 0 || dur_abs >= (u32::MAX / 2) {
             continue;
         }
-        let rel_on = on.wrapping_sub(clip_start);
-        if rel_on >= window {
+        let rel_raw = on.wrapping_sub(clip_start);
+        if rel_raw >= window {
             continue;
         }
-        let mut dur = dur_abs.min(window.saturating_sub(rel_on)).max(1);
+        // Quantize start only; keep played duration.
+        let mut rel_on = quantize_tick_nearest(rel_raw, CAPTURE_QUANT_TICKS);
+        if rel_on >= window {
+            // Nearest grid landed on/past the loop point — pull back one step.
+            rel_on = window.saturating_sub(CAPTURE_QUANT_TICKS.min(window));
+            rel_on = (rel_on / CAPTURE_QUANT_TICKS.max(1)) * CAPTURE_QUANT_TICKS.max(1);
+        }
+        let mut dur = dur_abs.max(1);
         // Keep note-off inside one loop iteration.
-        if rel_on + dur > window {
-            dur = window - rel_on;
+        if rel_on.saturating_add(dur) > window {
+            dur = window.saturating_sub(rel_on);
         }
         if dur == 0 || n >= VAMP_CAP {
             continue;
@@ -1135,42 +1159,99 @@ pub async fn run(
     };
 
     let button_handler = async {
+        // Commit the always-record ring into a timed clip and jump to Auto+Play.
+        let commit_capture = || -> bool {
+            close_ring(ticks() as u32);
+            chord_held.set(false);
+            pending_release.set(true);
+
+            let bars = CAPTURE_BARS[capture_len];
+            let now = ticks() as u32;
+            let (n, degs, ons, durs) = build_clip_from_ring(
+                bars,
+                now,
+                ring_len.get() as usize,
+                ring_write.get() as usize,
+                &ring_deg.get(),
+                &ring_on.get(),
+                &ring_off.get(),
+                ring_open.get(),
+            );
+
+            if n == 0 {
+                // Bright enough to notice: empty ring / clock not advancing.
+                glob_capture_flash.set(200);
+                return false;
+            }
+
+            clip_deg_cell.set(degs);
+            clip_on_cell.set(ons);
+            clip_dur_cell.set(durs);
+            glob_clip_len.set(n);
+            glob_clip_bars.set(bars.min(255) as u8);
+            glob_clip_active.set(true);
+            glob_clip_armed.set(true);
+            glob_genre.set(CAPTURE_SLOT);
+            glob_genre_fader.set(genre_fader_center(CAPTURE_SLOT, NUM_GENRES + 1));
+            glob_mode_auto.set(true);
+            glob_auto_running.set(true);
+            glob_capture_flash.set(255);
+
+            storage.modify_and_save(|s| {
+                s.clip_active = true;
+                s.clip_len = n;
+                s.clip_bars = bars.min(255) as u8;
+                s.clip_deg = degs;
+                s.clip_on = ons;
+                s.clip_dur = durs;
+                s.mode_auto = true;
+                s.auto_running = true;
+            });
+            true
+        };
+
         loop {
             let (_chan, shift) = buttons.wait_for_any_down().await;
+            long_press_fired.set(false);
+
             if shift {
-                // Shift+Button: Perform ↔ Auto — keep play/pause memory either way.
-                let next = !glob_mode_auto.get();
-                glob_mode_auto.set(next);
-                if !next {
+                // Short vs long decided on release (Long must not also fire Short).
+                let _ = buttons.wait_for_up(0).await;
+                if long_press_fired.get() {
+                    // Shift+Long: Panic in Auto (see long_press). Ignore in Perform.
+                    continue;
+                }
+                if glob_mode_auto.get() {
+                    // Auto + Shift+Tap → back to Perform.
+                    glob_mode_auto.set(false);
                     chord_held.set(false);
                     pending_release.set(true);
+                    storage.modify_and_save(|s| {
+                        s.mode_auto = false;
+                        s.auto_running = glob_auto_running.get();
+                    });
+                } else {
+                    // Perform + Shift+Tap → capture last N bars.
+                    let _ = commit_capture();
                 }
-                storage.modify_and_save(|s| {
-                    s.mode_auto = next;
-                    s.auto_running = glob_auto_running.get();
-                });
-                // consume until up so we don't also treat as short press
-                let _ = buttons.wait_for_up(0).await;
                 continue;
             }
 
-            long_press_fired.set(false);
             if glob_mode_auto.get() {
                 // Auto: short = play/pause chord autoplay (global clock is Scene+Shift only)
                 buttons.wait_for_up(0).await;
                 if long_press_fired.get() {
-                    // Long / Shift+Long already handled
+                    // Long already handled (reseed genre / clear capture)
                     continue;
                 }
                 let playing = !glob_auto_running.get();
                 glob_auto_running.set(playing);
                 if !playing {
-                    // Pause: silence current chord; clock keeps running independently.
                     pending_release.set(true);
                 }
                 storage.modify_and_save(|s| s.auto_running = playing);
             } else {
-                // Perform: hold = chord; release = note off (unless long-press capture)
+                // Perform: hold = chord; release = note off.
                 let count = glob_slot_count.get().max(1) as usize;
                 let idx = value_to_index(glob_scrub.get(), count);
                 let slots_now = slots_cell.get();
@@ -1194,56 +1275,9 @@ pub async fn run(
                 if glob_mode_auto.get() {
                     // Auto Shift+Long: Panic (All Notes/Sound Off)
                     panic_flag.set(true);
-                    continue;
+                    glob_capture_flash.set(160); // visible ack (was silent)
                 }
-
-                // Perform Shift+Long: capture last N bars → Auto + Play, arm downbeat.
-                // Plain Long stays free so chords can be held indefinitely.
-                close_ring(ticks() as u32);
-                chord_held.set(false);
-                pending_release.set(true);
-
-                let bars = CAPTURE_BARS[capture_len];
-                let now = ticks() as u32;
-                let (n, degs, ons, durs) = build_clip_from_ring(
-                    bars,
-                    now,
-                    ring_len.get() as usize,
-                    ring_write.get() as usize,
-                    &ring_deg.get(),
-                    &ring_on.get(),
-                    &ring_off.get(),
-                    ring_open.get(),
-                );
-
-                if n == 0 {
-                    glob_capture_flash.set(64);
-                    continue;
-                }
-
-                clip_deg_cell.set(degs);
-                clip_on_cell.set(ons);
-                clip_dur_cell.set(durs);
-                glob_clip_len.set(n);
-                glob_clip_bars.set(bars.min(255) as u8);
-                glob_clip_active.set(true);
-                glob_clip_armed.set(true);
-                glob_genre.set(CAPTURE_SLOT);
-                glob_genre_fader.set(genre_fader_center(CAPTURE_SLOT, NUM_GENRES + 1));
-                glob_mode_auto.set(true);
-                glob_auto_running.set(true);
-                glob_capture_flash.set(255);
-
-                storage.modify_and_save(|s| {
-                    s.clip_active = true;
-                    s.clip_len = n;
-                    s.clip_bars = bars.min(255) as u8;
-                    s.clip_deg = degs;
-                    s.clip_on = ons;
-                    s.clip_dur = durs;
-                    s.mode_auto = true;
-                    s.auto_running = true;
-                });
+                // Perform Shift+Long: unused — capture is Shift+Tap.
                 continue;
             }
 

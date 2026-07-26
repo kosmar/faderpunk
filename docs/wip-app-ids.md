@@ -15,9 +15,9 @@ Flash integration branch: **`test/playground`** (count-agnostic; formerly
 | 29 | Heat Pump | `feat/heat-pump` | |
 | 30 | Grooves | `feat/grooves` | needs `ParamStore::update` — see patches |
 | 31 | Golden Gate | `feat/golden-gate` | aka Fibonacci Gate on some branches |
-| 32 | Super LFO | `feat/super-lfo-app` | Mix balance 0–100% |
+| 32 | Super LFO | `feat/super-lfo-app` | Mix balance 0–100%; CV Dest select; Alt0=Attenuation |
 | 33 | Echolot | `feat/echolot` | MIDI/CV delay |
 | 34 | Arp de Lévy | `feat/arp-de-levy` | |
-| 35 | MIDI Vamp | `feat/vamp` | Chord progressions (MIDI only) |
+| 35 | Chord Vamp | `feat/vamp` | Chord progressions (MIDI + optional root CV out) |
 
 Next free WIP ID: **36**

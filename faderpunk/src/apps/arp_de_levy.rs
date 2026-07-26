@@ -16,16 +16,23 @@ use libfp::{
 };
 use midly::num::u7;
 
-use crate::app::{
-    App, AppParams, AppStorage, ClockEvent, Die, Led, ManagedStorage, ParamStore, SceneEvent,
+use crate::{
+    app::{
+        App, AppParams, AppStorage, ClockEvent, Die, Led, ManagedStorage, ParamStore, SceneEvent,
+    },
+    tasks::leds::LedMode,
 };
 
 pub const CHANNELS: usize = 1;
-pub const PARAMS: usize = 10;
+pub const PARAMS: usize = 11;
 
 const LED_BRIGHTNESS: Brightness = Brightness::Mid;
 /// Reverse gesture LED feedback length (white↔off fade), same as Golden Gate / Heat Pump.
 const REVERSE_FADE_MS: u16 = 500;
+/// Octave-span cue: one Button blink in the span color (Shift+long).
+const OCTAVE_BLINK_MS: u16 = 250;
+/// Hold off periodic button LED writes so LedMode::Flash can finish.
+const BUTTON_FLASH_MS: u16 = 850;
 
 const POOL_CAP: usize = 16;
 const MIN_PHRASE: usize = 4;
@@ -47,6 +54,11 @@ const DEST_MUTATION: usize = 0;
 const DEST_TEXTURE: usize = 1;
 const DEST_REROLL: usize = 2;
 const DEST_COUNT: usize = 3;
+/// CV Out jack source (when Jack = CV Out).
+const OUT_PITCH: usize = 0;
+const OUT_GATE: usize = 1;
+const OUT_VELOCITY: usize = 2;
+const OUT_COUNT: usize = 3;
 const TRIG_HIGH: u16 = 2458;
 
 fn att_from_pct(pct: i32) -> u16 {
@@ -94,6 +106,10 @@ pub static CONFIG: Config<PARAMS> = Config::new(
     variants: &[Range::_0_10V, Range::_Neg5_5V],
 })
 .add_param(Param::Enum {
+    name: "CV Out",
+    variants: &["Pitch", "Gate", "Velocity"],
+})
+.add_param(Param::Enum {
     name: "CV Dest",
     variants: &["Evolve", "Texture", "Reroll"],
 })
@@ -112,6 +128,7 @@ pub struct Params {
     bypass: bool,
     cv_jack: usize,
     range: Range,
+    cv_out: usize,
     cv_dest: usize,
     cv_att: i32,
 }
@@ -127,6 +144,7 @@ impl Default for Params {
             bypass: false,
             cv_jack: CV_JACK_OUT,
             range: Range::_0_10V,
+            cv_out: OUT_PITCH,
             cv_dest: DEST_MUTATION,
             cv_att: 100,
         }
@@ -138,15 +156,25 @@ impl AppParams for Params {
         if values.len() < 6 {
             return None;
         }
-        let (cv_jack, range, cv_dest, cv_att) = if values.len() >= PARAMS {
+        let (cv_jack, range, cv_out, cv_dest, cv_att) = if values.len() >= PARAMS {
             (
                 usize::from_value(values[6]).min(1),
                 Range::from_value(values[7]),
+                usize::from_value(values[8]).min(OUT_COUNT - 1),
+                usize::from_value(values[9]).min(DEST_COUNT - 1),
+                i32::from_value(values[10]).clamp(0, 100),
+            )
+        } else if values.len() >= 10 {
+            // Pre-CV-Out layout: Jack, Range, Dest, Att.
+            (
+                usize::from_value(values[6]).min(1),
+                Range::from_value(values[7]),
+                OUT_PITCH,
                 usize::from_value(values[8]).min(DEST_COUNT - 1),
                 i32::from_value(values[9]).clamp(0, 100),
             )
         } else {
-            (CV_JACK_OUT, Range::_0_10V, DEST_MUTATION, 100)
+            (CV_JACK_OUT, Range::_0_10V, OUT_PITCH, DEST_MUTATION, 100)
         };
         Some(Self {
             midi_channel: MidiChannel::from_value(values[0]),
@@ -157,6 +185,7 @@ impl AppParams for Params {
             bypass: bool::from_value(values[5]),
             cv_jack,
             range,
+            cv_out,
             cv_dest,
             cv_att,
         })
@@ -172,6 +201,7 @@ impl AppParams for Params {
         vec.push(self.bypass.into()).unwrap();
         vec.push(self.cv_jack.into()).unwrap();
         vec.push(self.range.into()).unwrap();
+        vec.push(self.cv_out.into()).unwrap();
         vec.push(self.cv_dest.into()).unwrap();
         vec.push(self.cv_att.into()).unwrap();
         vec
@@ -191,6 +221,8 @@ pub struct Storage {
     expression: u16,
     /// Octave span 1..=4 (cycled by Shift+long).
     octaves: u8,
+    /// CV Out source 0..=2 (Pitch / Gate / Velocity); Shift+short when Jack=Out.
+    cv_out: u8,
     muted: bool,
     reversed: bool,
     /// Persistent note pool as MIDI note numbers.
@@ -212,6 +244,7 @@ impl Default for Storage {
             alpha_saved: 2048, // balanced flight
             expression: 0, // deterministic until first reroll
             octaves: 2,
+            cv_out: OUT_PITCH as u8,
             muted: false,
             reversed: false,
             pool,
@@ -237,6 +270,18 @@ fn cycle_octaves(o: u8) -> u8 {
 
 fn octave_color(octaves: u8) -> Color {
     OCT_COLORS[(clamp_octaves(octaves) - 1) as usize]
+}
+
+fn cv_out_color(mode: usize) -> Color {
+    match mode.min(OUT_COUNT - 1) {
+        OUT_GATE => Color::Yellow,
+        OUT_VELOCITY => Color::Orange,
+        _ => Color::Red, // Pitch
+    }
+}
+
+fn cycle_cv_out(mode: u8) -> u8 {
+    ((mode as usize + 1) % OUT_COUNT) as u8
 }
 
 /// Texture → (density 0..=4095 hit threshold, phrase_len, swing_ticks).
@@ -379,21 +424,33 @@ pub async fn run(
     params: &ParamStore<Params>,
     storage: &ManagedStorage<Storage>,
 ) {
-    let (midi_out, midi_chan, base_note, led_color, vpo, bypass, cv_jack, range, cv_dest, cv_att) =
-        params.query(|p| {
-            (
-                p.midi_out,
-                p.midi_channel,
-                p.note,
-                p.color,
-                p.vpo,
-                p.bypass,
-                p.cv_jack.min(1),
-                p.range,
-                p.cv_dest.min(DEST_COUNT - 1),
-                att_from_pct(p.cv_att),
-            )
-        });
+    let (
+        midi_out,
+        midi_chan,
+        base_note,
+        led_color,
+        vpo,
+        bypass,
+        cv_jack,
+        range,
+        param_cv_out,
+        cv_dest,
+        cv_att,
+    ) = params.query(|p| {
+        (
+            p.midi_out,
+            p.midi_channel,
+            p.note,
+            p.color,
+            p.vpo,
+            p.bypass,
+            p.cv_jack.min(1),
+            p.range,
+            p.cv_out.min(OUT_COUNT - 1),
+            p.cv_dest.min(DEST_COUNT - 1),
+            att_from_pct(p.cv_att),
+        )
+    });
 
     let mut clock = app.use_clock();
     let ticks = clock.get_ticker();
@@ -415,6 +472,10 @@ pub async fn run(
         None
     };
     let glob_cv_val = app.make_global(2047u16);
+
+    // Configurator CV Out wins on spawn; keep storage / scenes in sync.
+    storage.modify_and_save(|s| s.cv_out = param_cv_out as u8);
+    let glob_cv_out = app.make_global(param_cv_out);
 
     let (
         fader_saved,
@@ -456,6 +517,8 @@ pub async fn run(
     let glob_latch_layer = app.make_global(LatchLayer::Main);
     let glob_reverse_fade = app.make_global(0u16);
     let glob_reverse_fade_up = app.make_global(false);
+    let glob_octave_blink = app.make_global(0u16);
+    let glob_btn_flash = app.make_global(0u16);
     let glob_reload_pool = app.make_global(false);
     // Clock watch → voice engine (never await MIDI/quantizer inside the clock subscriber).
     // Same isolation pattern as Chord Vamp — keeps USB MIDI from stalling the clock path.
@@ -681,6 +744,12 @@ pub async fn run(
                 if let Some(n) = note_on.take() {
                     midi.send_note_off(n).await;
                 }
+                // Gate / Velocity drop with the note; Pitch holds until next hit / silence.
+                if glob_cv_out.get() != OUT_PITCH {
+                    if let Some(ref jack) = out_jack {
+                        jack.set_value(0);
+                    }
+                }
                 leds.set(0, Led::Bottom, led_color, Brightness::Off);
             }
 
@@ -695,6 +764,7 @@ pub async fn run(
                         led_color,
                         vpo,
                         range,
+                        glob_cv_out.get(),
                         pending_raw.get(),
                         pending_vel.get(),
                         &mut note_on,
@@ -712,11 +782,31 @@ pub async fn run(
                 long_press_fired.set(false);
                 buttons.wait_for_up(0).await;
                 if !long_press_fired.get() {
-                    // Shift + short: reverse playback direction.
-                    let reversed = glob_reversed.toggle();
-                    storage.modify_and_save(|s| s.reversed = reversed);
-                    glob_reverse_fade_up.set(!reversed);
-                    glob_reverse_fade.set(REVERSE_FADE_MS);
+                    if cv_jack == CV_JACK_OUT {
+                        // Shift + short (CV Out): cycle Pitch / Gate / Velocity + flash.
+                        let next = storage.modify_and_save(|s| {
+                            s.cv_out = cycle_cv_out(s.cv_out);
+                            s.cv_out
+                        });
+                        let next = next as usize;
+                        glob_cv_out.set(next);
+                        params.update(|p| p.cv_out = next).await;
+                        glob_reverse_fade.set(0);
+                        glob_octave_blink.set(0);
+                        leds.set_mode(
+                            0,
+                            Led::Button,
+                            LedMode::Flash(cv_out_color(next), Some(3)),
+                        );
+                        glob_btn_flash.set(BUTTON_FLASH_MS);
+                    } else {
+                        // Shift + short (CV In): reverse playback direction.
+                        let reversed = glob_reversed.toggle();
+                        storage.modify_and_save(|s| s.reversed = reversed);
+                        glob_octave_blink.set(0);
+                        glob_reverse_fade_up.set(!reversed);
+                        glob_reverse_fade.set(REVERSE_FADE_MS);
+                    }
                 }
             } else {
                 long_press_fired.set(false);
@@ -752,16 +842,11 @@ pub async fn run(
                 let octaves = cycle_octaves(glob_octaves.get());
                 glob_octaves.set(octaves);
                 storage.modify_and_save(|s| s.octaves = octaves);
-                if !glob_muted.get() {
-                    // Octave span cue on Top; Button stays Color param.
-                    leds.set(
-                        0,
-                        Led::Top,
-                        octave_color(octaves),
-                        Brightness::High,
-                    );
-                    leds.set(0, Led::Button, led_color, LED_BRIGHTNESS);
-                }
+                // Top cue + one Button blink in the span color.
+                leds.set(0, Led::Top, octave_color(octaves), Brightness::High);
+                glob_reverse_fade.set(0);
+                glob_btn_flash.set(0);
+                glob_octave_blink.set(OCTAVE_BLINK_MS);
             }
         }
     };
@@ -818,6 +903,7 @@ pub async fn run(
                         alpha_saved,
                         expression,
                         octaves,
+                        cv_out,
                         muted,
                         reversed,
                     ) = storage.query(|s| {
@@ -827,6 +913,7 @@ pub async fn run(
                             s.alpha_saved,
                             s.expression,
                             s.octaves,
+                            s.cv_out,
                             s.muted,
                             s.reversed,
                         )
@@ -836,6 +923,9 @@ pub async fn run(
                     glob_alpha.set(alpha_saved);
                     glob_expression.set(expression);
                     glob_octaves.set(clamp_octaves(octaves));
+                    let cv_out = (cv_out as usize).min(OUT_COUNT - 1);
+                    glob_cv_out.set(cv_out);
+                    params.update(|p| p.cv_out = cv_out).await;
                     glob_muted.set(muted);
                     glob_reversed.set(reversed);
                     let (_, phrase, _) = texture_from_value(shift_fader_saved);
@@ -911,7 +1001,11 @@ pub async fn run(
 
             // Reverse gesture feedback (white↔off).
             let fade_left = glob_reverse_fade.get();
-            if fade_left > 0 {
+            let blink_left = glob_octave_blink.get();
+            let flash_left = glob_btn_flash.get();
+            if flash_left > 0 {
+                glob_btn_flash.set(flash_left.saturating_sub(1));
+            } else if fade_left > 0 {
                 let elapsed = REVERSE_FADE_MS.saturating_sub(fade_left);
                 let bright = if glob_reverse_fade_up.get() {
                     ((elapsed as u32 * 255) / REVERSE_FADE_MS as u32) as u8
@@ -921,6 +1015,23 @@ pub async fn run(
                 leds.set(0, Led::Button, Color::White, Brightness::Custom(bright));
                 let next = fade_left.saturating_sub(1);
                 glob_reverse_fade.set(next);
+                if next == 0 && !glob_muted.get() {
+                    leds.set(0, Led::Button, led_color, LED_BRIGHTNESS);
+                } else if next == 0 && glob_muted.get() {
+                    leds.unset(0, Led::Button);
+                }
+            } else if blink_left > 0 {
+                // Octave-span cue: one Button blink in Blue/Cyan/Yellow/Red.
+                let bright =
+                    ((blink_left as u32 * 255) / OCTAVE_BLINK_MS as u32).min(255) as u8;
+                leds.set(
+                    0,
+                    Led::Button,
+                    octave_color(glob_octaves.get()),
+                    Brightness::Custom(bright),
+                );
+                let next = blink_left.saturating_sub(1);
+                glob_octave_blink.set(next);
                 if next == 0 && !glob_muted.get() {
                     leds.set(0, Led::Button, led_color, LED_BRIGHTNESS);
                 } else if next == 0 && glob_muted.get() {
@@ -952,18 +1063,23 @@ async fn fire_note(
     led_color: Color,
     vpo: VoltPerOct,
     out_range: Range,
+    cv_out: usize,
     raw: u8,
     velocity: u16,
     note_on: &mut Option<MidiNote>,
 ) {
-    // Quantize via 1V/oct counts derived from the MIDI note, then emit both
-    // CV and MIDI (same dual-path idea as GenSeq / Golden Gate pitch modes).
+    // Quantize via 1V/oct counts derived from the MIDI note, then emit MIDI
+    // (and CV according to CV Out mode — same dual-path idea as GenSeq).
     let pitch = note_to_pitch(raw);
     let counts = pitch.as_counts(out_range, vpo);
     let q = quantizer.get_quantized_note(counts).await;
     let out_counts = q.as_counts(out_range, vpo);
     if let Some(jack) = cv_jack {
-        jack.set_value(out_counts);
+        match cv_out.min(OUT_COUNT - 1) {
+            OUT_GATE => jack.set_value(4095),
+            OUT_VELOCITY => jack.set_value(velocity),
+            _ => jack.set_value(out_counts), // Pitch
+        }
     }
 
     let midi_n = q.as_midi();

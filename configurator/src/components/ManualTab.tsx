@@ -1593,7 +1593,357 @@ On load, both registers are restored at the next phrase boundary so the recalled
     ],
   },
   {
+    appId: 29,
+    title: "Heat Pump",
+    description: "Clock-synced sidechain ducking envelope",
+    color: "Pink",
+    icon: "ad-env",
+    params: [
+      "Color",
+      "Range",
+      "MIDI Channel",
+      "MIDI CC",
+      "NRPN",
+      "MIDI Out",
+      "Jack",
+      "CV Dest",
+      "CV Att",
+    ],
+    storage: ["Release", "Depth", "Invert", "Muted", "Division", "CV dest"],
+    text: `Heat Pump is a clock-synced ducking envelope: on each division pulse the output ducks by **Depth**, then recovers at **Release**. Use it for sidechain-style pumping on CV and MIDI CC. **Short press** fires a manual duck; **long press** mutes and holds the current level (no snap to idle). **Shift + long press** inverts duck direction (white↔off fade on the button).
+
+#### Clock division
+
+With **Jack = CV Out**, **Shift + short press** cycles the clock division: 1/1, 1/2, 1/4., 1/4, 1/8., 1/4T, 1/8, 1/8T, 1/16, 1/32. The button LED acts as a metronome — brightness steps down from Mid toward Low as divisions get faster. At 1/1 the pulse uses the **Color** parameter.
+
+**Button + Fader** sets division directly (Third layer). A fader move while the button is held cancels a pending mute or manual duck on release.
+
+#### CV jack
+
+**Jack = CV Out** — the envelope drives the jack (and MIDI CC when enabled). **Jack = CV In** — incoming CV modulates a **CV Dest** target (**Depth**, **Release**, or **Duck** trigger). Set dest in the Configurator or cycle on-device with **Shift + short press** (button flashes the dest color: red / yellow / cyan). **CV Att** scales modulation 0–100%.`,
+    channels: [
+      {
+        jackTitle: "CV Out / CV In",
+        jackDescription:
+          "CV Out: ducking envelope. CV In: bipolar modulation per CV Dest.",
+        faderTitle: "Release",
+        faderDescription: "Recovery time after each duck (up = faster).",
+        faderPlusShiftTitle: "Depth",
+        faderPlusShiftDescription: "How far the output ducks on each pulse.",
+        faderPlusFnTitle: "Division",
+        faderPlusFnDescription:
+          "Clock division (1/1 … 1/32). Also cycled with Shift + short press when Jack = CV Out.",
+        fnTitle: "Duck / Mute",
+        fnDescription:
+          "Short press: manual duck. Long press: mute/bypass (holds current level).",
+        fnPlusShiftTitle: "Division / CV dest / Invert",
+        fnPlusShiftDescription:
+          "Short (CV Out): cycle division. Short (CV In): cycle CV Dest. Long: invert duck direction.",
+        ledTop: "Envelope level",
+        ledTopPlusShift: "Depth (red)",
+        ledBottom: "Division metronome on button",
+      },
+    ],
+  },
+  {
+    appId: 30,
+    title: "Grooves",
+    description: "Multi-genre MIDI drum grooves with swing",
+    color: "Orange",
+    icon: "die",
+    params: [
+      "MIDI Note Kick",
+      "MIDI Channel Kick",
+      "MIDI Note Snare",
+      "MIDI Channel Snare",
+      "MIDI Note Hats",
+      "MIDI Channel Hats",
+      "Groove",
+      "Swing max %",
+      "GATE %",
+      "Color",
+      "MIDI Out",
+      "Jack",
+      "Range",
+      "CV Dest",
+      "CV Att",
+    ],
+    storage: ["Swing", "Density", "Jack mode", "Reversed swing", "Muted"],
+    text: `Grooves plays genre MIDI drum patterns on the global clock. **Density** progressively reveals extra kick, snare, and hat hits beyond each genre's base pattern. **Swing** delays off-beat 16ths; **Swing max %** in the Configurator caps how far the Alt fader can push.
+
+#### Genres
+
+Cycle with **Shift + long press** (button flashes genre color): Dub → Disco → Hip-Hop → House → Techno → Trip-Hop → UK Garage → Dubstep. The **Groove** parameter sets the starting genre; device cycles persist to storage and params.
+
+#### CV jack
+
+With **Jack = CV Out**, the jack mirrors drum activity — **Button + Fader** picks **Any** (low: any simultaneous hit) vs **Stacked** (high: only when kick+snare+hats fire together; violet vs yellow on the top LED). **Jack = CV In** modulates **Density**, **Swing**, or fires **Reset** per **CV Dest** (Configurator only). **CV Att** scales input 0–100%.
+
+**Short press** resets to the downbeat. **Long press** mutes (MIDI notes off). **Shift + short press** reverses swing direction.`,
+    channels: [
+      {
+        jackTitle: "CV Out / CV In",
+        jackDescription:
+          "CV Out: drum-activity gate. CV In: modulates Density, Swing, or Reset.",
+        faderTitle: "Density",
+        faderDescription: "Reveals extra kick, snare, and hat hits in the pattern.",
+        faderPlusShiftTitle: "Swing",
+        faderPlusShiftDescription:
+          "Swing amount (capped by Swing max % parameter).",
+        faderPlusFnTitle: "Jack mode",
+        faderPlusFnDescription:
+          "CV Out only: Any (low) vs Stacked (high) activity mode.",
+        fnTitle: "Reset / Mute",
+        fnDescription: "Short press: reset to downbeat. Long press: mute.",
+        fnPlusShiftTitle: "Reverse swing / Genre",
+        fnPlusShiftDescription:
+          "Short: reverse swing. Long: cycle genre (oldest → newest).",
+        ledTop: "Density level; jack mode color when Button + Fader active",
+        ledTopPlusShift: "Swing amount",
+        ledBottom: "Pattern activity",
+      },
+    ],
+  },
+  {
+    appId: 31,
+    title: "Golden Gate",
+    description: "Fibonacci-spaced gates — successive ratios approach φ",
+    color: "Violet",
+    icon: "sequence-square",
+    params: [
+      "MIDI Channel",
+      "MIDI Note",
+      "MIDI CC",
+      "GATE %",
+      "Speed",
+      "Color",
+      "MIDI Out",
+      "Jack",
+      "Range",
+      "CV Dest",
+      "CV Att",
+      "Mode",
+    ],
+    storage: [
+      "Fibonacci depth",
+      "Cycle length",
+      "Muted",
+      "Reversed",
+      "Out mode",
+      "Local speed",
+    ],
+    text: `Golden Gate fills a cycle of length **N** with Fibonacci-spaced hits. Raising **Depth** uses longer gaps so successive interval ratios approach φ. **Shift + Fader** sets cycle length **N**. **Button + Fader** overrides the **Speed** parameter locally (16th at top → quarter at bottom; 255 = follow Configurator Speed).
+
+#### Output modes
+
+The **Mode** parameter selects Note, CC, Pitch (12-TET), or Phi (φ-spaced pitch intervals). **Shift + long press** cycles the same four modes on-device (button color: default / orange / red / pink). Pitch and Phi modes output quantized CV plus MIDI; Gate+Note and Gate+CC also drive the CV/gate jack when **Jack = CV Out**.
+
+**Short press** resets to the downbeat. **Long press** mutes. **Shift + short press** reverses travel through the hit list.
+
+#### CV jack
+
+**Jack = CV In** is MIDI-first — CV/gate outs are disabled. CV modulates **Depth**, **Cycle**, or **Reset** per **CV Dest**. **CV Att** scales input 0–100%.`,
+    channels: [
+      {
+        jackTitle: "CV Out / CV In",
+        jackDescription:
+          "CV Out: gate/pitch per Mode. CV In: Depth/Cycle/Reset modulation (no outs).",
+        faderTitle: "Fibonacci depth",
+        faderDescription: "Max Fibonacci gap depth — deeper approaches φ spacing.",
+        faderPlusShiftTitle: "Cycle length",
+        faderPlusShiftDescription: "Phrase length N in steps.",
+        faderPlusFnTitle: "Local speed",
+        faderPlusFnDescription:
+          "Overrides Speed param (16th → quarter). Center = follow Configurator.",
+        fnTitle: "Reset / Mute",
+        fnDescription: "Short press: reset to downbeat. Long press: mute.",
+        fnPlusShiftTitle: "Reverse / Out mode",
+        fnPlusShiftDescription:
+          "Short: reverse gap direction. Long: cycle Note / CC / Pitch / Phi.",
+        ledTop: "Depth or pitch level (mode-dependent)",
+        ledTopPlusShift: "Cycle length",
+        ledBottom: "Speed division color while Button + Fader held",
+      },
+    ],
+  },
+  {
     appId: 32,
+    title: "Super LFO",
+    description: "Morphing dual-osc LFO with CV form control",
+    color: "Cyan",
+    icon: "sine",
+    params: [
+      "Speed",
+      "Range",
+      "MIDI Channel",
+      "MIDI CC",
+      "Color",
+      "NRPN",
+      "MIDI Out",
+      "Grid Lock",
+      "Mix Mode",
+      "Osc B",
+      "Mix balance",
+      "CV Dest",
+    ],
+    storage: [
+      "Morph",
+      "Skew",
+      "Warp",
+      "Symmetry",
+      "Speed",
+      "Attenuation",
+      "Rate Mod",
+      "CV dest",
+      "Reversed",
+      "Frozen",
+      "Clocked",
+      "In mute",
+      "Out mute",
+    ],
+    text: `Super LFO is a two-channel form LFO: continuous **waveform morph**, **symmetry**, soft **skew**, **phase-warp**, internal **rate modulation**, and **dual oscillators** mixed with Xfade / Min / Max / Sum.
+
+#### Sound / form
+
+- **Morph (Left Fader)** sweeps Sine → Triangle → Saw → Square → Random walk → Sample & hold → Noise.
+- **Attenuation (Shift + Left Fader)** scales output level (Amp). Rate-mod depth is a separate stored value modulated when **CV Dest = Rate Mod**.
+- **Skew (Button + Left Fader)** soft asymmetry via a power curve (center ≈ linear).
+- **Symmetry (Right Fader)** leans cycle halves via phase remap (center = balanced).
+- **Phase-Warp (Button + Right Fader)** eases time through the cycle without changing the base rate.
+- **Speed (Shift + Right Fader)** sets LFO rate. Configurator **Speed** (Normal / Slow / Slowest) divides by 1 / 2 / 4.
+
+#### Dual oscillators
+
+**Osc B = Quad** — B is +90° from A. **Osc B = Octave** — B runs at 2× phase. **Mix balance** 0–100% (default 50%): 0% = A only, 100% = B only (**Xfade** only; Min / Max / Sum ignore balance). **Shift + Left long press** cycles mix mode on-device.
+
+**CV Dest** (Configurator or **Shift + Left short press**) picks what CV In modulates: Rate Mod (blue), Phase (pink), Reset (red), Amp (cyan), Speed (yellow), Morph (orange), Skew (violet), Warp (green), Symmetry (rose).
+
+#### Layout
+
+| | Fader | Shift + Fader | Button + Fader |
+| --- | --- | --- | --- |
+| **Left (CV In)** | Morph | Attenuation | Skew |
+| **Right (CV Out)** | Symmetry | Speed | Phase-Warp |
+
+#### Gestures
+
+| Control | Action |
+| --- | --- |
+| **Left short press** | Freeze (hold phase + output) |
+| **Left long press** | Mute CV in |
+| **Shift + Left short press** | Cycle CV destination |
+| **Shift + Left long press** | Cycle dual-osc mix mode |
+| **Right short press** | Phase reset |
+| **Right long press** | Mute CV out |
+| **Shift + Right short press** | Phase reverse |
+| **Shift + Right long press** | Clock sync |
+
+**Grid Lock** (clocked mode only) behaves like the stock LFO — see the LFO app manual for details.`,
+    channels: [
+      {
+        jackTitle: "CV In",
+        jackDescription: "Assignable bipolar CV (−5 V to +5 V).",
+        faderTitle: "Morph",
+        faderDescription:
+          "Blend Sine → Triangle → Saw → Square → Walk → S&H → Noise.",
+        faderPlusShiftTitle: "Attenuation",
+        faderPlusShiftDescription: "Output level (Amp).",
+        faderPlusFnTitle: "Skew",
+        faderPlusFnDescription: "Soft waveform asymmetry (center ≈ linear).",
+        fnTitle: "Freeze / In mute",
+        fnDescription:
+          "Short press: freeze phase and output. Long press: mute the CV input.",
+        fnPlusShiftTitle: "CV dest / Mix mode",
+        fnPlusShiftDescription:
+          "Short: cycle CV destination. Long: cycle dual-osc mix mode.",
+        ledTop: "Morph amount (HSV hue sweep)",
+        ledTopPlusShift: "Attenuation (cyan)",
+        ledTopPlusFn: "Skew zone — cyan / pink / violet",
+        ledBottom: "CV input level",
+      },
+      {
+        jackTitle: "CV Out",
+        jackDescription: "LFO output after dual-osc mix and attenuation.",
+        faderTitle: "Symmetry",
+        faderDescription:
+          "Lean cycle halves (center = balanced; low/high stretch one half).",
+        faderPlusShiftTitle: "Speed",
+        faderPlusShiftDescription:
+          "LFO rate. Also divided by Configurator Speed (Normal / Slow / Slowest).",
+        faderPlusFnTitle: "Phase-Warp",
+        faderPlusFnDescription:
+          "Eases time through the cycle without changing base rate.",
+        fnTitle: "Reset / Mute",
+        fnDescription: "Short press: reset phase. Long press: mute the output.",
+        fnPlusShiftTitle: "Reverse / Clock",
+        fnPlusShiftDescription:
+          "Short: reverse phase. Long: toggle clock sync.",
+        ledTop: "Positive half of the output (app color)",
+        ledTopPlusShift: "Speed (red)",
+        ledTopPlusFn: "Warp zone — green / yellow / red",
+        ledBottom:
+          "Negative half of the output (always, even in 0–10 V range)",
+      },
+    ],
+  },
+  {
+    appId: 33,
+    title: "Echolot",
+    description: "MIDI/CV delay with feedback and pitch shift",
+    color: "Cyan",
+    icon: "sine",
+    params: [
+      "I/O",
+      "Delay mode",
+      "Max delay (ms)",
+      "Interval mode",
+      "Routing",
+      "Signal",
+      "Range",
+      "Color",
+      "MIDI In",
+      "MIDI In CH",
+      "MIDI Out",
+      "MIDI Out Pong",
+      "MIDI Out Pong",
+      "MIDI CC",
+      "MIDI Note",
+    ],
+    storage: ["Delay", "Feedback", "Pitch interval", "Muted"],
+    text: `Echolot is a delay with feedback and optional pitch shifting. Route **MIDI→MIDI**, **MIDI→CV**, or **CV→MIDI** via the **I/O** parameter; **Signal** selects pitch, gate, CV→CC, or gate→note behavior within that mode. **Routing** Single or Ping-Pong uses **MIDI Out** and **MIDI Out Pong** channels.
+
+#### Delay and feedback
+
+**Fader** sets delay time (up = shorter). **Delay mode** ms uses **Max delay (ms)** as the ceiling; Clock mode maps the fader to bar divisions (16 bars down to 1 tick). **Shift + Fader** sets feedback. **Button + Fader** sets pitch interval in semitones; **Interval mode** Fixed / Stack / Bounce shapes how repeats transpose.
+
+#### Mute and panic
+
+**Short press** mutes with ring-out — new input is blocked but queued repeats play out. **Long press** panics (clears the queue) unless you moved the fader for interval edit during that hold. MIDI In always flashes white on incoming notes (~20% brightness when muted) so the input path stays visible.`,
+    channels: [
+      {
+        jackTitle: "CV / MIDI I/O",
+        jackDescription:
+          "Jack role depends on I/O and Signal parameters (pitch CV, gate, or pass-through).",
+        faderTitle: "Delay",
+        faderDescription: "Delay time (up = shorter / faster repeats).",
+        faderPlusShiftTitle: "Feedback",
+        faderPlusShiftDescription: "Feedback amount for delayed repeats.",
+        faderPlusFnTitle: "Pitch interval",
+        faderPlusFnDescription:
+          "Semitone shift per repeat (±24 st). Interval mode shapes stacking.",
+        fnTitle: "Mute / Panic",
+        fnDescription:
+          "Short press: mute with ring-out. Long press: panic (clear queue).",
+        ledTop: "Delay level; activity pulse on repeats",
+        ledTopPlusShift: "Feedback (green)",
+        ledTopPlusFn: "Interval (red)",
+        ledBottom: "Ping-pong side or queue depth indicator",
+        ledBottomPlusFn: "Interval zone",
+      },
+    ],
+  },
+  {
+    appId: 34,
     title: "Arp de Lévy",
     description:
       "Lévy-flight generative arpeggiator — evolve, texture, and expression",
@@ -1678,6 +2028,85 @@ Scenes store the live note pool, phrase length, and expression depth.`,
         ledTopPlusShift: "Texture amount (orange, brighter = denser/shorter)",
         ledTopPlusFn: "Lévy α (violet, brighter = wilder)",
         ledBottom: "Flash on each hit",
+      },
+    ],
+  },
+  {
+    appId: 35,
+    title: "Chord Vamp",
+    description:
+      "Chord progressions — perform, shift+tap capture, or auto vamp",
+    color: "Violet",
+    icon: "note-grid",
+    params: [
+      "MIDI Out",
+      "MIDI Channel",
+      "Root",
+      "Scale",
+      "Genre",
+      "Voicing",
+      "Velocity",
+      "Auto style",
+      "Start mode",
+      "Capture length",
+      "Color",
+      "Jack",
+      "Range",
+      "V/Oct",
+      "CV Dest",
+      "CV Att",
+    ],
+    storage: [
+      "Vamp slots",
+      "Genre",
+      "Scrub position",
+      "Tension",
+      "Auto division",
+      "Mode (Perform/Auto)",
+      "Auto running",
+      "Capture clip",
+    ],
+    text: `Chord Vamp plays MIDI chord progressions in two modes. **Perform**: scrub vamp slots with the fader and **hold** the button to sound the current chord. **Auto**: the app steps through the progression on the clock; **short press** play/pauses. Toggle modes with **Shift + short press**.
+
+#### Perform and capture
+
+In Perform, **Shift + short press** captures the last N bars of harmony (per **Capture length**: 16 / 8 / 4 / 2 / 1 bars) into a timed clip, switches to Auto, and starts playback. **Perform long press** is unused — the chord stays held for as long as the button is down.
+
+In Auto, **long press** clears the capture clip and reloads the genre preset. **Shift + long press** panics (All Notes Off). **Shift + short press** returns to Perform.
+
+#### Faders
+
+- **Perform — Main**: scrub vamp slots.
+- **Auto — Main**: tension (harmonic drift within the genre).
+- **Shift + Fader**: genre (Dub → … → Dubstep; rose flash for Capture clip slot when a clip exists).
+- **Button + Fader**: autoplay clock division (8/1 down to 1/16).
+
+**CV Dest** Macro modulates scrub (Perform) or tension (Auto). Panic can fire from CV when **CV Dest = Panic**. Perform mode uses app color on the button; Auto uses orange (bright = playing).`,
+    channels: [
+      {
+        jackTitle: "CV Out / CV In",
+        jackDescription:
+          "CV Out: macro level. CV In: Macro or Panic per CV Dest.",
+        faderTitle: "Scrub / Tension",
+        faderDescription:
+          "Perform: scrub vamp slots. Auto: tension within the progression.",
+        faderPlusShiftTitle: "Genre",
+        faderPlusShiftDescription:
+          "Cycle genre preset (Capture clip slot when a timed clip exists).",
+        faderPlusFnTitle: "Auto division",
+        faderPlusFnDescription:
+          "Clock division for Auto playback (8/1 … 1/16).",
+        fnTitle: "Chord / Play",
+        fnDescription:
+          "Perform: hold for chord. Auto: short = play/pause. Long (Auto): clear clip.",
+        fnPlusShiftTitle: "Mode / Capture / Panic",
+        fnPlusShiftDescription:
+          "Short: toggle Perform↔Auto; Perform+Shift+short = capture. Long (Auto): panic.",
+        ledTop: "Scrub or tension level",
+        ledTopPlusShift: "Genre color (rose = capture clip)",
+        ledTopPlusFn: "Division (cyan)",
+        ledBottom: "Chord voice level",
+        ledBottomPlusFn: "Division meter",
       },
     ],
   },
