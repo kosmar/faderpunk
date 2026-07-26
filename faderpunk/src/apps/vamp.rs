@@ -603,11 +603,10 @@ fn build_chord(
     out
 }
 
-/// Unique degrees present in `slots[..count]`, sorted low→high (I … vii).
-fn unique_degrees(slots: &[u8; VAMP_CAP], count: usize) -> Vec<u8, NUM_DEGREES> {
+/// Unique degrees from a genre classic progression (Perform vocabulary).
+fn unique_degrees_from_prog(prog: &[u8]) -> Vec<u8, NUM_DEGREES> {
     let mut seen = [false; NUM_DEGREES];
-    let n = count.min(VAMP_CAP);
-    for &d in slots.iter().take(n) {
+    for &d in prog {
         seen[(d as usize) % NUM_DEGREES] = true;
     }
     let mut out = Vec::new();
@@ -622,15 +621,15 @@ fn unique_degrees(slots: &[u8; VAMP_CAP], count: usize) -> Vec<u8, NUM_DEGREES> 
     out
 }
 
-/// Perform palette: genre degrees ascending, repeated across [`PERFORM_OCTAVES`].
-/// Returns number of entries written to `deg_out` / `oct_out`.
+/// Perform palette: genre trope degrees ascending, repeated across [`PERFORM_OCTAVES`].
+/// Built from classic progression DNA — not from Auto Markov slots (those can
+/// collapse to tonic-only and leave Perform stuck on one root).
 fn build_perform_map(
-    slots: &[u8; VAMP_CAP],
-    count: usize,
+    genre: usize,
     deg_out: &mut [u8; PERFORM_CAP],
     oct_out: &mut [u8; PERFORM_CAP],
 ) -> u8 {
-    let degrees = unique_degrees(slots, count);
+    let degrees = unique_degrees_from_prog(GenrePreset::get(genre).progression);
     let mut n = 0usize;
     for oct in 0..PERFORM_OCTAVES {
         for &deg in degrees.iter() {
@@ -1113,7 +1112,8 @@ pub async fn run(
     {
         let mut pdeg = [0u8; PERFORM_CAP];
         let mut poct = [0u8; PERFORM_CAP];
-        let pc = build_perform_map(&slots, slot_count as usize, &mut pdeg, &mut poct);
+        let g = genre.min(NUM_GENRES - 1);
+        let pc = build_perform_map(g, &mut pdeg, &mut poct);
         perform_deg_cell.set(pdeg);
         perform_oct_cell.set(poct);
         glob_perform_count.set(pc);
@@ -1129,10 +1129,12 @@ pub async fn run(
 
     leds.set(0, Led::Button, led_color, LED_BRIGHTNESS);
 
-    let refresh_perform_map = |slots: &[u8; VAMP_CAP], count: u8| {
+    // Rebuild Perform pitch map from genre DNA and re-apply scrub → degree.
+    let refresh_perform_map = |genre: usize| {
+        let g = genre.min(NUM_GENRES - 1);
         let mut pdeg = [0u8; PERFORM_CAP];
         let mut poct = [0u8; PERFORM_CAP];
-        let pc = build_perform_map(slots, count as usize, &mut pdeg, &mut poct);
+        let pc = build_perform_map(g, &mut pdeg, &mut poct);
         perform_deg_cell.set(pdeg);
         perform_oct_cell.set(poct);
         glob_perform_count.set(pc);
@@ -1501,6 +1503,9 @@ pub async fn run(
                     glob_mode_auto.set(false);
                     chord_held.set(false);
                     pending_release.set(true);
+                    // Re-bind degree/octave to scrub via genre Perform map.
+                    let g = glob_last_genre.get().min(NUM_GENRES - 1);
+                    refresh_perform_map(g);
                     storage.modify_and_save(|s| {
                         s.mode_auto = false;
                         s.auto_running = glob_auto_running.get();
@@ -1573,7 +1578,9 @@ pub async fn run(
                 let n = seed_genre_into(&mut slots, g, &die);
                 slots_cell.set(slots);
                 glob_slot_count.set(n);
-                refresh_perform_map(&slots, n);
+                // Fresh Perform vocabulary from genre DNA (ignore Markov slots).
+                glob_scrub.set(0);
+                refresh_perform_map(g);
                 {
                     let count = n.max(1) as usize;
                     let idx = value_to_index(glob_scrub.get(), count);
@@ -1585,6 +1592,7 @@ pub async fn run(
                     s.genre = g as u8;
                     s.slots = slots;
                     s.slot_count = n;
+                    s.scrub = 0;
                     s.swing = swing_from_genre(g);
                 });
                 glob_swing.set(swing_from_genre(g));
@@ -1659,7 +1667,9 @@ pub async fn run(
                             let n = seed_genre_into(&mut slots, g, &die);
                             slots_cell.set(slots);
                             glob_slot_count.set(n);
-                            refresh_perform_map(&slots, n);
+                            // Genre pick: reset scrub + rebuild Perform map from trope DNA.
+                            glob_scrub.set(0);
+                            refresh_perform_map(g);
                             {
                                 let count = n.max(1) as usize;
                                 let idx = value_to_index(glob_scrub.get(), count);
@@ -1670,6 +1680,7 @@ pub async fn run(
                                 s.slots = slots;
                                 s.slot_count = n;
                                 s.clip_active = false;
+                                s.scrub = 0;
                                 s.swing = swing_from_genre(g);
                             });
                             glob_swing.set(swing_from_genre(g));
@@ -1910,10 +1921,10 @@ pub async fn run(
                     });
                     slots_cell.set(slots);
                     glob_slot_count.set(count.max(1));
-                    refresh_perform_map(&slots, count.max(1));
                     let g = genre.min(NUM_GENRES - 1);
                     glob_last_genre.set(g);
                     glob_scrub.set(scrub);
+                    refresh_perform_map(g);
                     glob_tension.set(tension);
                     glob_feel.set(div_f);
                     glob_swing.set(swing.min(100));
