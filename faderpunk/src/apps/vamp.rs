@@ -3,6 +3,7 @@ use embassy_futures::{
     select::{select, select3},
 };
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, signal::Signal};
+use embassy_time::Instant;
 use heapless::Vec;
 use midly::num::u7;
 use serde::{Deserialize, Serialize};
@@ -44,6 +45,8 @@ const CAPTURE_COLOR: Color = Color::Rose;
 
 const CV_JACK_OUT: usize = 0;
 const CV_JACK_IN: usize = 1;
+/// Perform hold: step one palette index toward the fader every N ms (audible glide).
+const PERFORM_GLIDE_MS: u64 = 40;
 
 const CAPTURE_NAMES: &[&str] = &["16 bars", "8 bars", "4 bars", "2 bars", "1 bar"];
 /// Bars for each Capture length enum index.
@@ -1340,8 +1343,8 @@ pub async fn run(
 
     let engine = async {
         let mut sounding: Vec<u8, SOUNDING_CAP> = Vec::new();
-        let mut current_degree: u8 = glob_degree.get();
-        let mut current_octave: u8 = glob_octave.get();
+        let mut sounding_perform_idx: Option<u8> = None;
+        let mut next_glide_ms: u64 = 0;
 
         let release_all = async |sounding: &mut Vec<u8, SOUNDING_CAP>| {
             for n in sounding.iter() {
@@ -1378,6 +1381,7 @@ pub async fn run(
                 midi.send_cc(MidiCc::from(ALL_NOTES_OFF), 0).await;
                 sounding.clear();
                 chord_held.set(false);
+                sounding_perform_idx = None;
                 pending_play.set(false);
                 pending_release.set(false);
                 pending_on_at.set(NO_AT);
@@ -1397,27 +1401,41 @@ pub async fn run(
                 let octave = pending_octave.get();
                 let record = pending_record.get();
                 pending_record.set(false);
-                current_degree = degree;
-                current_octave = octave;
                 play_degree(&mut sounding, degree, octave, record).await;
             }
 
-            // Perform: chord hold (Auto voice comes only from pending_play).
+            // Perform: chord hold with palette-index glide toward the fader.
             if !glob_mode_auto.get() {
                 if chord_held.get() {
-                    let deg = glob_degree.get();
-                    let oct = glob_octave.get();
-                    if sounding.is_empty()
-                        || current_degree != deg
-                        || current_octave != oct
-                    {
-                        current_degree = deg;
-                        current_octave = oct;
+                    let target = glob_perform_idx.get();
+                    let count = glob_perform_count.get().max(1);
+                    let pdeg = perform_deg_cell.get();
+                    let poct = perform_oct_cell.get();
+                    let now = Instant::now().as_millis();
+
+                    if sounding.is_empty() {
+                        let (deg, oct) = apply_perform_index(target as usize, &pdeg, &poct, count);
+                        sounding_perform_idx = Some(target);
+                        next_glide_ms = now.saturating_add(PERFORM_GLIDE_MS);
+                        play_degree(&mut sounding, deg, oct, true).await;
+                    } else if sounding_perform_idx != Some(target) && now >= next_glide_ms {
+                        let cur = sounding_perform_idx.unwrap_or(target);
+                        let next = if cur < target {
+                            cur.saturating_add(1)
+                        } else {
+                            cur.saturating_sub(1)
+                        };
+                        let (deg, oct) = apply_perform_index(next as usize, &pdeg, &poct, count);
+                        sounding_perform_idx = Some(next);
+                        next_glide_ms = now.saturating_add(PERFORM_GLIDE_MS);
                         play_degree(&mut sounding, deg, oct, true).await;
                     }
                 } else if !sounding.is_empty() {
+                    sounding_perform_idx = None;
                     close_ring(ticks() as u32);
                     release_all(&mut sounding).await;
+                } else {
+                    sounding_perform_idx = None;
                 }
             }
 
@@ -1532,8 +1550,12 @@ pub async fn run(
                 storage.modify_and_save(|s| s.auto_running = playing);
             } else {
                 // Perform: hold = chord; release = note off.
+                // Snap scrub to the physical fader so hold never starts stuck on
+                // an old latch target (e.g. scrub=0 after genre pick).
+                let fader_val = fader.get_value();
+                glob_scrub.set(fader_val);
                 let count = glob_perform_count.get().max(1) as usize;
-                let idx = value_to_index(glob_scrub.get(), count);
+                let idx = value_to_index(fader_val, count);
                 let (deg, oct) = apply_perform_index(
                     idx,
                     &perform_deg_cell.get(),
@@ -1543,6 +1565,7 @@ pub async fn run(
                 glob_perform_idx.set(idx as u8);
                 glob_degree.set(deg);
                 glob_octave.set(oct);
+                storage.modify_and_save(|s| s.scrub = fader_val);
                 chord_held.set(true);
 
                 buttons.wait_for_up(0).await;
@@ -1604,9 +1627,43 @@ pub async fn run(
 
     let fader_handler = async {
         let mut latch = app.make_latch(fader.get_value());
+
+        // Apply Perform scrub: update target index always; degree only when not
+        // holding (engine glides degree while chord_held).
+        let apply_perform_scrub = |new_value: u16| {
+            glob_scrub.set(new_value);
+            let count = glob_perform_count.get().max(1) as usize;
+            let idx = value_to_index(new_value, count);
+            let (deg, oct) = apply_perform_index(
+                idx,
+                &perform_deg_cell.get(),
+                &perform_oct_cell.get(),
+                glob_perform_count.get(),
+            );
+            glob_perform_idx.set(idx as u8);
+            if !chord_held.get() {
+                glob_degree.set(deg);
+                glob_octave.set(oct);
+            }
+            storage.modify_and_save(|s| s.scrub = new_value);
+        };
+
         loop {
             fader.wait_for_change().await;
             let layer = glob_latch.get();
+            let fader_val = fader.get_value();
+
+            // Perform hold: fader is absolute scrub. Button-down switches the
+            // latch layer to Third (for LED), which would otherwise steal the
+            // fader onto Feel and leave scrub stuck (often on the first root).
+            if !glob_mode_auto.get() && chord_held.get() {
+                let _ = latch.update(fader_val, layer, glob_scrub.get());
+                if fader_val.abs_diff(glob_scrub.get()) > 8 {
+                    apply_perform_scrub(fader_val);
+                }
+                continue;
+            }
+
             let target = match layer {
                 LatchLayer::Main => {
                     if glob_mode_auto.get() {
@@ -1618,26 +1675,14 @@ pub async fn run(
                 LatchLayer::Alt => glob_genre_fader.get(),
                 LatchLayer::Third => storage.query(|s| s.div_fader),
             };
-            if let Some(new_value) = latch.update(fader.get_value(), layer, target) {
+            if let Some(new_value) = latch.update(fader_val, layer, target) {
                 match layer {
                     LatchLayer::Main => {
                         if glob_mode_auto.get() {
                             glob_tension.set(new_value);
                             storage.modify_and_save(|s| s.tension = new_value);
                         } else {
-                            glob_scrub.set(new_value);
-                            let count = glob_perform_count.get().max(1) as usize;
-                            let idx = value_to_index(new_value, count);
-                            let (deg, oct) = apply_perform_index(
-                                idx,
-                                &perform_deg_cell.get(),
-                                &perform_oct_cell.get(),
-                                glob_perform_count.get(),
-                            );
-                            glob_perform_idx.set(idx as u8);
-                            glob_degree.set(deg);
-                            glob_octave.set(oct);
-                            storage.modify_and_save(|s| s.scrub = new_value);
+                            apply_perform_scrub(new_value);
                         }
                     }
                     LatchLayer::Alt => {
@@ -1691,8 +1736,11 @@ pub async fn run(
                     }
                     LatchLayer::Third => {
                         // Auto Feel: laid back (0) ↔ advanced (4095).
-                        glob_feel.set(new_value);
-                        storage.modify_and_save(|s| s.div_fader = new_value);
+                        // (Perform hold is handled above — never lands here while held.)
+                        if glob_mode_auto.get() {
+                            glob_feel.set(new_value);
+                            storage.modify_and_save(|s| s.div_fader = new_value);
+                        }
                     }
                 }
             }
@@ -1742,8 +1790,11 @@ pub async fn run(
                             glob_perform_count.get(),
                         );
                         glob_perform_idx.set(idx as u8);
-                        glob_degree.set(deg);
-                        glob_octave.set(oct);
+                        // While held, engine glides; only preview degree when idle.
+                        if !chord_held.get() {
+                            glob_degree.set(deg);
+                            glob_octave.set(oct);
+                        }
                     }
                 }
             } else {
