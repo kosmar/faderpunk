@@ -1,6 +1,6 @@
 //! Super LFO — morphing dual-osc LFO with CV destinations for form params.
 //!
-//! UX: Ch0 Main=Morph / Alt=Rate Mod / Third=Skew;
+//! UX: Ch0 Main=Morph / Alt=Amp / Third=Skew;
 //! Ch1 Main=Symmetry / Alt=Speed / Third=Warp. Heat Pump / Golden Gate family.
 
 use embassy_futures::{
@@ -26,25 +26,26 @@ use crate::{
 };
 
 pub const CHANNELS: usize = 2;
-pub const PARAMS: usize = 12;
+pub const PARAMS: usize = 13;
 
 const REVERSE_FADE_MS: u16 = 500;
 /// Hold off periodic button LED writes so LedMode::Flash can finish (~3 cycles @ 60fps).
 const BUTTON_FLASH_MS: u16 = 850;
 const DEST_COUNT: usize = 9;
-const DEST_SPEED: usize = 0;
+/// CV-only first, then latch mirrors (Shift+Button cycle order).
+const DEST_RATE_MOD: usize = 0;
 const DEST_PHASE: usize = 1;
-const DEST_AMP: usize = 2;
-const DEST_RESET: usize = 3;
-const DEST_MORPH: usize = 4;
-const DEST_SKEW: usize = 5;
-const DEST_WARP: usize = 6;
-const DEST_SYMMETRY: usize = 7;
-const DEST_RATE_MOD: usize = 8;
+const DEST_RESET: usize = 2;
+const DEST_AMP: usize = 3;
+const DEST_SPEED: usize = 4;
+const DEST_MORPH: usize = 5;
+const DEST_SKEW: usize = 6;
+const DEST_WARP: usize = 7;
+const DEST_SYMMETRY: usize = 8;
 /// Secondary LFO rate as a fraction of the primary step (rate-mod wobble).
 /// Higher = more audible tempo breathing relative to the main cycle.
 const RATE_MOD_RATIO: f32 = 0.3;
-/// Full Alt0 depth scales speed by ±this (1.0 → 0..2×; 2.0 → ~0..3×).
+/// Full Amp-mod / rate-mod depth scales speed by ±this (1.0 → 0..2×; 2.0 → ~0..3×).
 const RATE_MOD_DEPTH_GAIN: f32 = 2.0;
 /// Mid-fader emphasis for rate-mod amount (< 1 = stronger sooner).
 const RATE_MOD_DEPTH_CURVE: f32 = 0.65;
@@ -102,18 +103,23 @@ pub static CONFIG: Config<PARAMS> = Config::new(
     min: 0,
     max: 100,
 })
+.add_param(Param::i32 {
+    name: "Rate-mod depth",
+    min: 0,
+    max: 100,
+})
 .add_param(Param::Enum {
     name: "CV Dest",
     variants: &[
-        "Speed",
+        "Rate Mod",
         "Phase",
-        "Amp",
         "Reset",
+        "Amp",
+        "Speed",
         "Morph",
         "Skew",
         "Warp",
         "Symmetry",
-        "Rate Mod",
     ],
 });
 
@@ -130,12 +136,14 @@ pub struct Params {
     osc_b: usize,
     /// 0% = Osc A only, 50% = center, 100% = Osc B only (Xfade).
     mix_balance: i32,
+    /// Depth of internal rate wobble (0 = steady, 100 = full).
+    rate_mod: i32,
     dest: usize,
 }
 
 impl AppParams for Params {
     fn from_values(values: &[Value]) -> Option<Self> {
-        // Legacy: 10 params (no Mix balance), 11 params (no CV Dest), or signed Mix balance.
+        // Legacy: 10 (no mix), 11 (no dest), 12 (no rate-mod param), 13 = current.
         let (
             speed_mult,
             range,
@@ -148,11 +156,11 @@ impl AppParams for Params {
             mix_mode,
             osc_b,
             mix_balance,
+            rate_mod,
             dest,
-        ) = if values.len() >= PARAMS {
+        ) = if values.len() >= 13 {
             let raw = i32::from_value(values[10]);
             let mix_balance = if raw < 0 {
-                // Old signed −100…+100 → 0…100%
                 ((raw + 100) / 2).clamp(0, 100)
             } else {
                 raw.clamp(0, 100)
@@ -169,6 +177,29 @@ impl AppParams for Params {
                 usize::from_value(values[8]),
                 usize::from_value(values[9]),
                 mix_balance,
+                i32::from_value(values[11]).clamp(0, 100),
+                usize::from_value(values[12]),
+            )
+        } else if values.len() >= 12 {
+            let raw = i32::from_value(values[10]);
+            let mix_balance = if raw < 0 {
+                ((raw + 100) / 2).clamp(0, 100)
+            } else {
+                raw.clamp(0, 100)
+            };
+            (
+                usize::from_value(values[0]),
+                Range::from_value(values[1]),
+                MidiChannel::from_value(values[2]),
+                MidiCc::from_value(values[3]),
+                Color::from_value(values[4]),
+                bool::from_value(values[5]),
+                MidiOut::from_value(values[6]),
+                bool::from_value(values[7]),
+                usize::from_value(values[8]),
+                usize::from_value(values[9]),
+                mix_balance,
+                0,
                 usize::from_value(values[11]),
             )
         } else if values.len() >= 11 {
@@ -190,7 +221,8 @@ impl AppParams for Params {
                 usize::from_value(values[8]),
                 usize::from_value(values[9]),
                 mix_balance,
-                DEST_SPEED,
+                0,
+                DEST_RATE_MOD,
             )
         } else if values.len() >= 10 {
             (
@@ -205,7 +237,8 @@ impl AppParams for Params {
                 usize::from_value(values[8]),
                 usize::from_value(values[9]),
                 50,
-                DEST_SPEED,
+                0,
+                DEST_RATE_MOD,
             )
         } else {
             return None;
@@ -222,6 +255,7 @@ impl AppParams for Params {
             mix_mode,
             osc_b,
             mix_balance,
+            rate_mod,
             dest: dest.min(DEST_COUNT - 1),
         })
     }
@@ -239,6 +273,7 @@ impl AppParams for Params {
         vec.push(self.mix_mode.into()).unwrap();
         vec.push(self.osc_b.into()).unwrap();
         vec.push(self.mix_balance.into()).unwrap();
+        vec.push(self.rate_mod.into()).unwrap();
         vec.push(self.dest.into()).unwrap();
         vec
     }
@@ -278,7 +313,7 @@ impl Default for Storage {
             mix_balance: 2048,
             in_att: 4095,
             in_mute: false,
-            dest: DEST_SPEED,
+            dest: DEST_RATE_MOD,
             out_muted: false,
             reversed: false,
             frozen: false,
@@ -289,7 +324,7 @@ impl Default for Storage {
 
 impl AppStorage for Storage {}
 
-#[embassy_executor::task(pool_size = 16 / CHANNELS)]
+#[embassy_executor::task(pool_size = 4)]
 pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMutex, bool>) {
     let param_store = ParamStore::<Params>::new(
         app.app_id,
@@ -306,7 +341,8 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
             mix_mode: 0,
             osc_b: 0,
             mix_balance: 50,
-            dest: DEST_SPEED,
+            rate_mod: 0,
+            dest: DEST_RATE_MOD,
         },
     );
     let storage = ManagedStorage::<Storage>::new(app.app_id, app.layout_id);
@@ -333,7 +369,7 @@ pub async fn run(
     params: &ParamStore<Params>,
     storage: &ManagedStorage<Storage>,
 ) {
-    let (range, midi_out, midi_chan, midi_cc, led_color, nrpn, mix_mode, osc_b, p_dest) =
+    let (range, midi_out, midi_chan, midi_cc, led_color, nrpn, mix_mode, osc_b, p_dest, p_rate_mod) =
         params.query(|p| {
             (
                 p.range,
@@ -345,12 +381,15 @@ pub async fn run(
                 p.mix_mode.min(3),
                 p.osc_b.min(1),
                 p.dest.min(DEST_COUNT - 1),
+                p.rate_mod.clamp(0, 100),
             )
         });
 
-    // Configurator CV Dest is the start value; apply on each run() (param edits restart run).
+    // Configurator CV Dest / Rate Mod are start values; apply on each run()
+    // (param edits restart run). Scene load can still override storage later.
     storage.modify_and_save(|s| {
         s.dest = p_dest;
+        s.rate_mod = ((p_rate_mod as u32 * 4095) / 100) as u16;
     });
 
     let speed_mult = 2u32.pow(params.query(|p| p.speed_mult).min(31) as u32);
@@ -492,6 +531,7 @@ pub async fn run(
             };
             let destination = storage.query(|s| s.dest).min(DEST_COUNT - 1);
 
+            // CV dest: CV-only first (Rate Mod, Phase, Reset), then latch mirrors.
             let speed_offset = if destination == DEST_SPEED {
                 in_val
             } else {
@@ -707,7 +747,7 @@ pub async fn run(
                 }
             }
 
-            // Ch0: Main = morph shape + amount; Alt = rate-mod depth; Third = skew zones
+            // Ch0: Main = morph shape + amount; Alt = amp; Third = skew zones
             match show_0 {
                 LatchLayer::Main => {
                     let morph_bright = (morph / 16) as u8;
@@ -725,8 +765,8 @@ pub async fn run(
                     }
                 }
                 LatchLayer::Alt => {
-                    let mod_bright = (storage.query(|s| s.rate_mod) / 16) as u8;
-                    leds.set(0, Led::Top, Color::Orange, Brightness::Custom(mod_bright));
+                    let amp_bright = (storage.query(|s| s.layer_attenuation) / 16) as u8;
+                    leds.set(0, Led::Top, Color::Cyan, Brightness::Custom(amp_bright));
                     leds.unset(0, Led::Bottom);
                     if flash_0 == 0 {
                         leds.set(0, Led::Button, dest_color(destination), Brightness::Mid);
@@ -768,7 +808,7 @@ pub async fn run(
                 }
                 let target_value = match latch_layer {
                     LatchLayer::Main => storage.query(|s| s.morph),
-                    LatchLayer::Alt => storage.query(|s| s.rate_mod),
+                    LatchLayer::Alt => storage.query(|s| s.layer_attenuation),
                     LatchLayer::Third => storage.query(|s| s.skew),
                 };
                 if let Some(new_value) =
@@ -780,7 +820,7 @@ pub async fn run(
                         }
                         LatchLayer::Alt => {
                             glob_shift_focus.set(0);
-                            storage.modify_and_save(|s| s.rate_mod = new_value);
+                            storage.modify_and_save(|s| s.layer_attenuation = new_value);
                         }
                         LatchLayer::Third => {
                             fader_moved_0.set(true);
@@ -1208,16 +1248,16 @@ fn hsv_to_rgb(hue: u16) -> (u8, u8, u8) {
 
 fn dest_color(dest: usize) -> Color {
     match dest {
-        DEST_SPEED => Color::Yellow,
-        DEST_PHASE => Color::Pink,
-        DEST_AMP => Color::Cyan,
-        DEST_RESET => Color::Red,
-        DEST_MORPH => Color::Orange,
-        DEST_SKEW => Color::Violet,
-        DEST_WARP => Color::Green,
-        DEST_SYMMETRY => Color::Rose,
-        DEST_RATE_MOD => Color::Blue,
-        _ => Color::Yellow,
+        DEST_RATE_MOD => Color::Blue,   // CV-only
+        DEST_PHASE => Color::Pink,      // CV-only
+        DEST_RESET => Color::Red,       // CV-only
+        DEST_AMP => Color::Cyan,        // latch
+        DEST_SPEED => Color::Yellow,    // latch
+        DEST_MORPH => Color::Orange,    // latch
+        DEST_SKEW => Color::Violet,     // latch
+        DEST_WARP => Color::Green,      // latch
+        DEST_SYMMETRY => Color::Rose,   // latch
+        _ => Color::Blue,
     }
 }
 
