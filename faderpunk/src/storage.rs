@@ -707,8 +707,9 @@ impl<P: AppParams> ParamStore<P> {
         accessor(&*guard)
     }
 
-    /// Mutate params from the app (e.g. Shift+long genre cycle), persist, and
-    /// push to the configurator without restarting the app task.
+    /// Mutate params from the app (e.g. Shift+fader genre pick), persist, and
+    /// push AppState so hosts (configurator / Scopepunk) see the change without
+    /// restarting the app task.
     pub async fn update<F>(&self, modifier: F)
     where
         F: FnOnce(&mut P),

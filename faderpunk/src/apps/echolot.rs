@@ -31,6 +31,8 @@ const QUEUE_CAP: usize = 48;
 /// Leave headroom so NoteOffs can still land when feedback floods the queue.
 const QUEUE_FEEDBACK_RESERVE: usize = 4;
 const SOUNDING_CAP: usize = 32;
+/// Held input notes whose delay is frozen until matching NoteOff (polyphony headroom).
+const OPEN_NOTES_CAP: usize = 16;
 const GATE_THRESH: u16 = 406;
 /// Peak white button flash on note/gate in (full scale).
 const INPUT_FLASH_PEAK: u8 = 255;
@@ -227,6 +229,12 @@ struct PendingEvent {
     due_ms: u64,
     due_tick: u32,
     generation: u8,
+    /// Delay frozen at enqueue — NoteOff / feedback children must reuse this so
+    /// scrubbing Main delay cannot stretch a held note into a constant beep.
+    delay_ms: u64,
+    delay_ticks: u32,
+    /// Interval base frozen at enqueue — Button+Fader scrub must not retarget Offs.
+    base_interval: i8,
 }
 
 fn fader_to_delay_ms(fader: u16, max_ms: i32) -> u64 {
@@ -570,6 +578,9 @@ pub async fn run(
     let engine = async {
         let mut queue: Vec<PendingEvent, QUEUE_CAP> = Vec::new();
         let mut sounding: Vec<(u8, u8), SOUNDING_CAP> = Vec::new();
+        // Input NoteOn → freeze delay + interval until matching NoteOff.
+        let mut open_notes: Vec<(u8, u64, u32, i8), OPEN_NOTES_CAP> = Vec::new();
+        let mut open_gate_delay: Option<(u64, u32, i8)> = None;
         let mut recent_emit: Vec<RecentEmit, RECENT_EMIT_CAP> = Vec::new();
         let mut prev_gate = false;
         let mut last_cc_gate: u16 = u16::MAX;
@@ -595,12 +606,17 @@ pub async fn run(
             if generation > 0 && queue.len() + QUEUE_FEEDBACK_RESERVE >= QUEUE_CAP {
                 return false;
             }
-            // Prefer landing NoteOffs: drop oldest feedback NoteOn if full.
+            // Prefer landing NoteOffs: drop oldest feedback NoteOn if full, else any NoteOn.
             if queue.is_full() {
                 if matches!(kind, EventKind::NoteOff | EventKind::GateLow) {
                     if let Some(pos) = queue
                         .iter()
                         .position(|e| e.generation > 0 && matches!(e.kind, EventKind::NoteOn | EventKind::GateHigh))
+                    {
+                        queue.swap_remove(pos);
+                    } else if let Some(pos) = queue
+                        .iter()
+                        .position(|e| matches!(e.kind, EventKind::NoteOn | EventKind::GateHigh))
                     {
                         queue.swap_remove(pos);
                     } else {
@@ -621,6 +637,9 @@ pub async fn run(
                     due_ms: now_ms.saturating_add(delay_ms),
                     due_tick: now_tick.wrapping_add(delay_ticks),
                     generation,
+                    delay_ms,
+                    delay_ticks,
+                    base_interval,
                 })
                 .is_ok()
         };
@@ -687,13 +706,23 @@ pub async fn run(
                             // Always flash on NoteOn so MIDI In is verifiable (even when muted).
                             input_flash_glob.set(INPUT_FLASH_PEAK);
                             if accept_new {
-                                // Always Out A (gen 0). Ping-Pong seeds Out B one
-                                // delay later on fire — In→A→B, not simultaneous.
+                                // Freeze delay + interval so Main / Button+Fader scrub
+                                // cannot leave a NoteOn hanging without a matching Off.
+                                if let Some(slot) =
+                                    open_notes.iter_mut().find(|(n, _, _, _)| *n == key_n)
+                                {
+                                    *slot = (key_n, delay_ms, delay_ticks, base_interval);
+                                } else {
+                                    let _ = open_notes
+                                        .push((key_n, delay_ms, delay_ticks, base_interval));
+                                }
+                                let vel12 = scale_bits_7_12(vel);
+                                // Out A (gen 0) at +1 delay.
                                 enqueue(
                                     &mut queue,
                                     EventKind::NoteOn,
                                     key_n,
-                                    scale_bits_7_12(vel),
+                                    vel12,
                                     0,
                                     0,
                                     base_interval,
@@ -702,6 +731,43 @@ pub async fn run(
                                     now_ms,
                                     now_tick,
                                 );
+                                // Ping-Pong: queue Out B (gen 1) at +2 delay here so the
+                                // matching NoteOff can be paired at release. Seeding B only
+                                // when A fires left B hanging whenever Offs were dropped.
+                                if ping_pong {
+                                    if let Some(b_vel) = next_feedback_velocity(vel12, feedback) {
+                                        let _ = enqueue(
+                                            &mut queue,
+                                            EventKind::NoteOn,
+                                            key_n,
+                                            b_vel,
+                                            0,
+                                            1,
+                                            base_interval,
+                                            delay_ms,
+                                            delay_ticks,
+                                            now_ms.saturating_add(delay_ms),
+                                            now_tick.wrapping_add(delay_ticks),
+                                        );
+                                    } else if feedback == 0 {
+                                        let seed = ((vel12 as u32 * 3) / 4)
+                                            .max(VELOCITY_FLOOR as u32)
+                                            as u16;
+                                        let _ = enqueue(
+                                            &mut queue,
+                                            EventKind::NoteOn,
+                                            key_n,
+                                            seed,
+                                            0,
+                                            1,
+                                            base_interval,
+                                            delay_ms,
+                                            delay_ticks,
+                                            now_ms.saturating_add(delay_ms),
+                                            now_tick.wrapping_add(delay_ticks),
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
@@ -709,6 +775,16 @@ pub async fn run(
                     | (IO_MIDI_MIDI, _, MidiMessage::NoteOff { key, .. }) => {
                         let key_n = key.as_int();
                         if !(loop_guard && is_own_echo(&recent_emit, key_n, false, now_ms)) {
+                            // Reuse NoteOn delay + interval so scrubbing Main / pitch
+                            // cannot retarget the Off onto a different MIDI note.
+                            let (off_delay_ms, off_delay_ticks, off_interval) = if let Some(pos) =
+                                open_notes.iter().position(|(n, _, _, _)| *n == key_n)
+                            {
+                                let (_, d, t, iv) = open_notes.swap_remove(pos);
+                                (d, t, iv)
+                            } else {
+                                (delay_ms, delay_ticks, base_interval)
+                            };
                             // Note-offs always accepted so held notes can release during ring-out.
                             enqueue(
                                 &mut queue,
@@ -717,12 +793,28 @@ pub async fn run(
                                 0,
                                 0,
                                 0,
-                                base_interval,
-                                delay_ms,
-                                delay_ticks,
+                                off_interval,
+                                off_delay_ms,
+                                off_delay_ticks,
                                 now_ms,
                                 now_tick,
                             );
+                            // Pair Ping-Pong Out B off at +2 delay (same hold as A).
+                            if ping_pong {
+                                let _ = enqueue(
+                                    &mut queue,
+                                    EventKind::NoteOff,
+                                    key_n,
+                                    0,
+                                    0,
+                                    1,
+                                    off_interval,
+                                    off_delay_ms,
+                                    off_delay_ticks,
+                                    now_ms.saturating_add(off_delay_ms),
+                                    now_tick.wrapping_add(off_delay_ticks),
+                                );
+                            }
                         }
                     }
 
@@ -762,10 +854,19 @@ pub async fn run(
                     ) if vel > 0 => {
                         input_flash_glob.set(INPUT_FLASH_PEAK);
                         if accept_new {
+                            let key_n = key.as_int();
+                            if let Some(slot) =
+                                open_notes.iter_mut().find(|(n, _, _, _)| *n == key_n)
+                            {
+                                *slot = (key_n, delay_ms, delay_ticks, base_interval);
+                            } else {
+                                let _ = open_notes
+                                    .push((key_n, delay_ms, delay_ticks, base_interval));
+                            }
                             enqueue(
                                 &mut queue,
                                 EventKind::GateHigh,
-                                key.as_int(),
+                                key_n,
                                 scale_bits_7_12(vel),
                                 4095,
                                 0,
@@ -779,16 +880,25 @@ pub async fn run(
                     }
                     (IO_MIDI_CV, SIG_GATE, MidiMessage::NoteOn { key, .. })
                     | (IO_MIDI_CV, SIG_GATE, MidiMessage::NoteOff { key, .. }) => {
+                        let key_n = key.as_int();
+                        let (off_delay_ms, off_delay_ticks, off_interval) = if let Some(pos) =
+                            open_notes.iter().position(|(n, _, _, _)| *n == key_n)
+                        {
+                            let (_, d, t, iv) = open_notes.swap_remove(pos);
+                            (d, t, iv)
+                        } else {
+                            (delay_ms, delay_ticks, base_interval)
+                        };
                         enqueue(
                             &mut queue,
                             EventKind::GateLow,
-                            key.as_int(),
+                            key_n,
                             0,
                             0,
                             0,
-                            base_interval,
-                            delay_ms,
-                            delay_ticks,
+                            off_interval,
+                            off_delay_ms,
+                            off_delay_ticks,
                             now_ms,
                             now_tick,
                         );
@@ -807,6 +917,7 @@ pub async fn run(
                         if high && !prev_gate {
                             input_flash_glob.set(INPUT_FLASH_PEAK);
                             if accept_new {
+                                open_gate_delay = Some((delay_ms, delay_ticks, base_interval));
                                 enqueue(
                                     &mut queue,
                                     EventKind::NoteOn,
@@ -822,6 +933,9 @@ pub async fn run(
                                 );
                             }
                         } else if !high && prev_gate {
+                            let (off_delay_ms, off_delay_ticks, off_interval) = open_gate_delay
+                                .take()
+                                .unwrap_or((delay_ms, delay_ticks, base_interval));
                             enqueue(
                                 &mut queue,
                                 EventKind::NoteOff,
@@ -829,9 +943,9 @@ pub async fn run(
                                 0,
                                 0,
                                 0,
-                                base_interval,
-                                delay_ms,
-                                delay_ticks,
+                                off_interval,
+                                off_delay_ms,
+                                off_delay_ticks,
                                 now_ms,
                                 now_tick,
                             );
@@ -901,6 +1015,8 @@ pub async fn run(
 
                 sounding.clear();
                 queue.clear();
+                open_notes.clear();
+                open_gate_delay = None;
                 recent_emit.clear();
                 if let Some(jack) = out_jack.as_ref() {
                     jack.set_value(0);
@@ -920,24 +1036,65 @@ pub async fn run(
                 (IO_MIDI_MIDI, _) | (IO_MIDI_CV, SIG_GATE) | (IO_CV_MIDI, SIG_GATE_NOTE)
             );
 
-            let mut i = 0;
-            while i < queue.len() {
-                let due = if clocked {
-                    now_tick.wrapping_sub(queue[i].due_tick) < (u32::MAX / 2)
-                } else {
-                    now_ms >= queue[i].due_ms
-                };
-                if !due {
-                    i += 1;
-                    continue;
+            loop {
+                let mut best: Option<usize> = None;
+                for i in 0..queue.len() {
+                    let due = if clocked {
+                        now_tick.wrapping_sub(queue[i].due_tick) < (u32::MAX / 2)
+                    } else {
+                        now_ms >= queue[i].due_ms
+                    };
+                    if !due {
+                        continue;
+                    }
+                    best = Some(match best {
+                        None => i,
+                        Some(j) => {
+                            let earlier = match queue[i].due_ms.cmp(&queue[j].due_ms) {
+                                core::cmp::Ordering::Less => true,
+                                core::cmp::Ordering::Greater => false,
+                                core::cmp::Ordering::Equal => {
+                                    matches!(
+                                        (queue[i].kind, queue[j].kind),
+                                        (EventKind::NoteOn, EventKind::NoteOff)
+                                            | (EventKind::GateHigh, EventKind::GateLow)
+                                    )
+                                }
+                            };
+                            if earlier {
+                                i
+                            } else {
+                                j
+                            }
+                        }
+                    });
                 }
-
-                let event = queue.swap_remove(i);
+                let Some(idx) = best else {
+                    break;
+                };
+                let event = queue.swap_remove(idx);
                 let n = note_num(event.base_note, event.interval);
                 let note = MidiNote::from(n);
 
                 match event.kind {
                     EventKind::NoteOn => {
+                        // Retrigger hygiene: never stack a stuck note on the same out.
+                        if sounding
+                            .iter()
+                            .any(|(o, sn)| *o == event.out_target && *sn == n)
+                        {
+                            if event.out_target == 0 {
+                                midi_a.send_note_off(note).await;
+                            } else {
+                                midi_b.send_note_off(note).await;
+                            }
+                            if let Some(pos) = sounding
+                                .iter()
+                                .position(|(o, sn)| *o == event.out_target && *sn == n)
+                            {
+                                sounding.swap_remove(pos);
+                            }
+                        }
                         if event.out_target == 0 {
                             midi_a.send_note_on(note, event.velocity).await;
                         } else {
@@ -949,41 +1106,25 @@ pub async fn run(
                         pong_side_glob.set(event.out_target);
                         if feedback_ok && event.generation < MAX_REPEATS {
                             let next_gen = event.generation.saturating_add(1);
-                            if let Some(next_vel) =
-                                next_feedback_velocity(event.velocity, feedback)
-                            {
-                                enqueue(
-                                    &mut queue,
-                                    EventKind::NoteOn,
-                                    event.base_note,
-                                    next_vel,
-                                    0,
-                                    next_gen,
-                                    base_interval,
-                                    delay_ms,
-                                    delay_ticks,
-                                    event.due_ms,
-                                    event.due_tick,
-                                );
-                            } else if ping_pong && event.generation == 0 {
-                                // Ping-Pong with Alt feedback at 0: one delayed cross
-                                // In→A→B (Out B lags Out A by Delay, not simultaneous).
-                                let seed = ((event.velocity as u32 * 3) / 4)
-                                    .max(VELOCITY_FLOOR as u32)
-                                    as u16;
-                                enqueue(
-                                    &mut queue,
-                                    EventKind::NoteOn,
-                                    event.base_note,
-                                    seed,
-                                    0,
-                                    next_gen,
-                                    base_interval,
-                                    delay_ms,
-                                    delay_ticks,
-                                    event.due_ms,
-                                    event.due_tick,
-                                );
+                            // Ping-Pong gen0→gen1 already queued at input; continue from gen1+.
+                            if !(ping_pong && event.generation == 0) {
+                                if let Some(next_vel) =
+                                    next_feedback_velocity(event.velocity, feedback)
+                                {
+                                    enqueue(
+                                        &mut queue,
+                                        EventKind::NoteOn,
+                                        event.base_note,
+                                        next_vel,
+                                        0,
+                                        next_gen,
+                                        event.base_interval,
+                                        event.delay_ms,
+                                        event.delay_ticks,
+                                        event.due_ms,
+                                        event.due_tick,
+                                    );
+                                }
                             }
                         }
                     }
@@ -1000,14 +1141,11 @@ pub async fn run(
                         {
                             sounding.swap_remove(pos);
                         }
-                        // Mirror NoteOn trail length so orphan NoteOffs don't cut a re-struck note.
-                        if feedback_ok {
+                        // Mirror NoteOn trail for gen1+ (gen0→gen1 Off already at input).
+                        if feedback_ok && !(ping_pong && event.generation == 0) {
                             let next_gen = event.generation.saturating_add(1);
                             let trail = max_feedback_repeats(feedback);
-                            let seed_pong = ping_pong
-                                && event.generation == 0
-                                && trail == 0;
-                            if event.generation < trail || seed_pong {
+                            if event.generation < trail {
                                 enqueue(
                                     &mut queue,
                                     EventKind::NoteOff,
@@ -1015,9 +1153,9 @@ pub async fn run(
                                     0,
                                     0,
                                     next_gen,
-                                    base_interval,
-                                    delay_ms,
-                                    delay_ticks,
+                                    event.base_interval,
+                                    event.delay_ms,
+                                    event.delay_ticks,
                                     event.due_ms,
                                     event.due_tick,
                                 );
@@ -1046,8 +1184,8 @@ pub async fn run(
                                     event.cv_value,
                                     1,
                                     0,
-                                    delay_ms,
-                                    delay_ticks,
+                                    event.delay_ms,
+                                    event.delay_ticks,
                                     event.due_ms,
                                     event.due_tick,
                                 );
@@ -1073,9 +1211,9 @@ pub async fn run(
                                     next_vel,
                                     4095,
                                     next_gen,
-                                    base_interval,
-                                    delay_ms,
-                                    delay_ticks,
+                                    event.base_interval,
+                                    event.delay_ms,
+                                    event.delay_ticks,
                                     event.due_ms,
                                     event.due_tick,
                                 );
@@ -1095,9 +1233,9 @@ pub async fn run(
                                 0,
                                 0,
                                 next_gen,
-                                base_interval,
-                                delay_ms,
-                                delay_ticks,
+                                event.base_interval,
+                                event.delay_ms,
+                                event.delay_ticks,
                                 event.due_ms,
                                 event.due_tick,
                             );

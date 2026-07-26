@@ -393,9 +393,10 @@ impl GenrePreset {
 }
 
 /// Genre chord + rhythm DNA (degrees 0–6). Markov biases genre-typical moves.
-/// Rhythm: hits then multi-bar breaks (vamp phrasing), not homogeneous gaps.
+/// Rhythm: a multi-chord statement (~1–2 bars at mid Feel), then a long break —
+/// not one stab and silence.
 const GENRES: [GenrePreset; NUM_GENRES] = [
-    // Dub — i–IV–i–V; two hits, long space
+    // Dub — i–IV–i–V; half-time 4-chord statement, long space
     GenrePreset {
         progression: &[0, 3, 0, 4, 0, 3, 0, 4],
         markov: &[
@@ -407,10 +408,10 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
             [3, 2, 2, 2, 2, 2, 3],
             [4, 1, 1, 2, 3, 2, 2],
         ],
-        rhythm: &[2, 1, REST_CODE | 4, 2, REST_CODE | 3],
+        rhythm: &[2, 1, 2, 1, REST_CODE | 4, 2, 1, 2, REST_CODE | 3],
         swing_bias: 20,
     },
-    // Disco — I–vi–IV–V; longer vamp statement, shorter breaks
+    // Disco — I–vi–IV–V; busy 2-bar vamp, shorter breaks
     GenrePreset {
         progression: &[0, 5, 3, 4, 0, 5, 3, 4],
         markov: &[
@@ -422,10 +423,10 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
             [3, 1, 2, 5, 3, 2, 1],
             [4, 1, 1, 2, 4, 2, 1],
         ],
-        rhythm: &[1, 1, 1, 2, REST_CODE | 2, 1, 1, REST_CODE | 3],
+        rhythm: &[1, 1, 1, 1, 1, 1, 2, REST_CODE | 2, 1, 1, 1, 1, REST_CODE | 3],
         swing_bias: 35,
     },
-    // Hip-Hop — i–VI–III–VII; boom then wide open
+    // Hip-Hop — i–VI–III–VII; boom-bap phrase then wide open
     GenrePreset {
         progression: &[0, 5, 2, 6, 0, 5, 2, 6],
         markov: &[
@@ -437,10 +438,10 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
             [4, 1, 3, 2, 2, 2, 3],
             [5, 1, 2, 2, 2, 3, 2],
         ],
-        rhythm: &[2, 1, REST_CODE | 3, 2, REST_CODE | 5],
+        rhythm: &[2, 1, 1, 2, REST_CODE | 3, 2, 1, 1, REST_CODE | 5],
         swing_bias: 40,
     },
-    // House — i–VII–VI–VII; pump phrase, uneven breaks
+    // House — i–VII–VI–VII; pump through the loop, uneven breaks
     GenrePreset {
         progression: &[0, 6, 5, 6, 0, 6, 5, 6],
         markov: &[
@@ -452,10 +453,10 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
             [4, 1, 1, 2, 2, 2, 5],
             [5, 1, 1, 2, 2, 4, 2],
         ],
-        rhythm: &[1, 1, 2, REST_CODE | 2, 1, 2, REST_CODE | 4],
+        rhythm: &[1, 1, 1, 1, 2, REST_CODE | 2, 1, 1, 1, 2, REST_CODE | 4],
         swing_bias: 30,
     },
-    // Techno — static/minimal; long holds, rare deep drop
+    // Techno — static/minimal; long holds across the statement, rare deep drop
     GenrePreset {
         progression: &[0, 0, 0, 4, 0, 0, 0, 4],
         markov: &[
@@ -467,10 +468,10 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
             [4, 1, 1, 2, 2, 2, 3],
             [5, 1, 1, 1, 3, 2, 2],
         ],
-        rhythm: &[3, 2, REST_CODE | 1, 2, REST_CODE | 5],
+        rhythm: &[3, 2, 3, REST_CODE | 1, 2, 3, REST_CODE | 5],
         swing_bias: 8,
     },
-    // Trip-Hop — i–VII–VI–v; very sparse statements
+    // Trip-Hop — i–VII–VI–v; sparse but still a short progression, then void
     GenrePreset {
         progression: &[0, 6, 5, 4, 0, 6, 5, 4],
         markov: &[
@@ -482,10 +483,10 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
             [4, 1, 2, 2, 3, 2, 4],
             [5, 1, 1, 2, 3, 4, 2],
         ],
-        rhythm: &[2, REST_CODE | 4, 1, REST_CODE | 5],
+        rhythm: &[2, 1, 2, REST_CODE | 4, 1, 2, 1, REST_CODE | 5],
         swing_bias: 45,
     },
-    // UK Garage — i–III–VI–VII; choppy then break
+    // UK Garage — i–III–VI–VII; choppy 2-bar then break
     GenrePreset {
         progression: &[0, 2, 5, 6, 0, 2, 5, 6],
         markov: &[
@@ -497,10 +498,10 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
             [4, 1, 3, 2, 2, 2, 4],
             [5, 1, 2, 2, 2, 3, 2],
         ],
-        rhythm: &[1, 2, 1, REST_CODE | 2, 2, 1, REST_CODE | 3],
+        rhythm: &[1, 1, 2, 1, 1, REST_CODE | 2, 2, 1, 1, 1, REST_CODE | 3],
         swing_bias: 50,
     },
-    // Dubstep — i–i–VI–VII; half-time hits, wide gaps
+    // Dubstep — i–i–VI–VII; half-time progression, wide gaps
     GenrePreset {
         progression: &[0, 0, 5, 6, 0, 0, 5, 6],
         markov: &[
@@ -512,7 +513,7 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
             [4, 1, 1, 2, 2, 2, 5],
             [5, 1, 1, 1, 3, 4, 2],
         ],
-        rhythm: &[3, REST_CODE | 3, 2, REST_CODE | 5],
+        rhythm: &[2, 2, 1, 2, REST_CODE | 3, 2, 1, 2, REST_CODE | 5],
         swing_bias: 25,
     },
 ];
