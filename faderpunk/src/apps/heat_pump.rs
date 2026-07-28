@@ -322,6 +322,8 @@ pub async fn run(
     params: &ParamStore<Params>,
     storage: &ManagedStorage<Storage>,
 ) {
+    app.wait_while_perf_muted().await;
+
     let (led_color, range, jack_mode, p_dest, p_att) =
         params.query(|p| (p.color, p.range, p.jack_mode, p.dest, p.cv_att));
     let (midi_out, midi_chan, midi_cc, nrpn) =
@@ -390,6 +392,7 @@ pub async fn run(
 
     let main_loop = async {
         let mut last_midi_val: u16 = u16::MAX;
+        let mut midi_pace: u8 = 0;
         let mut button_duck_left: u16 = 0;
         let mut last_button_slot: u8 = 0xff;
         let mut ms_in_slot: u16 = 0;
@@ -479,10 +482,14 @@ pub async fn run(
             }
 
             if midi_out.is_some() {
-                let gate_val = midi_gate(effective_out, nrpn);
-                if gate_val != last_midi_val {
-                    midi.send_cc(midi_cc, effective_out).await;
-                    last_midi_val = gate_val;
+                midi_pace = midi_pace.wrapping_add(1);
+                if midi_pace >= 10 {
+                    midi_pace = 0;
+                    let gate_val = midi_gate(effective_out, nrpn);
+                    if gate_val != last_midi_val {
+                        midi.send_cc(midi_cc, effective_out).await;
+                        last_midi_val = gate_val;
+                    }
                 }
             }
 

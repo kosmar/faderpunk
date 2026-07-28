@@ -668,6 +668,12 @@ impl<P: AppParams> ParamStore<P> {
     }
 
     async fn save(&self) {
+        // Full Push: keep params in RAM only; Release persists layout, and
+        // SetAppParams after Release / next scene save will flush. Avoids
+        // stacking FRAM writes on the shared Core0 bus mid-push.
+        if crate::tasks::midi::host_holds_perf_mute() {
+            return;
+        }
         let address = AppParamsAddress::new(self.layout_id);
         let values = {
             let guard = self.inner.borrow_mut();
@@ -686,6 +692,15 @@ impl<P: AppParams> ParamStore<P> {
     }
 
     pub async fn load(&self) {
+        // Park here during deferred Release burst — keep tasks light until
+        // every slot is spawned, then heavy init runs together under Hold.
+        while crate::tasks::midi::spawn_start_held() {
+            Timer::after_millis(50).await;
+        }
+        // Full Push: skip FRAM read under Hold — defaults until SetAppParams.
+        if crate::tasks::midi::host_holds_perf_mute() {
+            return;
+        }
         let address = AppParamsAddress::new(self.layout_id);
         if let Ok(guard) = read_data(address.into()).await {
             let data = guard.data();
@@ -800,6 +815,9 @@ impl<S: AppStorage> ManagedStorage<S> {
     }
 
     async fn save_inner(&self, scene: Option<u8>) {
+        if crate::tasks::midi::host_holds_perf_mute() {
+            return;
+        }
         let address = AppStorageAddress::new(self.layout_id, scene).into();
 
         let res = write_with(address, |buf| {
@@ -824,6 +842,12 @@ impl<S: AppStorage> ManagedStorage<S> {
     }
 
     pub async fn load(&self) {
+        while crate::tasks::midi::spawn_start_held() {
+            Timer::after_millis(50).await;
+        }
+        if crate::tasks::midi::host_holds_perf_mute() {
+            return;
+        }
         self.load_inner(None).await;
     }
 

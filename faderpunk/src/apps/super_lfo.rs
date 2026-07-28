@@ -21,6 +21,7 @@ use libfp::{
 
 use crate::{
     app::{App, AppStorage, ClockEvent, Die, Led, ManagedStorage, SceneEvent},
+    apps::led_fx::spectrum_color,
     storage::{AppParams, ParamStore},
     tasks::leds::LedMode,
 };
@@ -369,6 +370,8 @@ pub async fn run(
     params: &ParamStore<Params>,
     storage: &ManagedStorage<Storage>,
 ) {
+    app.wait_while_perf_muted().await;
+
     let (range, midi_out, midi_chan, midi_cc, led_color, nrpn, mix_mode, osc_b, p_dest, p_rate_mod) =
         params.query(|p| {
             (
@@ -441,6 +444,7 @@ pub async fn run(
 
     let mut count = 0u32;
     let mut last_val: u16 = u16::MAX;
+    let mut midi_pace: u8 = 0;
     let mut oldinputval = 0u16;
 
     if storage.query(|s| s.in_mute) {
@@ -452,7 +456,7 @@ pub async fn run(
         leds.set(
             1,
             Led::Button,
-            morph_color(storage.query(|s| s.morph)),
+            spectrum_color(storage.query(|s| s.morph)),
             Brightness::Mid,
         );
     }
@@ -476,7 +480,7 @@ pub async fn run(
 
     let fut_audio = async {
         loop {
-            app.delay_millis(1).await;
+            app.delay_millis(8).await;
 
             // Latch layers per channel (Button+Fader = Third).
             let latch_0 = if buttons.is_shift_pressed() && !buttons.is_button_pressed(0) {
@@ -596,11 +600,12 @@ pub async fn run(
             let clock_held = sync && glob_clock_held.get();
             let held = frozen || clock_held;
 
+            // ×8: audio loop is 8ms (was 1ms) — keep LFO period the same.
             let base_step = if sync {
                 quant_speed / speed_mult as f32
             } else {
                 lfo_speed / speed_mult as f32
-            };
+            } * 8.0;
 
             // Internal rate modulator: sine LFO scales primary step (0 = steady).
             let mod_pos = glob_rate_mod_pos.get();
@@ -694,10 +699,14 @@ pub async fn run(
 
             output.set_value(effective_val);
             if midi_out.is_some() {
-                let gate_val = midi_gate(effective_val, nrpn);
-                if gate_val != last_val {
-                    midi.send_cc(midi_cc, effective_val).await;
-                    last_val = gate_val;
+                midi_pace = midi_pace.wrapping_add(1);
+                if midi_pace >= 5 {
+                    midi_pace = 0;
+                    let gate_val = midi_gate(effective_val, nrpn);
+                    if gate_val != last_val {
+                        midi.try_send_cc(midi_cc, effective_val);
+                        last_val = gate_val;
+                    }
                 }
             }
 
@@ -710,7 +719,7 @@ pub async fn run(
             // Ch1 Top/Bottom always meter around mid-scale so Bottom lights on the
             // low half of the wave even when the jack Range is unipolar 0–10V.
             let led = split_unsigned_value(effective_val);
-            let shape_color = morph_color(morph);
+            let shape_color = spectrum_color(morph);
             // Button breath tracks the same wave as Ch1 Top/Bottom; yield to mute /
             // freeze / reverse-fade / Alt dest / Flash feedback elsewhere.
             let wave_bright = wave_button_brightness(effective_val, range.is_bipolar());
@@ -964,7 +973,7 @@ pub async fn run(
                         if !crate::state::is_clock_running().await {
                             glob_clock_held.set(true);
                         }
-                        let color = morph_color(storage.query(|s| s.morph));
+                        let color = spectrum_color(storage.query(|s| s.morph));
                         leds.set_mode(1, Led::Button, LedMode::Flash(color, Some(4)));
                         glob_btn_flash_1.set(BUTTON_FLASH_MS);
                     } else {
@@ -1029,7 +1038,7 @@ pub async fn run(
                     if out_muted {
                         leds.unset(1, Led::Button);
                     } else {
-                        leds.set(1, Led::Button, morph_color(morph), Brightness::Mid);
+                        leds.set(1, Led::Button, spectrum_color(morph), Brightness::Mid);
                     }
                 }
                 SceneEvent::SaveScene(scene) => storage.save_to_scene(scene).await,
@@ -1220,29 +1229,6 @@ fn mix_samples(a: u16, b: u16, mode: usize, balance: u16) -> u16 {
             let out = (a as i32 * (4095 - t) + b as i32 * t) / 4095;
             out.clamp(0, 4095) as u16
         }
-    }
-}
-
-/// Even spectrum sweep: morph 0..=4095 → full hue circle 0°..360°
-/// (red → yellow → green → cyan → blue → magenta → red), via HSV.
-fn morph_color(morph: u16) -> Color {
-    let hue = (morph.min(4095) as u32 * 360) / 4096; // degrees, wraps red→red
-    let (r, g, b) = hsv_to_rgb(hue as u16);
-    Color::Custom(r, g, b)
-}
-
-/// Integer HSV→RGB with S=V=max. Hue in degrees (0..360).
-fn hsv_to_rgb(hue: u16) -> (u8, u8, u8) {
-    let sector = hue / 60; // 0..=5
-                           // Rising/falling ramp within the sector, scaled to 0..=255.
-    let ramp = ((hue % 60) as u32 * 255 / 59) as u8;
-    match sector {
-        0 => (255, ramp, 0),
-        1 => (255 - ramp, 255, 0),
-        2 => (0, 255, ramp),
-        3 => (0, 255 - ramp, 255),
-        4 => (ramp, 0, 255),
-        _ => (255, 0, 255 - ramp),
     }
 }
 

@@ -1,7 +1,7 @@
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
-use embassy_time::{with_timeout, Duration};
+use embassy_time::{with_timeout, Duration, Instant, Timer};
 use heapless::Vec;
 use postcard::{from_bytes, to_slice};
 
@@ -10,12 +10,22 @@ use libfp::sysex::{
 };
 use libfp::{ConfigMsgIn, ConfigMsgOut, Value, APP_MAX_PARAMS, GLOBAL_CHANNELS};
 
+use crate::app::Led;
 use crate::apps::{get_channels, get_config, REGISTERED_APP_IDS};
-use crate::layout::LAYOUT_WATCH;
+use crate::layout::{
+    LAYOUT_DEBUG_APP_ID, LAYOUT_DEBUG_CHANNEL, LAYOUT_DEBUG_PHASE, LAYOUT_DEBUG_SEQ, LAYOUT_WATCH,
+    RELEASE_SPAWN_DONE, RELEASE_SPAWN_SIGNAL,
+};
 use crate::storage::factory_reset;
 use crate::tasks::global_config::{get_global_config, GLOBAL_CONFIG_WATCH};
-use crate::tasks::midi::{SharedUsbSender, PERF_CABLE};
+use crate::tasks::leds::{set_led_mode, LedMode, LedMsg};
+use crate::tasks::midi::{
+    extend_post_layout_perf_mute, layout_spawn_active, set_config_holds_perf_usb, spawn_start_held,
+    SharedUsbSender, CONFIG_SOFT_MUTE_EXTEND_MS, PERF_CABLE,
+};
 use crate::version::FIRMWARE_VERSION;
+use libfp::Color;
+use portable_atomic::Ordering;
 
 use super::transport::USB_MAX_PACKET_SIZE;
 
@@ -24,17 +34,20 @@ use super::transport::USB_MAX_PACKET_SIZE;
 pub const CONFIG_FRAME_BUF: usize = 640;
 
 /// Complete config SysEx frame bodies from the USB MIDI RX path
-/// (tasks/midi.rs). The protocol is strictly request/response, so depth 1
-/// suffices.
-pub static CONFIG_RX_CHANNEL: Channel<CriticalSectionRawMutex, Vec<u8, CONFIG_FRAME_BUF>, 1> =
+/// (tasks/midi.rs). Depth >1 so a burst during SetLayout cannot drop the
+/// next host request (GetVersion) while configure is still finishing ACK TX.
+pub static CONFIG_RX_CHANNEL: Channel<CriticalSectionRawMutex, Vec<u8, CONFIG_FRAME_BUF>, 4> =
     Channel::new();
 
 /// Per-packet write timeout for config responses. Generous compared to the
 /// 1ms performance-MIDI timeout: config frames must not be silently
 /// truncated, but a stalled host must not block the USB sender forever.
 const CONFIG_WRITE_TIMEOUT_MS: u64 = 500;
-/// Multi-message response timeout for app param collection
-const APP_PARAM_TIMEOUT_MS: u64 = 1000;
+/// Per-app SetAppParams timeout (FRAM save under load).
+const APP_PARAM_SET_TIMEOUT_MS: u64 = 8000;
+/// GetAppParams / readiness: fail faster with empty AppState so hosts
+/// (poll timeout ~10s) actually see a reply instead of cable silence.
+const APP_PARAM_GET_TIMEOUT_MS: u64 = 3000;
 
 pub enum AppParamCmd {
     SetAppParams {
@@ -52,6 +65,33 @@ pub static APP_PARAM_CHANNEL: Channel<
     GLOBAL_CHANNELS,
 > = Channel::new();
 
+/// Drop stale replies left by a previous Set/Get (shared channel is not
+/// per-layout). Without this, GetAppParams(N) can ack with AppState(N-1).
+fn drain_app_param_channel() {
+    while APP_PARAM_CHANNEL.try_receive().is_ok() {}
+}
+
+/// Wait for the matching layout_id on the shared param channel.
+async fn recv_app_params_for(
+    layout_id: u8,
+    timeout_ms: u64,
+) -> Option<(u8, Vec<Value, APP_MAX_PARAMS>)> {
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        let remaining = deadline.checked_duration_since(Instant::now())?;
+        match with_timeout(remaining, APP_PARAM_CHANNEL.receive()).await {
+            Ok((id, values)) if id == layout_id => return Some((id, values)),
+            Ok((id, _)) => {
+                defmt::warn!(
+                    "Ignoring AppParam reply layout_id={} (want {})",
+                    id,
+                    layout_id
+                );
+            }
+            Err(_) => return None,
+        }
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum ProtocolError {
     BufferTooSmall,
@@ -74,9 +114,22 @@ pub async fn start_config_loop<'a>(usb_tx: &'a SharedUsbSender<'a>) {
                 continue;
             }
         };
+        // Hold Local→USB while we answer — shared bulk pipe with LFO streams.
+        // Also keep post-layout soft-mute from expiring mid incremental push.
+        extend_post_layout_perf_mute(CONFIG_SOFT_MUTE_EXTEND_MS);
+        set_config_holds_perf_usb(true);
         let res = match msg {
             ConfigMsgIn::Ping => proto.send_msg(ConfigMsgOut::Pong).await,
             ConfigMsgIn::GetVersion => {
+                // Layout breadcrumb: last SetLayout phase survives a USB wedge
+                // and shows up on the next successful GetVersion via RTT.
+                defmt::info!(
+                    "cfg GetVersion layout_dbg phase={} app={} ch={} seq={}",
+                    LAYOUT_DEBUG_PHASE.load(Ordering::Relaxed),
+                    LAYOUT_DEBUG_APP_ID.load(Ordering::Relaxed),
+                    LAYOUT_DEBUG_CHANNEL.load(Ordering::Relaxed),
+                    LAYOUT_DEBUG_SEQ.load(Ordering::Relaxed)
+                );
                 let (major, minor, patch) = FIRMWARE_VERSION;
                 proto
                     .send_msg(ConfigMsgOut::Version {
@@ -110,33 +163,61 @@ pub async fn start_config_loop<'a>(usb_tx: &'a SharedUsbSender<'a>) {
                 proto.send_msg(ConfigMsgOut::GlobalConfig(config)).await
             }
             ConfigMsgIn::GetAppParams { layout_id } => {
-                APP_PARAM_SIGNALS[layout_id as usize].signal(AppParamCmd::RequestParamValues);
-                if let Ok((res_layout_id, values)) = with_timeout(
-                    Duration::from_millis(APP_PARAM_TIMEOUT_MS),
-                    APP_PARAM_CHANNEL.receive(),
-                )
-                .await
-                {
-                    proto
-                        .send_msg(ConfigMsgOut::AppState(res_layout_id, &values))
-                        .await
+                // During spawn/teardown / start-gate, apps have no param_handler
+                // yet — waiting would block the config loop past the host timeout
+                // and desync SysEx (host gives up, FW still holding the reply).
+                if layout_spawn_active() || spawn_start_held() {
+                    proto.send_msg(ConfigMsgOut::AppState(layout_id, &[])).await
                 } else {
-                    Ok(())
+                    drain_app_param_channel();
+                    APP_PARAM_SIGNALS[layout_id as usize].signal(AppParamCmd::RequestParamValues);
+                    // Under Hold, fail fast — empty AppState lets the editor poll.
+                    let wait_ms = if crate::tasks::midi::host_holds_perf_mute() {
+                        400
+                    } else {
+                        APP_PARAM_GET_TIMEOUT_MS
+                    };
+                    if let Some((res_layout_id, values)) =
+                        recv_app_params_for(layout_id, wait_ms).await
+                    {
+                        proto
+                            .send_msg(ConfigMsgOut::AppState(res_layout_id, &values))
+                            .await
+                    } else {
+                        defmt::warn!("GetAppParams layout_id={} timed out", layout_id);
+                        proto.send_msg(ConfigMsgOut::AppState(layout_id, &[])).await
+                    }
                 }
             }
             ConfigMsgIn::SetAppParams { layout_id, values } => {
-                APP_PARAM_SIGNALS[layout_id as usize].signal(AppParamCmd::SetAppParams { values });
-                if let Ok((res_layout_id, values)) = with_timeout(
-                    Duration::from_millis(APP_PARAM_TIMEOUT_MS),
-                    APP_PARAM_CHANNEL.receive(),
-                )
-                .await
-                {
-                    proto
-                        .send_msg(ConfigMsgOut::AppState(res_layout_id, &values))
-                        .await
+                if layout_spawn_active() || spawn_start_held() {
+                    let _ = values;
+                    proto.send_msg(ConfigMsgOut::AppState(layout_id, &[])).await
                 } else {
-                    Ok(())
+                    drain_app_param_channel();
+                    APP_PARAM_SIGNALS[layout_id as usize]
+                        .signal(AppParamCmd::SetAppParams { values });
+                    if let Some((res_layout_id, values)) =
+                        recv_app_params_for(layout_id, APP_PARAM_SET_TIMEOUT_MS).await
+                    {
+                        // Confirm to the user which slot just took params.
+                        for (_app_id, start_channel, _channels, lid) in layout.iter() {
+                            if lid == res_layout_id {
+                                set_led_mode(
+                                    start_channel,
+                                    Led::Button,
+                                    LedMsg::Set(LedMode::Flash(Color::Green, Some(2))),
+                                );
+                                break;
+                            }
+                        }
+                        proto
+                            .send_msg(ConfigMsgOut::AppState(res_layout_id, &values))
+                            .await
+                    } else {
+                        defmt::warn!("SetAppParams layout_id={} timed out", layout_id);
+                        proto.send_msg(ConfigMsgOut::AppState(layout_id, &[])).await
+                    }
                 }
             }
             ConfigMsgIn::GetAllAppParams => {
@@ -146,23 +227,36 @@ pub async fn start_config_loop<'a>(usb_tx: &'a SharedUsbSender<'a>) {
                 let mut res = proto.send_msg(ConfigMsgOut::BatchMsgStart(app_count)).await;
 
                 if app_count > 0 && res.is_ok() {
-                    for id in layout_ids {
-                        APP_PARAM_SIGNALS[id as usize].signal(AppParamCmd::RequestParamValues);
-                    }
-                    let receiver = async {
-                        for _ in 0..app_count {
-                            let (res_layout_id, values) = APP_PARAM_CHANNEL.receive().await;
-                            proto
-                                .send_msg(ConfigMsgOut::AppState(res_layout_id, &values))
-                                .await?;
+                    if layout_spawn_active() || spawn_start_held() {
+                        // Spawn in progress — answer immediately so health-check
+                        // / recall paths are not starved for seconds.
+                        for id in layout_ids {
+                            if res.is_err() {
+                                break;
+                            }
+                            res = proto.send_msg(ConfigMsgOut::AppState(id, &[])).await;
                         }
-                        Ok(())
-                    };
+                    } else {
+                        for id in layout_ids {
+                            APP_PARAM_SIGNALS[id as usize].signal(AppParamCmd::RequestParamValues);
+                        }
+                        let receiver = async {
+                            for _ in 0..app_count {
+                                let (res_layout_id, values) = APP_PARAM_CHANNEL.receive().await;
+                                proto
+                                    .send_msg(ConfigMsgOut::AppState(res_layout_id, &values))
+                                    .await?;
+                            }
+                            Ok(())
+                        };
 
-                    if let Ok(receiver_res) =
-                        with_timeout(Duration::from_millis(APP_PARAM_TIMEOUT_MS), receiver).await
-                    {
-                        res = receiver_res;
+                        let batch_timeout_ms =
+                            APP_PARAM_GET_TIMEOUT_MS.saturating_mul(app_count.max(1) as u64);
+                        if let Ok(receiver_res) =
+                            with_timeout(Duration::from_millis(batch_timeout_ms), receiver).await
+                        {
+                            res = receiver_res;
+                        }
                     }
                 }
 
@@ -179,22 +273,49 @@ pub async fn start_config_loop<'a>(usb_tx: &'a SharedUsbSender<'a>) {
             }
             ConfigMsgIn::SetLayout(mut new_layout) => {
                 new_layout.validate(get_channels);
+                let n = new_layout.get_layout_ids().len();
+                defmt::info!(
+                    "cfg SetLayout apps={} (ACK then watch; dbg phase before={})",
+                    n,
+                    LAYOUT_DEBUG_PHASE.load(Ordering::Relaxed)
+                );
                 let sender = LAYOUT_WATCH.sender();
+                // ACK first so the host sees Layout before the spawn storm.
                 let res = proto
                     .send_msg(ConfigMsgOut::Layout(new_layout.clone()))
                     .await;
                 layout = new_layout.clone();
+                // Brief yield so USB TX can finish before Core 1 floods MIDI.
+                Timer::after_millis(50).await;
                 sender.send(new_layout);
+                defmt::info!("cfg SetLayout watch sent");
                 res
             }
             ConfigMsgIn::FactoryReset => {
                 factory_reset().await;
                 Ok(())
             }
+            ConfigMsgIn::HoldPerfMute => {
+                crate::tasks::midi::set_host_holds_perf_mute(true);
+                defmt::info!("cfg HoldPerfMute");
+                proto.send_msg(ConfigMsgOut::Pong).await
+            }
+            ConfigMsgIn::ReleasePerfMute => {
+                // Persist + unmute on Core1. Do NOT kick a deferred multi-app
+                // spawn — that burst wedged USB. Apps are already spawned by
+                // per-step SetLayout under Hold.
+                defmt::info!("cfg ReleasePerfMute → store + unmute (async)");
+                RELEASE_SPAWN_DONE.reset();
+                RELEASE_SPAWN_SIGNAL.signal(());
+                proto.send_msg(ConfigMsgOut::Pong).await
+            }
         };
         if let Err(err) = res {
             defmt::warn!("Failed to send config response: {}", err);
         }
+        // Keep hold briefly so the SysEx TX finishes before Local CCs resume.
+        Timer::after_millis(8).await;
+        set_config_holds_perf_usb(false);
     }
 }
 
@@ -295,11 +416,12 @@ impl<'a> ConfigTransport<'a> {
 }
 
 async fn write_usb_packet(usb_tx: &SharedUsbSender<'_>, data: &[u8]) -> Result<(), ProtocolError> {
-    let mut tx = usb_tx.lock().await;
-    with_timeout(
-        Duration::from_millis(CONFIG_WRITE_TIMEOUT_MS),
-        tx.write_packet(data),
-    )
+    // Lock inside the timeout so a wedged USB write cannot pin SharedUsbSender
+    // and starve midi_out / the next config reply.
+    with_timeout(Duration::from_millis(CONFIG_WRITE_TIMEOUT_MS), async {
+        let mut tx = usb_tx.lock().await;
+        tx.write_packet(data).await
+    })
     .await
     .map_err(|_| ProtocolError::Timeout)?
     .map_err(|_| ProtocolError::TransmissionError)

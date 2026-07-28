@@ -12,7 +12,7 @@ Flash integration branch: **`test/playground`** (count-agnostic; formerly
 | ID | App | Feature branch | Notes |
 |---:|---|---|---|
 | 28 | Sift | (upstream / sift branches) | |
-| 29 | Heat Pump | `feat/heat-pump` | |
+| 29 | Heat Pump | `heat_pump` | |
 | 30 | Grooves | `feat/grooves` | needs `ParamStore::update` — see patches |
 | 31 | Golden Gate | `feat/golden-gate` | aka Fibonacci Gate on some branches |
 | 32 | Super LFO | `feat/super-lfo-app` | Mix balance 0–100%; CV Dest select; Alt0=Attenuation |

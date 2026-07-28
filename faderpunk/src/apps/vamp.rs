@@ -3,7 +3,6 @@ use embassy_futures::{
     select::{select, select3},
 };
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, signal::Signal};
-use embassy_time::Instant;
 use heapless::Vec;
 use midly::num::u7;
 use serde::{Deserialize, Serialize};
@@ -20,7 +19,9 @@ use libfp::{
 use crate::app::{
     App, AppParams, AppStorage, ClockEvent, Die, Led, ManagedStorage, ParamStore, SceneEvent,
 };
-use crate::apps::genre_palette::{genre_fader_center, GENRE_COLORS, GENRE_NAMES, NUM_GENRES};
+use crate::apps::genre_palette::{genre_fader_center, GENRE_NAMES, NUM_GENRES};
+use crate::apps::groove::{swing_bias, swing_delay_ticks};
+use crate::apps::led_fx::{genre_pair, lerp_u8, spectrum_color};
 
 pub const CHANNELS: usize = 1;
 pub const PARAMS: usize = 16;
@@ -45,8 +46,8 @@ const CAPTURE_COLOR: Color = Color::Rose;
 
 const CV_JACK_OUT: usize = 0;
 const CV_JACK_IN: usize = 1;
-/// Perform hold: step one palette index toward the fader every N ms (audible glide).
-const PERFORM_GLIDE_MS: u64 = 40;
+/// Perform hold: engine frames (~1 ms) between palette-index steps while gliding.
+const PERFORM_GLIDE_FRAMES: u16 = 35;
 
 const CAPTURE_NAMES: &[&str] = &["16 bars", "8 bars", "4 bars", "2 bars", "1 bar"];
 /// Bars for each Capture length enum index.
@@ -129,18 +130,19 @@ fn swing_pct(stored: u8) -> i32 {
 }
 
 fn swing_from_genre(genre: usize) -> u8 {
-    GenrePreset::get(genre).swing_bias.clamp(0, 100) as u8
+    swing_bias(genre)
 }
 
-/// Odd-16th delay in ticks (Grooves-style). `swing_pct` 0 = straight, 100 ≈ half a 16th.
-fn swing_delay_ticks(grid_step: u32, swing_pct: i32) -> u32 {
-    let pct = swing_pct.clamp(0, 100) as u32;
-    if pct == 0 || grid_step.is_multiple_of(2) {
-        return 0;
-    }
-    let max_delay = (CAPTURE_QUANT_TICKS.saturating_sub(1)).max(1);
-    ((max_delay * pct) / 100).min(max_delay)
+/// Soft-lerp swing bias between neighbor genres on the continuous Alt axis.
+/// When the Capture slot is on the axis (`picks > NUM_GENRES`), indices are
+/// clamped so swing never reads past genre DNA.
+fn swing_from_fader(fader: u16, picks: usize) -> u8 {
+    let (lo, hi, frac) = genre_pair(fader, picks.max(1));
+    let lo = lo.min(NUM_GENRES - 1);
+    let hi = hi.min(NUM_GENRES - 1);
+    lerp_u8(swing_bias(lo), swing_bias(hi), frac)
 }
+
 
 /// Scale a captured duration by Feel (laid back longer, advanced shorter).
 fn groove_duration(raw_dur: u32, feel: u16) -> u32 {
@@ -344,7 +346,7 @@ pub struct Storage {
     clip_deg: [u8; VAMP_CAP],
     clip_on: [u16; VAMP_CAP],
     clip_dur: [u16; VAMP_CAP],
-    /// Odd-16th delay 0–100; seeded from genre `swing_bias` (live latch later).
+    /// Odd-16th delay 0–100; seeded from groove::SWING_BIAS (live latch later).
     swing: u8,
 }
 
@@ -385,8 +387,6 @@ struct GenrePreset {
     /// `1..=n` = chord weight (× Feel); [`REST_CODE`]`|bars` = silence for `bars`
     /// bars (Feel-independent). Play a bar or two, then a long break.
     rhythm: &'static [u8],
-    /// Genre default swing % (0–100); copied into Storage on genre pick/reseed.
-    swing_bias: i8,
 }
 
 impl GenrePreset {
@@ -412,7 +412,6 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
             [4, 1, 1, 2, 3, 2, 2],
         ],
         rhythm: &[2, 1, 2, 1, REST_CODE | 4, 2, 1, 2, REST_CODE | 3],
-        swing_bias: 20,
     },
     // Disco — I–vi–IV–V; busy 2-bar vamp, shorter breaks
     GenrePreset {
@@ -427,7 +426,6 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
             [4, 1, 1, 2, 4, 2, 1],
         ],
         rhythm: &[1, 1, 1, 1, 1, 1, 2, REST_CODE | 2, 1, 1, 1, 1, REST_CODE | 3],
-        swing_bias: 35,
     },
     // Hip-Hop — i–VI–III–VII; boom-bap phrase then wide open
     GenrePreset {
@@ -442,7 +440,6 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
             [5, 1, 2, 2, 2, 3, 2],
         ],
         rhythm: &[2, 1, 1, 2, REST_CODE | 3, 2, 1, 1, REST_CODE | 5],
-        swing_bias: 40,
     },
     // House — i–VII–VI–VII; pump through the loop, uneven breaks
     GenrePreset {
@@ -457,7 +454,6 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
             [5, 1, 1, 2, 2, 4, 2],
         ],
         rhythm: &[1, 1, 1, 1, 2, REST_CODE | 2, 1, 1, 1, 2, REST_CODE | 4],
-        swing_bias: 30,
     },
     // Techno — static/minimal; long holds across the statement, rare deep drop
     GenrePreset {
@@ -472,7 +468,6 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
             [5, 1, 1, 1, 3, 2, 2],
         ],
         rhythm: &[3, 2, 3, REST_CODE | 1, 2, 3, REST_CODE | 5],
-        swing_bias: 8,
     },
     // Trip-Hop — i–VII–VI–v; sparse but still a short progression, then void
     GenrePreset {
@@ -487,7 +482,6 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
             [5, 1, 1, 2, 3, 4, 2],
         ],
         rhythm: &[2, 1, 2, REST_CODE | 4, 1, 2, 1, REST_CODE | 5],
-        swing_bias: 45,
     },
     // UK Garage — i–III–VI–VII; choppy 2-bar then break
     GenrePreset {
@@ -502,7 +496,6 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
             [5, 1, 2, 2, 2, 3, 2],
         ],
         rhythm: &[1, 1, 2, 1, 1, REST_CODE | 2, 2, 1, 1, 1, REST_CODE | 3],
-        swing_bias: 50,
     },
     // Dubstep — i–i–VI–VII; half-time progression, wide gaps
     GenrePreset {
@@ -517,7 +510,6 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
             [5, 1, 1, 1, 3, 4, 2],
         ],
         rhythm: &[2, 2, 1, 2, REST_CODE | 3, 2, 1, 2, REST_CODE | 5],
-        swing_bias: 25,
     },
 ];
 
@@ -853,7 +845,7 @@ fn build_clip_from_ring(
     (n as u8, out_deg, out_on, out_dur)
 }
 
-#[embassy_executor::task(pool_size = 16 / CHANNELS)]
+#[embassy_executor::task(pool_size = 4)]
 pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMutex, bool>) {
     let param_store = ParamStore::<Params>::new(
         app.app_id,
@@ -901,6 +893,8 @@ pub async fn run(
     params: &ParamStore<Params>,
     storage: &ManagedStorage<Storage>,
 ) {
+    app.wait_while_perf_muted().await;
+
     let (
         midi_out_cfg,
         midi_chan,
@@ -1241,7 +1235,7 @@ pub async fn run(
                         for i in 0..n {
                             let raw_on = ons[i] as u32;
                             let step = raw_on / CAPTURE_QUANT_TICKS;
-                            let delay = swing_delay_ticks(step, swing);
+                            let delay = swing_delay_ticks(step, swing, false);
                             let on_ph = (raw_on + delay) % loop_len;
                             let dur = groove_duration(durs[i] as u32, feel);
                             let end = on_ph.saturating_add(dur);
@@ -1314,7 +1308,7 @@ pub async fn run(
                             pending_record.set(false);
 
                             let grid_step = (clkn / CAPTURE_QUANT_TICKS) % 16;
-                            let delay = swing_delay_ticks(grid_step, swing).min(total.saturating_sub(1));
+                            let delay = swing_delay_ticks(grid_step, swing, false).min(total.saturating_sub(1));
                             let gate = hit_gate_ticks(total, feel, delay);
                             pending_on_at.set(clkn.wrapping_add(delay));
                             pending_off_at.set(clkn.wrapping_add(delay).wrapping_add(gate));
@@ -1344,7 +1338,7 @@ pub async fn run(
     let engine = async {
         let mut sounding: Vec<u8, SOUNDING_CAP> = Vec::new();
         let mut sounding_perform_idx: Option<u8> = None;
-        let mut next_glide_ms: u64 = 0;
+        let mut glide_frames_left: u16 = 0;
 
         let release_all = async |sounding: &mut Vec<u8, SOUNDING_CAP>| {
             for n in sounding.iter() {
@@ -1382,6 +1376,7 @@ pub async fn run(
                 sounding.clear();
                 chord_held.set(false);
                 sounding_perform_idx = None;
+                glide_frames_left = 0;
                 pending_play.set(false);
                 pending_release.set(false);
                 pending_on_at.set(NO_AT);
@@ -1405,37 +1400,51 @@ pub async fn run(
             }
 
             // Perform: chord hold with palette-index glide toward the fader.
+            // Frame counter (not Instant) — engine already ticks at ~1 ms.
             if !glob_mode_auto.get() {
                 if chord_held.get() {
                     let target = glob_perform_idx.get();
                     let count = glob_perform_count.get().max(1);
                     let pdeg = perform_deg_cell.get();
                     let poct = perform_oct_cell.get();
-                    let now = Instant::now().as_millis();
 
                     if sounding.is_empty() {
                         let (deg, oct) = apply_perform_index(target as usize, &pdeg, &poct, count);
                         sounding_perform_idx = Some(target);
-                        next_glide_ms = now.saturating_add(PERFORM_GLIDE_MS);
+                        glide_frames_left = 0;
                         play_degree(&mut sounding, deg, oct, true).await;
-                    } else if sounding_perform_idx != Some(target) && now >= next_glide_ms {
-                        let cur = sounding_perform_idx.unwrap_or(target);
-                        let next = if cur < target {
-                            cur.saturating_add(1)
+                    } else if sounding_perform_idx != Some(target) {
+                        if glide_frames_left == 0 {
+                            let cur = sounding_perform_idx.unwrap_or(target);
+                            let next = if cur < target {
+                                cur.saturating_add(1)
+                            } else {
+                                cur.saturating_sub(1)
+                            };
+                            let (deg, oct) =
+                                apply_perform_index(next as usize, &pdeg, &poct, count);
+                            sounding_perform_idx = Some(next);
+                            // Rate-limit subsequent steps; first step after a move is immediate.
+                            glide_frames_left = if next == target {
+                                0
+                            } else {
+                                PERFORM_GLIDE_FRAMES
+                            };
+                            play_degree(&mut sounding, deg, oct, true).await;
                         } else {
-                            cur.saturating_sub(1)
-                        };
-                        let (deg, oct) = apply_perform_index(next as usize, &pdeg, &poct, count);
-                        sounding_perform_idx = Some(next);
-                        next_glide_ms = now.saturating_add(PERFORM_GLIDE_MS);
-                        play_degree(&mut sounding, deg, oct, true).await;
+                            glide_frames_left = glide_frames_left.saturating_sub(1);
+                        }
+                    } else {
+                        glide_frames_left = 0;
                     }
                 } else if !sounding.is_empty() {
                     sounding_perform_idx = None;
+                    glide_frames_left = 0;
                     close_ring(ticks() as u32);
                     release_all(&mut sounding).await;
                 } else {
                     sounding_perform_idx = None;
+                    glide_frames_left = 0;
                 }
             }
 
@@ -1565,11 +1574,13 @@ pub async fn run(
                 glob_perform_idx.set(idx as u8);
                 glob_degree.set(deg);
                 glob_octave.set(oct);
-                storage.modify_and_save(|s| s.scrub = fader_val);
                 chord_held.set(true);
 
                 buttons.wait_for_up(0).await;
                 chord_held.set(false);
+                // Persist scrub once on release — never during hold (FRAM would
+                // stall the async executor and starve MIDI note changes).
+                storage.modify_and_save(|s| s.scrub = glob_scrub.get());
             }
         }
     };
@@ -1628,9 +1639,9 @@ pub async fn run(
     let fader_handler = async {
         let mut latch = app.make_latch(fader.get_value());
 
-        // Apply Perform scrub: update target index always; degree only when not
-        // holding (engine glides degree while chord_held).
-        let apply_perform_scrub = |new_value: u16| {
+        // Apply Perform scrub. While holding, skip FRAM — saves stall Core 1 and
+        // starve the engine's note updates (LED can still track perform_idx).
+        let apply_perform_scrub = |new_value: u16, persist: bool| {
             glob_scrub.set(new_value);
             let count = glob_perform_count.get().max(1) as usize;
             let idx = value_to_index(new_value, count);
@@ -1641,11 +1652,14 @@ pub async fn run(
                 glob_perform_count.get(),
             );
             glob_perform_idx.set(idx as u8);
+            // Preview degree when idle; while held the engine owns sounding degree.
             if !chord_held.get() {
                 glob_degree.set(deg);
                 glob_octave.set(oct);
             }
-            storage.modify_and_save(|s| s.scrub = new_value);
+            if persist {
+                storage.modify_and_save(|s| s.scrub = new_value);
+            }
         };
 
         loop {
@@ -1653,13 +1667,11 @@ pub async fn run(
             let layer = glob_latch.get();
             let fader_val = fader.get_value();
 
-            // Perform hold: fader is absolute scrub. Button-down switches the
-            // latch layer to Third (for LED), which would otherwise steal the
-            // fader onto Feel and leave scrub stuck (often on the first root).
+            // Perform hold: absolute scrub (button-down uses Third only for LEDs).
             if !glob_mode_auto.get() && chord_held.get() {
                 let _ = latch.update(fader_val, layer, glob_scrub.get());
                 if fader_val.abs_diff(glob_scrub.get()) > 8 {
-                    apply_perform_scrub(fader_val);
+                    apply_perform_scrub(fader_val, false);
                 }
                 continue;
             }
@@ -1682,7 +1694,7 @@ pub async fn run(
                             glob_tension.set(new_value);
                             storage.modify_and_save(|s| s.tension = new_value);
                         } else {
-                            apply_perform_scrub(new_value);
+                            apply_perform_scrub(new_value, true);
                         }
                     }
                     LatchLayer::Alt => {
@@ -1720,18 +1732,23 @@ pub async fn run(
                                 let idx = value_to_index(glob_scrub.get(), count);
                                 glob_slot_idx.set(idx as u8);
                             }
+                            let swing = swing_from_fader(new_value, picks);
                             storage.modify_and_save(|s| {
                                 s.genre = g as u8;
                                 s.slots = slots;
                                 s.slot_count = n;
                                 s.clip_active = false;
                                 s.scrub = 0;
-                                s.swing = swing_from_genre(g);
+                                s.swing = swing;
                             });
-                            glob_swing.set(swing_from_genre(g));
+                            glob_swing.set(swing);
                             // Keep ParamStore in sync so Scopepunk / configurator
                             // GetAppParams reflects the hardware genre pick.
                             params.update(|p| p.genre = g).await;
+                        } else {
+                            // Parked between genres: morph swing only — no Markov reseed.
+                            let swing = swing_from_fader(new_value, picks);
+                            glob_swing.set(swing);
                         }
                     }
                     LatchLayer::Third => {
@@ -1803,7 +1820,12 @@ pub async fn run(
             }
             let layer = if buttons.is_shift_pressed() && !buttons.is_button_pressed(0) {
                 LatchLayer::Alt
-            } else if !buttons.is_shift_pressed() && buttons.is_button_pressed(0) {
+            } else if glob_mode_auto.get()
+                && !buttons.is_shift_pressed()
+                && buttons.is_button_pressed(0)
+            {
+                // Auto+hold: Feel on Third. Perform+hold stays Main so scrub/
+                // perform_idx keep driving fader + LED (Third stole scrub before).
                 LatchLayer::Third
             } else {
                 LatchLayer::Main
@@ -1844,6 +1866,12 @@ pub async fn run(
                     } else {
                         (led_color, led_color, LED_BRIGHTNESS)
                     };
+                    // Perform hold: bright button so hold is obvious (layer stays Main).
+                    let button_bright = if !glob_mode_auto.get() && chord_held.get() {
+                        Brightness::High
+                    } else {
+                        button_bright
+                    };
                     leds.set(
                         0,
                         Led::Top,
@@ -1872,7 +1900,7 @@ pub async fn run(
                     let color = if g == CAPTURE_SLOT {
                         CAPTURE_COLOR
                     } else {
-                        GENRE_COLORS[g.min(NUM_GENRES - 1)]
+                        spectrum_color(fader_now)
                     };
                     let led = split_unsigned_value(fader_now);
                     leds.set(0, Led::Top, color, Brightness::Custom(led[0]));
@@ -1882,46 +1910,21 @@ pub async fn run(
                     }
                 }
                 LatchLayer::Third => {
-                    if glob_mode_auto.get() {
-                        // Auto+Hold: Rose, brightness = position in the auto progression.
-                        let slot = glob_slot_idx.get() as u16;
-                        let count = glob_slot_count.get().max(1) as u16;
-                        let meter = (slot * 4095) / count.max(1);
-                        let led = split_unsigned_value(meter);
-                        leds.set(0, Led::Top, Color::Rose, Brightness::Custom(led[0]));
-                        leds.set(0, Led::Bottom, Color::Rose, Brightness::Custom(led[1]));
-                        if flash == 0 {
-                            let bright = ((slot * 255) / count.max(1)) as u8;
-                            leds.set(
-                                0,
-                                Led::Button,
-                                Color::Rose,
-                                Brightness::Custom(bright.max(16)),
-                            );
-                        }
-                    } else {
-                        // Perform+Hold: Blue, brightness tracks triggered chord root pitch.
-                        let notes = build_chord(
-                            root_midi,
-                            key,
-                            glob_degree.get(),
-                            voicing,
-                            glob_octave.get(),
+                    // Auto+Hold: Rose, brightness = position in the auto progression.
+                    let slot = glob_slot_idx.get() as u16;
+                    let count = glob_slot_count.get().max(1) as u16;
+                    let meter = (slot * 4095) / count.max(1);
+                    let led = split_unsigned_value(meter);
+                    leds.set(0, Led::Top, Color::Rose, Brightness::Custom(led[0]));
+                    leds.set(0, Led::Bottom, Color::Rose, Brightness::Custom(led[1]));
+                    if flash == 0 {
+                        let bright = ((slot * 255) / count.max(1)) as u8;
+                        leds.set(
+                            0,
+                            Led::Button,
+                            Color::Rose,
+                            Brightness::Custom(bright.max(16)),
                         );
-                        let note = notes.first().copied().unwrap_or(root_midi);
-                        let meter = (u16::from(note) * 4095) / 127;
-                        let led = split_unsigned_value(meter);
-                        leds.set(0, Led::Top, Color::Blue, Brightness::Custom(led[0]));
-                        leds.set(0, Led::Bottom, Color::Blue, Brightness::Custom(led[1]));
-                        if flash == 0 {
-                            let bright = ((u16::from(note) * 255) / 127) as u8;
-                            leds.set(
-                                0,
-                                Led::Button,
-                                Color::Blue,
-                                Brightness::Custom(bright.max(16)),
-                            );
-                        }
                     }
                 }
             }

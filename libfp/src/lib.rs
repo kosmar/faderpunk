@@ -1104,6 +1104,10 @@ pub enum ConfigMsgIn {
     },
     FactoryReset,
     GetVersion,
+    /// Host is mid layout/params push — keep Local MIDI muted (classic LFO gate).
+    HoldPerfMute,
+    /// End of host push — allow Local MIDI again after post-layout soft-mute.
+    ReleasePerfMute,
 }
 
 #[derive(Clone, Serialize, PostcardBindings)]

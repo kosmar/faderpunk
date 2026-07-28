@@ -19,8 +19,9 @@ pub enum InputEvent {
 }
 
 const EVENT_PUBSUB_SIZE: usize = 64;
-// 16 apps × 4 concurrent subscribers + headroom for system tasks (input_handlers, etc.)
-const EVENT_PUBSUB_SUBS: usize = 80;
+// 16 apps × ~4 concurrent subscribers, doubled for SetLayout exit/spawn overlap,
+// plus system tasks (input_handlers, etc.)
+const EVENT_PUBSUB_SUBS: usize = 160;
 // 19 senders (16 apps for scenes, 1 buttons, 1 max, 1 midi)
 const EVENT_PUBSUB_SENDERS: usize = 19;
 

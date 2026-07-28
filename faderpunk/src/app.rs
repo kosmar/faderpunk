@@ -307,7 +307,9 @@ pub struct Clock {
 
 impl Clock {
     pub fn new() -> Self {
-        let subscriber = CLOCK_PUBSUB.subscriber().unwrap();
+        let subscriber = CLOCK_PUBSUB
+            .subscriber()
+            .expect("CLOCK_PUBSUB full — raise CLOCK_PUBSUB_SUBSCRIBERS");
         Self { subscriber }
     }
 
@@ -396,6 +398,9 @@ impl MidiOutput {
     }
 
     async fn send_midi_msg(&self, msg: MidiMessage) {
+        if crate::tasks::midi::perf_local_muted_public() {
+            return;
+        }
         let event = LiveEvent::Midi {
             channel: self.midi_channel,
             message: msg,
@@ -407,6 +412,11 @@ impl MidiOutput {
     /// Sends a MIDI CC message. In NRPN mode, sends as 14-bit NRPN instead.
     /// value is normalized to a range of 0-4095
     pub async fn send_cc(&self, cc: MidiCc, value: u16) {
+        // Don't enqueue during HoldPerfMute / soft-mute — await-send would
+        // fill APP_MIDI_CHANNEL and stall Core 1 while the distributor drops.
+        if crate::tasks::midi::perf_local_muted_public() {
+            return;
+        }
         if self.nrpn_mode {
             let msg = MidiMsg::nrpn(self.midi_channel, cc.as_u16(), value, self.midi_out);
             self.midi_sender.send((self.start_channel, msg)).await;
@@ -417,6 +427,31 @@ impl MidiOutput {
             };
             self.send_midi_msg(msg).await;
         }
+    }
+
+    /// Non-blocking CC for high-rate streams (LFO). Drops if the app MIDI
+    /// queue is full instead of stalling Core 1 and backing up into USB TX.
+    pub fn try_send_cc(&self, cc: MidiCc, value: u16) {
+        if crate::tasks::midi::perf_local_muted_public() {
+            return;
+        }
+        let msg = if self.nrpn_mode {
+            MidiMsg::nrpn(self.midi_channel, cc.as_u16(), value, self.midi_out)
+        } else {
+            let message = MidiMessage::Controller {
+                controller: cc.into(),
+                value: scale_bits_12_7(value),
+            };
+            MidiMsg::new(
+                LiveEvent::Midi {
+                    channel: self.midi_channel,
+                    message,
+                },
+                self.midi_out,
+                MidiEventSource::Local,
+            )
+        };
+        let _ = self.midi_sender.try_send((self.start_channel, msg));
     }
 
     /// Sends a MIDI NoteOn message.
@@ -771,6 +806,26 @@ impl<const N: usize> App<N> {
         Timer::after_millis(millis).await
     }
 
+    /// Stall until post-layout / HoldPerfMute Local quiet ends.
+    /// During host Full Push, sleep long — many apps × short polls starved
+    /// Core0/USB while the next app was spawning.
+    pub async fn wait_while_perf_muted(&self) {
+        let slice_ms = if crate::tasks::midi::host_holds_perf_mute() {
+            200
+        } else {
+            50
+        };
+        loop {
+            while crate::tasks::midi::perf_local_muted_public() {
+                self.delay_millis(slice_ms).await;
+            }
+            self.delay_millis(30).await;
+            if !crate::tasks::midi::perf_local_muted_public() {
+                break;
+            }
+        }
+    }
+
     #[allow(dead_code)]
     pub async fn delay_secs(&self, secs: u64) {
         Timer::after_secs(secs).await
@@ -855,6 +910,10 @@ impl<const N: usize> App<N> {
 
     pub async fn exit_handler(&self, exit_signal: &'static Signal<NoopRawMutex, bool>) {
         exit_signal.wait().await;
-        self.reset().await;
+        // During SetLayout skip jack reset AND LED clear — unset_all was wiping
+        // debug breadcrumbs, and MAX reset storms wedge USB. New apps own jacks/LEDs.
+        if !crate::tasks::midi::LAYOUT_USB_MIDI_MUTE.load(portable_atomic::Ordering::Relaxed) {
+            self.reset().await;
+        }
     }
 }

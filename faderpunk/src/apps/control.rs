@@ -193,6 +193,8 @@ pub async fn run(
     params: &ParamStore<Params>,
     storage: &ManagedStorage<Storage>,
 ) {
+    app.wait_while_perf_muted().await;
+
     let (
         curve,
         midi_chan,
@@ -262,7 +264,7 @@ pub async fn run(
         let mut last_i2c = 0u16;
 
         loop {
-            app.delay_millis(1).await;
+            app.delay_millis(8).await;
 
             let latch_active_layer =
                 latch_layer_glob.set(LatchLayer::from(buttons.is_shift_pressed()));

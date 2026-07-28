@@ -33,8 +33,10 @@ use crate::{
 };
 
 const CLOCK_PUBSUB_SIZE: usize = 16;
-// 16 apps + 1 metronome
-const CLOCK_PUBSUB_SUBSCRIBERS: usize = 17;
+// 16 apps + metronome, plus headroom so SetLayout can overlap old tasks
+// (not yet dropped) with newly spawned apps. Too-small → subscriber().unwrap()
+// panics Core 1 and USB disappears with no LED breadcrumbs.
+const CLOCK_PUBSUB_SUBSCRIBERS: usize = 48;
 // Only the gatekeeper publishes to CLOCK_PUBSUB
 const CLOCK_PUBSUB_PUBLISHERS: usize = 5;
 // Add a slight delay before the very first tick (to offset it to reset)

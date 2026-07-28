@@ -134,6 +134,11 @@ pub async fn run(
     params: &ParamStore<Params>,
     storage: &ManagedStorage<Storage>,
 ) {
+    // Park through Hold/soft-mute before heavy bring-up so SetAppParams
+    // mid-push is not starved by sibling jack/clock init.
+    app.wait_while_perf_muted().await;
+
+
     let (midi_out, midi_chan, note, gatel, led_color) = params.query(|p| {
         (
             p.midi_out,

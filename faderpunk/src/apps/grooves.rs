@@ -17,7 +17,11 @@ use libfp::{
 use crate::app::{
     App, AppParams, AppStorage, ClockEvent, Led, ManagedStorage, ParamStore, SceneEvent,
 };
-use crate::apps::genre_palette::{genre_fader_center, GENRE_COLORS, GENRE_NAMES, NUM_GENRES};
+use crate::apps::genre_palette::{genre_fader_center, GENRE_NAMES, NUM_GENRES};
+use crate::apps::groove::{
+    feel_curve, feel_lerp_i32, feel_lerp_u16, swing_bias, swing_delay_ticks, FLAT_VEL, SIXTEENTH,
+};
+use crate::apps::led_fx::{genre_nearest, genre_pair, lerp_i32, lerp_u8, spectrum_color};
 
 pub const CHANNELS: usize = 1;
 pub const PARAMS: usize = 15;
@@ -25,9 +29,9 @@ pub const PARAMS: usize = 15;
 const LED_BRIGHTNESS: Brightness = Brightness::Mid;
 /// Reverse-swing LED feedback (white↔off), same as Heat Pump / Golden Gate.
 const REVERSE_FADE_MS: u16 = 500;
+/// Ignore tiny ADC noise when deciding "button+fader scrub" vs long-press mute.
+const FADER_MOVE_THRESH: u16 = 64;
 
-/// 24 PPQN → one 16th note.
-const SIXTEENTH: u32 = 6;
 /// 16 sixteenths per 4/4 bar.
 const STEPS_PER_BAR: u32 = 16;
 
@@ -38,7 +42,7 @@ const CV_JACK_OUT: usize = 0;
 const CV_JACK_IN: usize = 1;
 
 const DEST_DENSITY: usize = 0;
-const DEST_SWING: usize = 1;
+const DEST_FEEL: usize = 1;
 const DEST_RESET: usize = 2;
 const DEST_COUNT: usize = 3;
 
@@ -56,18 +60,39 @@ struct Pattern {
     snare_fill: u16,
     /// Extra hats revealed progressively as density rises.
     hats_fill: u16,
+    kick_base: u8,
+    kick_accent: u8,
+    kick_acc_mask: u16,
+    snare_base: u8,
+    snare_accent: u8,
+    snare_acc_mask: u16,
+    hats_base: u8,
+    hats_accent: u8,
+    hats_acc_mask: u16,
+    /// Per-16th microtiming in PPQN ticks (−2..=+4 typical at Feel=max).
+    timing: [i8; 16],
 }
 
 /// Oldest → newest. Indices match Shift+Fader buckets and Enum param.
 const PATTERNS: [Pattern; NUM_GENRES] = [
-    // 0 Dub — sparse kick, snare 2&4, thin offbeat hats
+    // 0 Dub — sparse kick, snare 2&4, thin offbeat hats; heavy 1 accent, laid-back
     Pattern {
-        kick: 0b0000_0001_0000_0001,  // 1 and 3
-        snare: 0b0001_0000_0001_0000, // 2 and 4
-        hats: 0b0100_0100_0100_0100,  // offbeat 8ths
+        kick: 0b0000_0001_0000_0001,
+        snare: 0b0001_0000_0001_0000,
+        hats: 0b0100_0100_0100_0100,
         kick_fill: 0b0000_0100_0000_0000,
         snare_fill: 0b0000_0000_1000_0000,
         hats_fill: 0b0010_0010_0010_0010,
+        kick_base: 55,
+        kick_accent: 100,
+        kick_acc_mask: 0b0000_0000_0000_0001,
+        snare_base: 50,
+        snare_accent: 95,
+        snare_acc_mask: 0b0001_0000_0001_0000,
+        hats_base: 40,
+        hats_accent: 70,
+        hats_acc_mask: 0b0100_0000_0100_0000,
+        timing: [0, 1, 0, 2, 1, 2, 0, 2, 0, 1, 0, 2, 1, 2, 0, 2],
     },
     // 1 Disco — 4-on-floor, clap 2&4, offbeat hats
     Pattern {
@@ -77,17 +102,37 @@ const PATTERNS: [Pattern; NUM_GENRES] = [
         kick_fill: 0b0000_0100_0000_0100,
         snare_fill: 0b0100_0000_0100_0000,
         hats_fill: 0b1010_1010_1010_1010,
+        kick_base: 75,
+        kick_accent: 100,
+        kick_acc_mask: 0b0001_0001_0001_0001,
+        snare_base: 55,
+        snare_accent: 100,
+        snare_acc_mask: 0b0001_0000_0001_0000,
+        hats_base: 45,
+        hats_accent: 85,
+        hats_acc_mask: 0b0100_0100_0100_0100,
+        timing: [0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2],
     },
-    // 2 Hip-Hop — boom-bap kick syncopation, snare 2&4
+    // 2 Hip-Hop — boom-bap; strong 1+3 kick accents
     Pattern {
-        kick: 0b0100_0001_0010_0001, // 1, &-of-2-ish, 3, late 4
+        kick: 0b0100_0001_0010_0001,
         snare: 0b0001_0000_0001_0000,
         hats: 0b0101_0101_0101_0101,
         kick_fill: 0b0100_0000_0100_0000,
         snare_fill: 0b0000_0100_0000_0100,
         hats_fill: 0b1111_1111_1111_1111,
+        kick_base: 50,
+        kick_accent: 100,
+        kick_acc_mask: 0b0000_0001_0000_0001,
+        snare_base: 55,
+        snare_accent: 98,
+        snare_acc_mask: 0b0001_0000_0001_0000,
+        hats_base: 40,
+        hats_accent: 75,
+        hats_acc_mask: 0b0001_0001_0001_0001,
+        timing: [0, 2, 1, 3, 0, 2, 1, 3, 0, 2, 1, 3, 1, 3, 2, 4],
     },
-    // 3 House — classic
+    // 3 House — classic 4-on-floor, clap 2&4
     Pattern {
         kick: 0b0001_0001_0001_0001,
         snare: 0b0001_0000_0001_0000,
@@ -95,26 +140,56 @@ const PATTERNS: [Pattern; NUM_GENRES] = [
         kick_fill: 0b0000_0100_0000_0100,
         snare_fill: 0b0100_0000_0100_0000,
         hats_fill: 0b1111_1111_1111_1111,
+        kick_base: 80,
+        kick_accent: 100,
+        kick_acc_mask: 0b0001_0001_0001_0001,
+        snare_base: 55,
+        snare_accent: 100,
+        snare_acc_mask: 0b0001_0000_0001_0000,
+        hats_base: 45,
+        hats_accent: 80,
+        hats_acc_mask: 0b0100_0100_0100_0100,
+        timing: [0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2],
     },
-    // 4 Techno — 4-on-floor, dense hats, sparse clap
+    // 4 Techno — straight kick; Feel via hat dynamics
     Pattern {
         kick: 0b0001_0001_0001_0001,
-        snare: 0b0001_0000_0000_0000, // mainly beat 4
+        snare: 0b0001_0000_0000_0000,
         hats: 0b0101_0101_0101_0101,
         kick_fill: 0b0100_0100_0100_0100,
         snare_fill: 0b0000_0001_0000_0000,
         hats_fill: 0b1111_1111_1111_1111,
+        kick_base: 85,
+        kick_accent: 100,
+        kick_acc_mask: 0b0001_0001_0001_0001,
+        snare_base: 50,
+        snare_accent: 95,
+        snare_acc_mask: 0b0001_0000_0000_0000,
+        hats_base: 40,
+        hats_accent: 90,
+        hats_acc_mask: 0b0001_0001_0001_0001,
+        timing: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1],
     },
-    // 5 Trip-Hop — laid-back, sparse
+    // 5 Trip-Hop — laid-back, late snare pocket
     Pattern {
         kick: 0b0000_0001_0000_0001,
-        snare: 0b0000_0000_0001_0000, // mostly beat 3
+        snare: 0b0000_0000_0001_0000,
         hats: 0b0100_0000_0100_0000,
         kick_fill: 0b0000_0000_0001_0000,
         snare_fill: 0b0000_1000_0000_0000,
         hats_fill: 0b0100_0100_0100_0100,
+        kick_base: 50,
+        kick_accent: 95,
+        kick_acc_mask: 0b0000_0000_0000_0001,
+        snare_base: 45,
+        snare_accent: 90,
+        snare_acc_mask: 0b0000_0000_0001_0000,
+        hats_base: 35,
+        hats_accent: 65,
+        hats_acc_mask: 0b0100_0000_0100_0000,
+        timing: [0, 2, 1, 3, 2, 3, 1, 3, 0, 2, 1, 3, 3, 4, 2, 3],
     },
-    // 6 UK Garage — skippy kick/hats, snare 2&4
+    // 6 UK Garage — skippy kick/hats
     Pattern {
         kick: 0b1000_1001_0010_0001,
         snare: 0b0001_0000_0001_0000,
@@ -122,6 +197,16 @@ const PATTERNS: [Pattern; NUM_GENRES] = [
         kick_fill: 0b0010_0000_0100_0000,
         snare_fill: 0b0000_0010_0000_0100,
         hats_fill: 0b1110_1101_1110_1101,
+        kick_base: 50,
+        kick_accent: 100,
+        kick_acc_mask: 0b0000_0001_0000_0001,
+        snare_base: 55,
+        snare_accent: 98,
+        snare_acc_mask: 0b0001_0000_0001_0000,
+        hats_base: 40,
+        hats_accent: 85,
+        hats_acc_mask: 0b0100_0100_0100_0100,
+        timing: [0, 3, -1, 2, 0, 3, 1, 4, 0, 3, -1, 2, 0, 3, 1, 4],
     },
     // 7 Dubstep — half-time: kick 1, snare 3
     Pattern {
@@ -131,12 +216,22 @@ const PATTERNS: [Pattern; NUM_GENRES] = [
         kick_fill: 0b0000_0000_0100_0000,
         snare_fill: 0b0000_1000_0000_0000,
         hats_fill: 0b0101_0100_0101_0100,
+        kick_base: 60,
+        kick_accent: 100,
+        kick_acc_mask: 0b0000_0000_0000_0001,
+        snare_base: 55,
+        snare_accent: 100,
+        snare_acc_mask: 0b0000_0001_0000_0000,
+        hats_base: 40,
+        hats_accent: 75,
+        hats_acc_mask: 0b0100_0000_0000_0100,
+        timing: [0, 1, 0, 2, 1, 2, 0, 2, 0, 1, 0, 2, 1, 2, 0, 2],
     },
 ];
 
 pub static CONFIG: Config<PARAMS> = Config::new(
     "Grooves",
-    "Multi-genre MIDI drum grooves with swing",
+    "Multi-genre MIDI drum grooves with feel",
     Color::Orange,
     AppIcon::Die,
 )
@@ -196,7 +291,7 @@ pub static CONFIG: Config<PARAMS> = Config::new(
 })
 .add_param(Param::Enum {
     name: "CV Dest",
-    variants: &["Density", "Swing", "Reset"],
+    variants: &["Density", "Feel", "Reset"],
 })
 .add_param(Param::i32 {
     name: "CV Att",
@@ -287,7 +382,9 @@ fn mod_u16(base: u16, in_val: u16) -> u16 {
 
 #[derive(Serialize, Deserialize)]
 pub struct Storage {
-    swing: u16,
+    /// Groove feel attenuator (0 = flat/grid, 4095 = full genre character).
+    /// Same FRAM slot as the former `swing` field.
+    feel: u16,
     /// Groove density: progressively reveals extra kick/snare/hat hits
     /// across the whole pattern (not just hats) as this rises.
     density: u16,
@@ -299,8 +396,8 @@ pub struct Storage {
 impl Default for Storage {
     fn default() -> Self {
         Self {
-            // ~1 tick of swing — audible default (see swing_phase)
-            swing: 2000,
+            // Mid-high so a fresh instance already grooves.
+            feel: 2800,
             density: 2048,
             jack_mode: JACK_ANY,
             reversed: false,
@@ -313,22 +410,6 @@ impl AppStorage for Storage {}
 
 fn bit_set(mask: u16, step: u32) -> bool {
     mask & (1u16 << (step % STEPS_PER_BAR)) != 0
-}
-
-/// MPC-style: delay odd 16ths by 0..=max_delay PPQN ticks.
-/// `swing_max_pct` (10–100) sets how far "fader top" goes as % of a 16th note
-/// (50% ≈ classic MPC; 100% = full 16th late).
-fn swing_phase(step: u32, swing: u16, reversed: bool, swing_max_pct: i32) -> u32 {
-    let pct = swing_max_pct.clamp(10, 100) as u32;
-    let max_delay = ((SIXTEENTH * pct) / 100).max(1);
-    let delay = ((swing as u32) * max_delay + 2047) / 4095;
-    let odd = step % 2 == 1;
-    let delay_this = if reversed { !odd } else { odd };
-    if delay_this {
-        delay
-    } else {
-        0
-    }
 }
 
 /// Continuous "groove density" reveal for one voice's fill mask. Returns
@@ -382,6 +463,23 @@ fn ghost_drag_ticks(density: u16) -> u32 {
 fn midi_vel(mult: u16) -> u16 {
     // mult is 0..=100 "percent" of full scale
     ((4095u32 * mult as u32) / 100).min(4095) as u16
+}
+
+/// Core-hit velocity % from Pattern DNA, attenuated by Feel.
+fn core_vel_pct(base: u8, accent: u8, acc_mask: u16, step: u32, feel: u16) -> u16 {
+    let character = if bit_set(acc_mask, step) {
+        u16::from(accent)
+    } else {
+        u16::from(base)
+    };
+    feel_lerp_u16(FLAT_VEL, character, feel)
+}
+
+/// Effective swing % from bias × Feel, capped by Swing max %.
+fn feel_swing_pct(bias: u8, feel: u16, swing_max_pct: i32) -> i32 {
+    let f = u32::from(feel_curve(feel));
+    let pct = (u32::from(bias) * f) / 4095;
+    pct.min(swing_max_pct.clamp(10, 100) as u32) as i32
 }
 
 /// Resting CV for activity pulses. On ±5V, 0 counts = −5V — use mid (0V) as idle
@@ -452,7 +550,8 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
             midi_channel_hats: MidiChannel::default(),
             genre: 3, // House
             swing_max_pct: 50,
-            gatel: 40,
+            // Short drum triggers (see TRIG_MAX_TICKS); 100% → 2 PPQN ticks.
+            gatel: 100,
             color: Color::Orange,
             midi_out: MidiOut::default(),
             cv_jack: CV_JACK_OUT,
@@ -485,6 +584,8 @@ pub async fn run(
     params: &ParamStore<Params>,
     storage: &ManagedStorage<Storage>,
 ) {
+    app.wait_while_perf_muted().await;
+
     let (
         midi_out,
         note_kick,
@@ -543,10 +644,10 @@ pub async fn run(
         jack.set_value(pulse_idle(range));
     }
 
-    let (swing, density, jack_mode, reversed, muted) =
-        storage.query(|s| (s.swing, s.density, s.jack_mode, s.reversed, s.muted));
+    let (feel, density, jack_mode, reversed, muted) =
+        storage.query(|s| (s.feel, s.density, s.jack_mode, s.reversed, s.muted));
 
-    let glob_swing = app.make_global(swing);
+    let glob_feel = app.make_global(feel);
     let glob_swing_max = app.make_global(swing_max_pct);
     let glob_density = app.make_global(density);
     let glob_jack_mode = app.make_global(jack_mode);
@@ -559,6 +660,9 @@ pub async fn run(
     let glob_cv_val = app.make_global(2047u16);
     let long_press_fired = app.make_global(false);
     let glob_fader_moved = app.make_global(false);
+    let glob_fader_at_down = app.make_global(0u16);
+    // Genre changed on device; persist ParamStore off the fader hot-path.
+    let glob_genre_dirty = app.make_global(false);
     let glob_latch_layer = app.make_global(LatchLayer::Main);
     let glob_reverse_fade = app.make_global(0u16);
     let glob_reverse_fade_up = app.make_global(false);
@@ -584,7 +688,12 @@ pub async fn run(
         let mut gate_off_at: Option<u32> = None;
         // Fire-once guard per 16th slot; u32::MAX = nothing fired yet.
         let mut last_fired_slot = u32::MAX;
-        let gate_len = (SIXTEENTH as i32 * gatel / 100).clamp(1, (SIXTEENTH as i32) - 1) as u32;
+        // Drum app: GATE % scales a short trigger (1..=TRIG_MAX_TICKS), never a
+        // sustained note. Feel/swing only move the attack — they must not stretch
+        // the gate into the next 16th (that looked like Chord Vamp holds).
+        const TRIG_MAX_TICKS: u32 = 2;
+        let gate_len =
+            (TRIG_MAX_TICKS as i32 * gatel / 100).clamp(1, TRIG_MAX_TICKS as i32) as u32;
 
         loop {
             match clock.wait_for_event(ClockDivision::_1).await {
@@ -626,18 +735,27 @@ pub async fn run(
                     let slot = pos / SIXTEENTH;
                     let step = (pos / SIXTEENTH) % STEPS_PER_BAR;
                     let phase = pos % SIXTEENTH;
-                    let swing_val = if cv_jack == CV_JACK_IN && cv_dest == DEST_SWING {
-                        mod_u16(glob_swing.get(), glob_cv_val.get())
+                    let feel_val = if cv_jack == CV_JACK_IN && cv_dest == DEST_FEEL {
+                        mod_u16(glob_feel.get(), glob_cv_val.get())
                     } else {
-                        glob_swing.get()
+                        glob_feel.get()
                     };
-                    let delay = swing_phase(
-                        step,
-                        swing_val,
-                        glob_reversed.get(),
-                        glob_swing_max.get(),
-                    )
-                    .min(SIXTEENTH - 1);
+                    let (g_lo, g_hi, g_frac) = genre_pair(glob_genre_fader.get(), NUM_GENRES);
+                    let near = genre_nearest(glob_genre_fader.get(), NUM_GENRES);
+                    let pat = &PATTERNS[near];
+                    let pat_lo = &PATTERNS[g_lo];
+                    let pat_hi = &PATTERNS[g_hi];
+                    let bias = lerp_u8(swing_bias(g_lo), swing_bias(g_hi), g_frac);
+                    let swing_pct = feel_swing_pct(bias, feel_val, glob_swing_max.get());
+                    let timing_char = lerp_i32(
+                        i32::from(pat_lo.timing[(step % STEPS_PER_BAR) as usize]),
+                        i32::from(pat_hi.timing[(step % STEPS_PER_BAR) as usize]),
+                        g_frac,
+                    );
+                    let timing_off = feel_lerp_i32(0, timing_char, feel_val);
+                    let delay = ((swing_delay_ticks(step, swing_pct, glob_reversed.get()) as i32)
+                        + timing_off)
+                        .clamp(0, (SIXTEENTH as i32) - 1) as u32;
 
                     // Note / jack off
                     if let Some(off_at) = gate_off_at {
@@ -662,7 +780,7 @@ pub async fn run(
                         }
                     }
 
-                    // Fire-once guard: a swing/density change mid-window
+                    // Fire-once guard: a feel/density change mid-window
                     // can't skip a step or fire it twice.
                     if slot != last_fired_slot && !glob_muted.get() {
                         let density = if cv_jack == CV_JACK_IN && cv_dest == DEST_DENSITY {
@@ -670,8 +788,6 @@ pub async fn run(
                         } else {
                             glob_density.get()
                         };
-                        let genre = glob_genre.get().min(NUM_GENRES - 1);
-                        let pat = &PATTERNS[genre];
 
                         let kick_core = bit_set(pat.kick, step);
                         let snare_core = bit_set(pat.snare, step);
@@ -690,10 +806,13 @@ pub async fn run(
                         // Ghost-only steps (no core hit) drag a little behind
                         // the grid as density rises — a looser, more human
                         // pocket — but never displace a core hit's timing.
+                        // Ghost drag also scales with Feel so low Feel stays straight.
+                        let ghost_extra = feel_lerp_u16(0, ghost_drag_ticks(density) as u16, feel_val)
+                            as u32;
                         let required_delay = if core_hit || !any_ghost {
                             delay
                         } else {
-                            (delay + ghost_drag_ticks(density)).min(SIXTEENTH - 1)
+                            (delay + ghost_extra).min(SIXTEENTH - 1)
                         };
 
                         if phase >= required_delay {
@@ -725,24 +844,51 @@ pub async fn run(
 
                             if do_kick {
                                 let v = match kick_ghost {
-                                    Some(frac) if !kick_core => ghost_vel_pct(frac, 20, 75),
-                                    _ => 100,
+                                    Some(frac) if !kick_core => {
+                                        let g = ghost_vel_pct(frac, 18, 35);
+                                        feel_lerp_u16(FLAT_VEL, g, feel_val)
+                                    }
+                                    _ => core_vel_pct(
+                                        lerp_u8(pat_lo.kick_base, pat_hi.kick_base, g_frac),
+                                        lerp_u8(pat_lo.kick_accent, pat_hi.kick_accent, g_frac),
+                                        pat.kick_acc_mask,
+                                        step,
+                                        feel_val,
+                                    ),
                                 };
                                 midi_kick.send_note_on(note_kick, midi_vel(v)).await;
                                 kick_on = true;
                             }
                             if do_snare {
                                 let v = match snare_ghost {
-                                    Some(frac) if !snare_core => ghost_vel_pct(frac, 18, 65),
-                                    _ => 90,
+                                    Some(frac) if !snare_core => {
+                                        let g = ghost_vel_pct(frac, 15, 32);
+                                        feel_lerp_u16(FLAT_VEL, g, feel_val)
+                                    }
+                                    _ => core_vel_pct(
+                                        lerp_u8(pat_lo.snare_base, pat_hi.snare_base, g_frac),
+                                        lerp_u8(pat_lo.snare_accent, pat_hi.snare_accent, g_frac),
+                                        pat.snare_acc_mask,
+                                        step,
+                                        feel_val,
+                                    ),
                                 };
                                 midi_snare.send_note_on(note_snare, midi_vel(v)).await;
                                 snare_on = true;
                             }
                             if do_hats {
                                 let v = match hats_ghost {
-                                    Some(frac) if !hats_core => ghost_vel_pct(frac, 12, 55),
-                                    _ => 55,
+                                    Some(frac) if !hats_core => {
+                                        let g = ghost_vel_pct(frac, 12, 28);
+                                        feel_lerp_u16(FLAT_VEL, g, feel_val)
+                                    }
+                                    _ => core_vel_pct(
+                                        lerp_u8(pat_lo.hats_base, pat_hi.hats_base, g_frac),
+                                        lerp_u8(pat_lo.hats_accent, pat_hi.hats_accent, g_frac),
+                                        pat.hats_acc_mask,
+                                        step,
+                                        feel_val,
+                                    ),
                                 };
                                 midi_hats.send_note_on(note_hats, midi_vel(v)).await;
                                 hats_on = true;
@@ -757,14 +903,18 @@ pub async fn run(
                                 if let Some(ref jack) = out_jack {
                                     jack.set_value(level);
                                 }
-                                gate_off_at = Some(clkn.wrapping_add(gate_len));
+                                // Never hold past this 16th — late Feel/swing
+                                // attacks still get a blip, not a smear.
+                                let room = SIXTEENTH.saturating_sub(phase).max(1);
+                                let pulse = gate_len.min(room);
+                                gate_off_at = Some(clkn.wrapping_add(pulse));
                                 leds.set(0, Led::Bottom, led_color, Brightness::High);
                             }
                         }
                     }
 
                     // Top LED: bar progress by default; genre while Shift held;
-                    // swing amount while Button held.
+                    // Feel amount while Button held.
                     match glob_latch_layer.get() {
                         LatchLayer::Main => {
                             leds.set(
@@ -776,8 +926,7 @@ pub async fn run(
                         }
                         LatchLayer::Alt => {
                             let fader_now = faders.get_value();
-                            let g = value_to_index(fader_now, NUM_GENRES).min(NUM_GENRES - 1);
-                            let color = GENRE_COLORS[g];
+                            let color = spectrum_color(fader_now);
                             let led = split_unsigned_value(fader_now);
                             leds.set(0, Led::Top, color, Brightness::Custom(led[0]));
                             leds.set(0, Led::Bottom, color, Brightness::Custom(led[1]));
@@ -786,7 +935,7 @@ pub async fn run(
                             }
                         }
                         LatchLayer::Third => {
-                            let s = glob_swing.get();
+                            let s = glob_feel.get();
                             leds.set(0, Led::Top, Color::Red, Brightness::Custom((s / 16) as u8));
                         }
                     }
@@ -812,10 +961,13 @@ pub async fn run(
             } else {
                 long_press_fired.set(false);
                 glob_fader_moved.set(false);
+                glob_fader_at_down.set(faders.get_value());
                 buttons.wait_for_up(0).await;
                 if !long_press_fired.get() {
-                    // Short: reset to downbeat
-                    glob_reset.set(true);
+                    // Short: reset to downbeat (and not a Feel scrub)
+                    if !glob_fader_moved.get() {
+                        glob_reset.set(true);
+                    }
                 } else if !glob_fader_moved.get() {
                     // Long (no fader move): mute
                     let muted = glob_muted.toggle();
@@ -859,6 +1011,8 @@ pub async fn run(
                     leds.set(0, Led::Button, color, Brightness::High);
                 }
             }
+            // Plain long: mute is handled on release only if the fader never
+            // moved (Button+Fader Feel scrub must not mute).
         }
     };
 
@@ -866,19 +1020,24 @@ pub async fn run(
         let mut latch = app.make_latch(faders.get_value());
         loop {
             faders.wait_for_change_at(0).await;
+            let fader_val = faders.get_value();
             let latch_layer = glob_latch_layer.get();
 
-            if buttons.is_button_pressed(0) {
-                glob_fader_moved.set(true);
+            // Button+Feel scrub: any real move cancels mute-on-long / reset-on-tap.
+            if buttons.is_button_pressed(0) && !buttons.is_shift_pressed() {
+                let delta = fader_val.abs_diff(glob_fader_at_down.get());
+                if delta > FADER_MOVE_THRESH {
+                    glob_fader_moved.set(true);
+                }
             }
 
             let target_value = match latch_layer {
                 LatchLayer::Main => storage.query(|s| s.density),
                 LatchLayer::Alt => glob_genre_fader.get(),
-                LatchLayer::Third => storage.query(|s| s.swing),
+                LatchLayer::Third => storage.query(|s| s.feel),
             };
 
-            if let Some(new_value) = latch.update(faders.get_value(), latch_layer, target_value) {
+            if let Some(new_value) = latch.update(fader_val, latch_layer, target_value) {
                 match latch_layer {
                     LatchLayer::Main => {
                         glob_density.set(new_value);
@@ -889,12 +1048,15 @@ pub async fn run(
                         let g = value_to_index(new_value, NUM_GENRES);
                         if g != glob_genre.get() {
                             glob_genre.set(g);
-                            params.update(|p| p.genre = g).await;
+                            // Do NOT await params.update here — FRAM + MIDI SysEx
+                            // would stall the whole fader/latch task (all layers hang).
+                            glob_genre_dirty.set(true);
                         }
                     }
                     LatchLayer::Third => {
-                        glob_swing.set(new_value);
-                        storage.modify_and_save(|s| s.swing = new_value);
+                        glob_feel.set(new_value);
+                        storage.modify_and_save(|s| s.feel = new_value);
+                        glob_fader_moved.set(true);
                     }
                 }
             }
@@ -906,9 +1068,9 @@ pub async fn run(
             match app.wait_for_scene_event().await {
                 SceneEvent::LoadScene(scene) => {
                     storage.load_from_scene(scene).await;
-                    let (swing, density, jack_mode, reversed, muted) =
-                        storage.query(|s| (s.swing, s.density, s.jack_mode, s.reversed, s.muted));
-                    glob_swing.set(swing);
+                    let (feel, density, jack_mode, reversed, muted) =
+                        storage.query(|s| (s.feel, s.density, s.jack_mode, s.reversed, s.muted));
+                    glob_feel.set(feel);
                     glob_density.set(density);
                     glob_jack_mode.set(jack_mode);
                     glob_reversed.set(reversed);
@@ -945,6 +1107,15 @@ pub async fn run(
                     prev_gate_high = false;
                 }
             }
+            // While holding for Feel (Third), poll fader vs press-down so a
+            // scrub cancels mute even if wait_for_change races the release.
+            if buttons.is_button_pressed(0) && !buttons.is_shift_pressed() {
+                let delta = faders.get_value().abs_diff(glob_fader_at_down.get());
+                if delta > FADER_MOVE_THRESH {
+                    glob_fader_moved.set(true);
+                }
+            }
+
             let latch_active_layer = if buttons.is_shift_pressed() && !buttons.is_button_pressed(0)
             {
                 LatchLayer::Alt
@@ -994,9 +1165,23 @@ pub async fn run(
         }
     };
 
+    // Persist genre after Shift scrub without blocking faders.
+    let genre_persist = async {
+        loop {
+            app.delay_millis(40).await;
+            // Only flush while Shift is up so scrub stays responsive.
+            let shifting = buttons.is_shift_pressed() && !buttons.is_button_pressed(0);
+            if glob_genre_dirty.get() && !shifting {
+                glob_genre_dirty.set(false);
+                let g = glob_genre.get().min(NUM_GENRES - 1);
+                params.update(|p| p.genre = g).await;
+            }
+        }
+    };
+
     join(
         join5(fut_clock, fut_buttons, fut_faders, scene_handler, shift),
-        long_press,
+        join(long_press, genre_persist),
     )
     .await;
 }

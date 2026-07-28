@@ -17,6 +17,8 @@ pub const GENRE_NAMES: &[&str] = &[
 ];
 
 /// Same order as [`GENRE_NAMES`] — keep identical across apps.
+/// Discrete chrome for Enum/param UI; scrub LEDs use [`super::led_fx::spectrum_color`].
+#[allow(dead_code)]
 pub const GENRE_COLORS: [Color; NUM_GENRES] = [
     Color::Orange, // Dub
     Color::Yellow, // Disco

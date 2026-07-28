@@ -128,7 +128,7 @@ use crate::app::{
     App, AppParams, AppStorage, ClockEvent, Global, Led, ManagedStorage, ParamStore, SceneEvent,
 };
 
-pub const CHANNELS: usize = 4; // Number of used faderpunk channels
+pub const CHANNELS: usize = 4;
 pub const PARAMS: usize = 13; // NUmber of app configuration parameters
 
 const DIV_SIXTEENTH_NOTE_COLOR: Color = Color::Yellow;
@@ -327,6 +327,11 @@ pub async fn run(
     params: &ParamStore<Params>,
     storage: &ManagedStorage<Storage>,
 ) {
+    // Park through Hold/soft-mute before heavy bring-up so SetAppParams
+    // mid-push is not starved by sibling jack/clock init.
+    app.wait_while_perf_muted().await;
+
+
     let die = app.use_die();
     let faders = app.use_faders();
     let buttons = app.use_buttons();
