@@ -73,7 +73,7 @@ struct Pattern {
     timing: [i8; 16],
 }
 
-/// Oldest → newest. Indices match Shift+Fader buckets and Enum param.
+/// Morph axis — indices match Shift+Fader buckets and Enum param.
 const PATTERNS: [Pattern; NUM_GENRES] = [
     // 0 Dub — sparse kick, snare 2&4, thin offbeat hats; heavy 1 accent, laid-back
     Pattern {
@@ -113,26 +113,7 @@ const PATTERNS: [Pattern; NUM_GENRES] = [
         hats_acc_mask: 0b0100_0100_0100_0100,
         timing: [0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2],
     },
-    // 2 Hip-Hop — boom-bap; strong 1+3 kick accents
-    Pattern {
-        kick: 0b0100_0001_0010_0001,
-        snare: 0b0001_0000_0001_0000,
-        hats: 0b0101_0101_0101_0101,
-        kick_fill: 0b0100_0000_0100_0000,
-        snare_fill: 0b0000_0100_0000_0100,
-        hats_fill: 0b1111_1111_1111_1111,
-        kick_base: 50,
-        kick_accent: 100,
-        kick_acc_mask: 0b0000_0001_0000_0001,
-        snare_base: 55,
-        snare_accent: 98,
-        snare_acc_mask: 0b0001_0000_0001_0000,
-        hats_base: 40,
-        hats_accent: 75,
-        hats_acc_mask: 0b0001_0001_0001_0001,
-        timing: [0, 2, 1, 3, 0, 2, 1, 3, 0, 2, 1, 3, 1, 3, 2, 4],
-    },
-    // 3 House — classic 4-on-floor, clap 2&4
+    // 2 House — classic 4-on-floor, clap 2&4
     Pattern {
         kick: 0b0001_0001_0001_0001,
         snare: 0b0001_0000_0001_0000,
@@ -151,7 +132,7 @@ const PATTERNS: [Pattern; NUM_GENRES] = [
         hats_acc_mask: 0b0100_0100_0100_0100,
         timing: [0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2],
     },
-    // 4 Techno — straight kick; Feel via hat dynamics
+    // 3 Techno — straight kick; Feel via hat dynamics
     Pattern {
         kick: 0b0001_0001_0001_0001,
         snare: 0b0001_0000_0000_0000,
@@ -170,7 +151,7 @@ const PATTERNS: [Pattern; NUM_GENRES] = [
         hats_acc_mask: 0b0001_0001_0001_0001,
         timing: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1],
     },
-    // 5 Trip-Hop — laid-back, late snare pocket
+    // 4 Trip-Hop — laid-back, late snare pocket
     Pattern {
         kick: 0b0000_0001_0000_0001,
         snare: 0b0000_0000_0001_0000,
@@ -189,7 +170,45 @@ const PATTERNS: [Pattern; NUM_GENRES] = [
         hats_acc_mask: 0b0100_0000_0100_0000,
         timing: [0, 2, 1, 3, 2, 3, 1, 3, 0, 2, 1, 3, 3, 4, 2, 3],
     },
-    // 6 UK Garage — skippy kick/hats
+    // 5 Hip-Hop — boom-bap; strong 1+3 kick accents
+    Pattern {
+        kick: 0b0100_0001_0010_0001,
+        snare: 0b0001_0000_0001_0000,
+        hats: 0b0101_0101_0101_0101,
+        kick_fill: 0b0100_0000_0100_0000,
+        snare_fill: 0b0000_0100_0000_0100,
+        hats_fill: 0b1111_1111_1111_1111,
+        kick_base: 50,
+        kick_accent: 100,
+        kick_acc_mask: 0b0000_0001_0000_0001,
+        snare_base: 55,
+        snare_accent: 98,
+        snare_acc_mask: 0b0001_0000_0001_0000,
+        hats_base: 40,
+        hats_accent: 75,
+        hats_acc_mask: 0b0001_0001_0001_0001,
+        timing: [0, 2, 1, 3, 0, 2, 1, 3, 0, 2, 1, 3, 1, 3, 2, 4],
+    },
+    // 6 Jungle — amen-ish breakbeat; busy kick, snare 2&4, rapid hats
+    Pattern {
+        kick: 0b0100_1001_0010_0101,
+        snare: 0b0001_0000_0001_0000,
+        hats: 0b1110_1010_1110_1010,
+        kick_fill: 0b0010_0000_0100_1000,
+        snare_fill: 0b0100_0010_0100_0010,
+        hats_fill: 0b1111_1111_1111_1111,
+        kick_base: 55,
+        kick_accent: 100,
+        kick_acc_mask: 0b0000_0001_0000_0001,
+        snare_base: 50,
+        snare_accent: 100,
+        snare_acc_mask: 0b0001_0000_0001_0000,
+        hats_base: 40,
+        hats_accent: 88,
+        hats_acc_mask: 0b1010_0000_1010_0000,
+        timing: [0, 3, -1, 2, 1, 3, 0, 4, 0, 3, -1, 2, 1, 3, 0, 4],
+    },
+    // 7 UK Garage — skippy kick/hats
     Pattern {
         kick: 0b1000_1001_0010_0001,
         snare: 0b0001_0000_0001_0000,
@@ -208,7 +227,7 @@ const PATTERNS: [Pattern; NUM_GENRES] = [
         hats_acc_mask: 0b0100_0100_0100_0100,
         timing: [0, 3, -1, 2, 0, 3, 1, 4, 0, 3, -1, 2, 0, 3, 1, 4],
     },
-    // 7 Dubstep — half-time: kick 1, snare 3
+    // 8 Dubstep — half-time: kick 1, snare 3
     Pattern {
         kick: 0b0000_0000_0000_0001,
         snare: 0b0000_0001_0000_0000,
@@ -548,7 +567,7 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
             midi_channel_snare: MidiChannel::default(),
             note_hats: MidiNote::from(42),
             midi_channel_hats: MidiChannel::default(),
-            genre: 3, // House
+            genre: 2, // House
             swing_max_pct: 50,
             // Short drum triggers (see TRIG_MAX_TICKS); 100% → 2 PPQN ticks.
             gatel: 100,

@@ -13,15 +13,15 @@ pub const SIXTEENTH: u32 = 6;
 #[allow(dead_code)]
 pub const FLAT_VEL: u16 = 70;
 
-/// Per-genre default swing % (0–100), oldest → newest (matches genre_palette).
-/// Copied from Chord Vamp GenrePreset biases.
+/// Per-genre default swing % (0–100); order matches genre_palette morph axis.
 pub const SWING_BIAS: [i8; NUM_GENRES] = [
     20, // Dub
     35, // Disco
-    40, // Hip-Hop
     30, // House
     8,  // Techno — stays straighter by DNA, not by burying Feel
     45, // Trip-Hop
+    40, // Hip-Hop
+    48, // Jungle
     50, // UK Garage
     25, // Dubstep
 ];

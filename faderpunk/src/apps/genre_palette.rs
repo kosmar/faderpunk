@@ -2,16 +2,18 @@
 
 use libfp::Color;
 
-pub const NUM_GENRES: usize = 8;
+pub const NUM_GENRES: usize = 9;
 
-/// Oldest → newest. Indices match Shift+Fader buckets and Enum params.
+/// Morph axis (club spine → breaks → UK bass). Indices match Shift+Fader
+/// buckets and Enum params — keep identical across apps.
 pub const GENRE_NAMES: &[&str] = &[
     "Dub",
     "Disco",
-    "Hip-Hop",
     "House",
     "Techno",
     "Trip-Hop",
+    "Hip-Hop",
+    "Jungle",
     "UK Garage",
     "Dubstep",
 ];
@@ -22,10 +24,11 @@ pub const GENRE_NAMES: &[&str] = &[
 pub const GENRE_COLORS: [Color; NUM_GENRES] = [
     Color::Orange, // Dub
     Color::Yellow, // Disco
-    Color::Red,    // Hip-Hop
     Color::Pink,   // House
     Color::Cyan,   // Techno
     Color::Violet, // Trip-Hop
+    Color::Red,    // Hip-Hop
+    Color::Lime,   // Jungle
     Color::Green,  // UK Garage
     Color::Blue,   // Dubstep
 ];

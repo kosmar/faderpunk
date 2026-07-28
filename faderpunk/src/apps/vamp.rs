@@ -20,8 +20,8 @@ use crate::app::{
     App, AppParams, AppStorage, ClockEvent, Die, Led, ManagedStorage, ParamStore, SceneEvent,
 };
 use crate::apps::genre_palette::{genre_fader_center, GENRE_NAMES, NUM_GENRES};
-use crate::apps::groove::{swing_bias, swing_delay_ticks};
-use crate::apps::led_fx::{genre_pair, lerp_u8, spectrum_color};
+use crate::apps::groove::{swing_bias, swing_delay_ticks, SIXTEENTH};
+use crate::apps::led_fx::{genre_nearest, genre_pair, lerp_u8, spectrum_color};
 
 pub const CHANNELS: usize = 1;
 pub const PARAMS: usize = 16;
@@ -31,8 +31,9 @@ const VAMP_CAP: usize = 32;
 const RING_CAP: usize = 64;
 const SOUNDING_CAP: usize = 8;
 const TICKS_PER_BAR: u32 = 96;
-/// Capture snaps chord *starts* to this grid (16ths at 24 PPQN); hold length stays free.
-const CAPTURE_QUANT_TICKS: u32 = 6;
+/// Capture snaps chord *starts* to this grid; hold length stays free.
+/// 1 = nearest PPQN tick (finest the clock allows). Swing still uses [`SIXTEENTH`].
+const CAPTURE_QUANT_TICKS: u32 = 1;
 const NUM_DEGREES: usize = 7;
 /// Auto / genre-seed progression length (classic vamp loop).
 const NUM_SLOTS: usize = 8;
@@ -152,19 +153,48 @@ fn groove_duration(raw_dur: u32, feel: u16) -> u32 {
     (raw_dur.saturating_mul(unit) / mid.max(1)).max(1)
 }
 
-/// Gate length inside a hit segment — short absolute stabs; weight only spaces
-/// onsets. Rest DNA still owns multi-bar breaks.
-/// Laid (~0) ≈ 18 ticks (~3/16); advanced (~4095) ≈ 4 ticks. Never >35% of segment.
-fn hit_gate_ticks(segment: u32, feel: u16, swing_delay: u32) -> u32 {
+/// Gate length inside a hit segment as % of usable time (after swing delay).
+/// Genre DNA supplies laid/advanced percentages — stabby styles stay short,
+/// pad-like styles fill most of the hit. Rest DNA still owns multi-bar breaks.
+fn hit_gate_ticks(segment: u32, feel: u16, swing_delay: u32, laid_pct: u8, adv_pct: u8) -> u32 {
     let usable = segment.saturating_sub(swing_delay).max(1);
     if usable <= 1 {
         return 1;
     }
-    const STAB_LAID: u32 = 18;
-    const STAB_ADV: u32 = 4;
-    let stab = STAB_LAID - (u32::from(feel) * (STAB_LAID - STAB_ADV)) / 4095;
-    let cap = (usable.saturating_mul(35) / 100).max(1);
-    stab.min(cap).min(usable.saturating_sub(1).max(1)).max(1)
+    let laid = u32::from(laid_pct.max(adv_pct).min(95));
+    let adv = u32::from(adv_pct.min(laid as u8).min(95));
+    let pct = laid - (u32::from(feel) * laid.saturating_sub(adv)) / 4095;
+    let gate = (usable.saturating_mul(pct) / 100).max(1);
+    gate.min(usable.saturating_sub(1).max(1)).max(1)
+}
+
+/// Weighted pick between two values by `frac` (0 = always a, 255 = always b).
+fn morph_pick_u8(a: u8, b: u8, frac: u8, die: &Die) -> u8 {
+    if frac == 0 || a == b {
+        return a;
+    }
+    if frac == 255 {
+        return b;
+    }
+    // die.roll() is 0..4095; frac 0..255 → threshold 0..4080.
+    if die.roll() < (u16::from(frac) << 4) {
+        b
+    } else {
+        a
+    }
+}
+
+/// Soft-lerp a Markov row for between-genre harmony morph.
+fn morph_markov_row(
+    lo: &[u8; NUM_DEGREES],
+    hi: &[u8; NUM_DEGREES],
+    frac: u8,
+) -> [u8; NUM_DEGREES] {
+    let mut out = [0u8; NUM_DEGREES];
+    for i in 0..NUM_DEGREES {
+        out[i] = lerp_u8(lo[i], hi[i], frac);
+    }
+    out
 }
 
 pub static CONFIG: Config<PARAMS> = Config::new(
@@ -353,11 +383,11 @@ pub struct Storage {
 impl Default for Storage {
     fn default() -> Self {
         let mut slots = [0u8; VAMP_CAP];
-        let n = load_classic_into(&mut slots, 3); // House
+        let n = load_classic_into(&mut slots, 2); // House
         Self {
             slots,
             slot_count: n,
-            genre: 3,
+            genre: 2,
             scrub: 0,
             tension: 2048,
             div_fader: 1536, // mid Feel (laid back ↔ advanced)
@@ -387,6 +417,12 @@ struct GenrePreset {
     /// `1..=n` = chord weight (× Feel); [`REST_CODE`]`|bars` = silence for `bars`
     /// bars (Feel-independent). Play a bar or two, then a long break.
     rhythm: &'static [u8],
+    /// Preferred [`SCALE_NAMES`] index — applied when landing on this genre.
+    preferred_scale: usize,
+    /// Gate as % of hit segment at Feel=0 (laid back). Stabby genres stay low.
+    gate_laid_pct: u8,
+    /// Gate as % of hit segment at Feel=max (advanced).
+    gate_adv_pct: u8,
 }
 
 impl GenrePreset {
@@ -398,8 +434,10 @@ impl GenrePreset {
 /// Genre chord + rhythm DNA (degrees 0–6). Markov biases genre-typical moves.
 /// Rhythm: a multi-chord statement (~1–2 bars at mid Feel), then a long break —
 /// not one stab and silence.
+/// Gate % is per-genre: UKG/Disco choppy, Dub/Techno more sustained.
+/// Order matches genre_palette morph axis.
 const GENRES: [GenrePreset; NUM_GENRES] = [
-    // Dub — i–IV–i–V; half-time 4-chord statement, long space
+    // Dub — i–iv–i–v (Aeolian); half-time statement, long space, pad-like
     GenrePreset {
         progression: &[0, 3, 0, 4, 0, 3, 0, 4],
         markov: &[
@@ -412,8 +450,11 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
             [4, 1, 1, 2, 3, 2, 2],
         ],
         rhythm: &[2, 1, 2, 1, REST_CODE | 4, 2, 1, 2, REST_CODE | 3],
+        preferred_scale: 5, // Aeolian
+        gate_laid_pct: 88,
+        gate_adv_pct: 55,
     },
-    // Disco — I–vi–IV–V; busy 2-bar vamp, shorter breaks
+    // Disco — I–vi–IV–V (Ionian); busy 2-bar vamp, stabby pumps
     GenrePreset {
         progression: &[0, 5, 3, 4, 0, 5, 3, 4],
         markov: &[
@@ -426,20 +467,9 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
             [4, 1, 1, 2, 4, 2, 1],
         ],
         rhythm: &[1, 1, 1, 1, 1, 1, 2, REST_CODE | 2, 1, 1, 1, 1, REST_CODE | 3],
-    },
-    // Hip-Hop — i–VI–III–VII; boom-bap phrase then wide open
-    GenrePreset {
-        progression: &[0, 5, 2, 6, 0, 5, 2, 6],
-        markov: &[
-            [3, 1, 4, 2, 2, 5, 4],
-            [2, 2, 2, 2, 2, 3, 2],
-            [3, 1, 2, 2, 2, 4, 3],
-            [3, 2, 2, 2, 3, 2, 2],
-            [4, 1, 2, 2, 2, 3, 3],
-            [4, 1, 3, 2, 2, 2, 3],
-            [5, 1, 2, 2, 2, 3, 2],
-        ],
-        rhythm: &[2, 1, 1, 2, REST_CODE | 3, 2, 1, 1, REST_CODE | 5],
+        preferred_scale: 0, // Ionian
+        gate_laid_pct: 38,
+        gate_adv_pct: 16,
     },
     // House — i–VII–VI–VII; pump through the loop, uneven breaks
     GenrePreset {
@@ -454,8 +484,11 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
             [5, 1, 1, 2, 2, 4, 2],
         ],
         rhythm: &[1, 1, 1, 1, 2, REST_CODE | 2, 1, 1, 1, 2, REST_CODE | 4],
+        preferred_scale: 5, // Aeolian
+        gate_laid_pct: 58,
+        gate_adv_pct: 28,
     },
-    // Techno — static/minimal; long holds across the statement, rare deep drop
+    // Techno — static/minimal; long holds, rare deep drop
     GenrePreset {
         progression: &[0, 0, 0, 4, 0, 0, 0, 4],
         markov: &[
@@ -468,8 +501,11 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
             [5, 1, 1, 1, 3, 2, 2],
         ],
         rhythm: &[3, 2, 3, REST_CODE | 1, 2, 3, REST_CODE | 5],
+        preferred_scale: 5, // Aeolian
+        gate_laid_pct: 92,
+        gate_adv_pct: 62,
     },
-    // Trip-Hop — i–VII–VI–v; sparse but still a short progression, then void
+    // Trip-Hop — i–VII–VI–v; sparse progression, sustained voids
     GenrePreset {
         progression: &[0, 6, 5, 4, 0, 6, 5, 4],
         markov: &[
@@ -482,8 +518,45 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
             [5, 1, 1, 2, 3, 4, 2],
         ],
         rhythm: &[2, 1, 2, REST_CODE | 4, 1, 2, 1, REST_CODE | 5],
+        preferred_scale: 5, // Aeolian
+        gate_laid_pct: 82,
+        gate_adv_pct: 48,
     },
-    // UK Garage — i–III–VI–VII; choppy 2-bar then break
+    // Hip-Hop — i–VI–III–VII; boom-bap phrase then wide open
+    GenrePreset {
+        progression: &[0, 5, 2, 6, 0, 5, 2, 6],
+        markov: &[
+            [3, 1, 4, 2, 2, 5, 4],
+            [2, 2, 2, 2, 2, 3, 2],
+            [3, 1, 2, 2, 2, 4, 3],
+            [3, 2, 2, 2, 3, 2, 2],
+            [4, 1, 2, 2, 2, 3, 3],
+            [4, 1, 3, 2, 2, 2, 3],
+            [5, 1, 2, 2, 2, 3, 2],
+        ],
+        rhythm: &[2, 1, 1, 2, REST_CODE | 3, 2, 1, 1, REST_CODE | 5],
+        preferred_scale: 5, // Aeolian
+        gate_laid_pct: 48,
+        gate_adv_pct: 22,
+    },
+    // Jungle — i–VII–VI–III; choppy amen energy, short hits then drop
+    GenrePreset {
+        progression: &[0, 6, 5, 2, 0, 6, 5, 2],
+        markov: &[
+            [3, 1, 5, 2, 2, 4, 5],
+            [2, 2, 3, 2, 2, 3, 2],
+            [4, 1, 2, 2, 2, 3, 4],
+            [3, 1, 2, 2, 3, 2, 2],
+            [3, 1, 2, 2, 2, 3, 4],
+            [4, 1, 3, 2, 2, 2, 4],
+            [5, 1, 2, 2, 2, 4, 2],
+        ],
+        rhythm: &[1, 1, 1, 2, 1, REST_CODE | 2, 1, 1, 2, 1, REST_CODE | 3],
+        preferred_scale: 5, // Aeolian
+        gate_laid_pct: 36,
+        gate_adv_pct: 15,
+    },
+    // UK Garage — i–III–VI–VII (Dorian); choppy 2-bar then break — stabby
     GenrePreset {
         progression: &[0, 2, 5, 6, 0, 2, 5, 6],
         markov: &[
@@ -496,8 +569,11 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
             [5, 1, 2, 2, 2, 3, 2],
         ],
         rhythm: &[1, 1, 2, 1, 1, REST_CODE | 2, 2, 1, 1, 1, REST_CODE | 3],
+        preferred_scale: 1, // Dorian
+        gate_laid_pct: 32,
+        gate_adv_pct: 14,
     },
-    // Dubstep — i–i–VI–VII; half-time progression, wide gaps
+    // Dubstep — i–i–VI–VII; half-time, wider gates
     GenrePreset {
         progression: &[0, 0, 5, 6, 0, 0, 5, 6],
         markov: &[
@@ -510,6 +586,9 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
             [5, 1, 1, 1, 3, 4, 2],
         ],
         rhythm: &[2, 2, 1, 2, REST_CODE | 3, 2, 1, 2, REST_CODE | 5],
+        preferred_scale: 5, // Aeolian
+        gate_laid_pct: 72,
+        gate_adv_pct: 40,
     },
 ];
 
@@ -563,6 +642,8 @@ fn velocity_12bit(vel_7: i32) -> u16 {
 
 /// Build MIDI note numbers for a diatonic chord on `degree` (0=I … 6=vii).
 /// `octave` transposes the whole voicing up by N octaves from `root_midi`.
+/// Degrees wrap in the active scale length so pentatonics stay in-scale
+/// (heptatonic DNA maps via modulo — no out-of-scale phantom degrees).
 fn build_chord(
     root_midi: u8,
     key: Key,
@@ -571,7 +652,7 @@ fn build_chord(
     octave: u8,
 ) -> Vec<u8, SOUNDING_CAP> {
     let scale = scale_offsets(key);
-    let n = scale.len();
+    let n = scale.len().max(1);
     let ext: &[usize] = match voicing {
         1 => &[0, 2, 4, 6],
         2 => &[0, 2, 4, 6, 8],
@@ -579,7 +660,7 @@ fn build_chord(
     };
 
     let mut out: Vec<u8, SOUNDING_CAP> = Vec::new();
-    let base_degree = degree as usize % NUM_DEGREES;
+    let base_degree = degree as usize % n;
     let oct_shift = 12u16 * u16::from(octave);
 
     for (vi, &steps) in ext.iter().enumerate() {
@@ -855,7 +936,7 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
             midi_channel: MidiChannel::default(),
             root: MidiNote::from(48),
             scale: 5, // Aeolian
-            genre: 3, // House
+            genre: 2, // House
             voicing: 0,
             velocity: 100,
             auto_style: 0,
@@ -934,7 +1015,6 @@ pub async fn run(
     });
 
     let root_midi = midi_u8(root);
-    let key = scale_index_to_key(scale_idx);
     let vel12 = velocity_12bit(velocity);
 
     let fader = app.use_faders();
@@ -967,6 +1047,8 @@ pub async fn run(
     let glob_feel = app.make_global(1536u16);
     let glob_swing = app.make_global(0u8);
     let glob_genre = app.make_global(genre_param);
+    // Live scale index — genre land applies preferred_scale; configurator can override via respawn.
+    let glob_scale = app.make_global(scale_idx);
     let glob_slot_count = app.make_global(NUM_SLOTS as u8);
     let glob_slot_idx = app.make_global(0u8);
     let glob_degree = app.make_global(0u8);
@@ -1234,7 +1316,8 @@ pub async fn run(
                         let feel = glob_feel.get();
                         for i in 0..n {
                             let raw_on = ons[i] as u32;
-                            let step = raw_on / CAPTURE_QUANT_TICKS;
+                            // Swing is always 16th-parity (odd 16ths), independent of capture grid.
+                            let step = raw_on / SIXTEENTH;
                             let delay = swing_delay_ticks(step, swing, false);
                             let on_ph = (raw_on + delay) % loop_len;
                             let dur = groove_duration(durs[i] as u32, feel);
@@ -1263,7 +1346,9 @@ pub async fn run(
                     }
 
                     // Genre vamp: rhythm phrase loops; harmony advances only on hits
-                    // (Repeat = slots, Meander = Markov). Long rests do not burn chords.
+                    // (Repeat = slots / morph tropes, Meander = Markov). Between
+                    // genres on the Alt axis, morph rhythm + harmony like Grooves.
+                    // Long rests do not burn chords.
                     if clkn >= segment_end {
                         pending_release.set(true);
                         pending_on_at.set(NO_AT);
@@ -1271,20 +1356,74 @@ pub async fn run(
 
                         let slots_now = slots_cell.get();
                         let count = glob_slot_count.get().max(1) as usize;
-                        let g = glob_last_genre.get().min(NUM_GENRES - 1);
-                        let genre = GenrePreset::get(g);
-                        let weight = genre.rhythm[phrase_i % genre.rhythm.len()];
+                        // Morph axis ignores Capture slot — DNA only spans genres.
+                        let (g_lo, g_hi, g_frac) =
+                            genre_pair(glob_genre_fader.get(), NUM_GENRES);
+                        let g_lo = g_lo.min(NUM_GENRES - 1);
+                        let g_hi = g_hi.min(NUM_GENRES - 1);
+                        let genre_lo = GenrePreset::get(g_lo);
+                        let genre_hi = GenrePreset::get(g_hi);
+                        let morphing = g_lo != g_hi;
+
+                        let w_lo = genre_lo.rhythm[phrase_i % genre_lo.rhythm.len()];
+                        let w_hi = genre_hi.rhythm[phrase_i % genre_hi.rhythm.len()];
+                        let weight = if morphing {
+                            morph_pick_u8(w_lo, w_hi, g_frac, &die)
+                        } else {
+                            w_lo
+                        };
                         let feel = glob_feel.get();
                         let swing = swing_pct(glob_swing.get());
                         let total = segment_ticks(feel, weight);
 
                         if !is_rhythm_rest(weight) {
-                            let degree = if glob_meander.get() {
+                            let degree = if morphing {
+                                // Between genres: morph classic tropes / blended Markov.
+                                // Don't consume the landed slot seed until a bucket lands.
+                                if glob_meander.get() {
+                                    let tension = if cv_dest == DEST_MACRO {
+                                        mod_u16(glob_tension.get(), glob_cv_val.get())
+                                    } else {
+                                        glob_tension.get()
+                                    };
+                                    let from = current_degree;
+                                    let row = morph_markov_row(
+                                        &genre_lo.markov[(from as usize) % NUM_DEGREES],
+                                        &genre_hi.markov[(from as usize) % NUM_DEGREES],
+                                        g_frac,
+                                    );
+                                    if tension > 512 {
+                                        let next = pick_weighted(&row, &die).unwrap_or(from);
+                                        if tension < 3000 && die.roll() > tension {
+                                            let d_lo = genre_lo.progression
+                                                [harm_i % genre_lo.progression.len()];
+                                            let d_hi = genre_hi.progression
+                                                [harm_i % genre_hi.progression.len()];
+                                            morph_pick_u8(d_lo, d_hi, g_frac, &die)
+                                        } else {
+                                            next
+                                        }
+                                    } else {
+                                        let d_lo = genre_lo.progression
+                                            [harm_i % genre_lo.progression.len()];
+                                        let d_hi = genre_hi.progression
+                                            [harm_i % genre_hi.progression.len()];
+                                        morph_pick_u8(d_lo, d_hi, g_frac, &die)
+                                    }
+                                } else {
+                                    let d_lo = genre_lo.progression
+                                        [harm_i % genre_lo.progression.len()];
+                                    let d_hi = genre_hi.progression
+                                        [harm_i % genre_hi.progression.len()];
+                                    morph_pick_u8(d_lo, d_hi, g_frac, &die)
+                                }
+                            } else if glob_meander.get() {
                                 let tension = if cv_dest == DEST_MACRO {
                                     mod_u16(glob_tension.get(), glob_cv_val.get())
                                 } else {
                                     glob_tension.get()
                                 };
+                                let genre = genre_lo;
                                 if tension > 512 {
                                     let next = pick_markov(current_degree, genre.markov, &die);
                                     if tension < 3000 && die.roll() > tension {
@@ -1307,9 +1446,17 @@ pub async fn run(
                             pending_octave.set(0);
                             pending_record.set(false);
 
-                            let grid_step = (clkn / CAPTURE_QUANT_TICKS) % 16;
-                            let delay = swing_delay_ticks(grid_step, swing, false).min(total.saturating_sub(1));
-                            let gate = hit_gate_ticks(total, feel, delay);
+                            let grid_step = (clkn / SIXTEENTH) % 16;
+                            let delay = swing_delay_ticks(grid_step, swing, false)
+                                .min(total.saturating_sub(1));
+                            let laid = lerp_u8(
+                                genre_lo.gate_laid_pct,
+                                genre_hi.gate_laid_pct,
+                                g_frac,
+                            );
+                            let adv =
+                                lerp_u8(genre_lo.gate_adv_pct, genre_hi.gate_adv_pct, g_frac);
+                            let gate = hit_gate_ticks(total, feel, delay, laid, adv);
                             pending_on_at.set(clkn.wrapping_add(delay));
                             pending_off_at.set(clkn.wrapping_add(delay).wrapping_add(gate));
                             harm_i = harm_i.wrapping_add(1);
@@ -1353,6 +1500,7 @@ pub async fn run(
                     midi.send_note_off(MidiNote::from(*n)).await;
                 }
                 sounding.clear();
+                let key = scale_index_to_key(glob_scale.get());
                 let notes = build_chord(root_midi, key, degree, voicing, octave);
                 for n in notes.iter() {
                     midi.send_note_on(MidiNote::from(*n), vel12).await;
@@ -1615,6 +1763,7 @@ pub async fn run(
                 // Fresh Perform vocabulary from genre DNA (ignore Markov slots).
                 glob_scrub.set(0);
                 refresh_perform_map(g);
+                glob_scale.set(GenrePreset::get(g).preferred_scale);
                 {
                     let count = n.max(1) as usize;
                     let idx = value_to_index(glob_scrub.get(), count);
@@ -1732,7 +1881,10 @@ pub async fn run(
                                 let idx = value_to_index(glob_scrub.get(), count);
                                 glob_slot_idx.set(idx as u8);
                             }
+                            let preset = GenrePreset::get(g);
                             let swing = swing_from_fader(new_value, picks);
+                            let scale = preset.preferred_scale;
+                            glob_scale.set(scale);
                             storage.modify_and_save(|s| {
                                 s.genre = g as u8;
                                 s.slots = slots;
@@ -1743,12 +1895,20 @@ pub async fn run(
                             });
                             glob_swing.set(swing);
                             // Keep ParamStore in sync so Scopepunk / configurator
-                            // GetAppParams reflects the hardware genre pick.
-                            params.update(|p| p.genre = g).await;
+                            // GetAppParams reflects the hardware genre + scale pick.
+                            params
+                                .update(|p| {
+                                    p.genre = g;
+                                    p.scale = scale;
+                                })
+                                .await;
                         } else {
-                            // Parked between genres: morph swing only — no Markov reseed.
+                            // Parked between genres: swing morphs here; Auto clock
+                            // morphs rhythm/harmony live from genre_pair.
                             let swing = swing_from_fader(new_value, picks);
                             glob_swing.set(swing);
+                            let near = genre_nearest(new_value, picks.min(NUM_GENRES));
+                            glob_scale.set(GenrePreset::get(near).preferred_scale);
                         }
                     }
                     LatchLayer::Third => {
@@ -1774,6 +1934,7 @@ pub async fn run(
             if let Some(ref jack) = out_jack {
                 let degree = glob_degree.get();
                 let octave = glob_octave.get();
+                let key = scale_index_to_key(glob_scale.get());
                 let notes = build_chord(root_midi, key, degree, voicing, octave);
                 if let Some(&n) = notes.first() {
                     let counts = note_to_pitch(n).as_counts(range, vpo);
