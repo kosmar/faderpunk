@@ -1,4 +1,4 @@
-# Faderpunk Preset Editor
+# Presetpunk
 
 Local preset-bank editor for Faderpunk layouts, app parameters, MIDI routing,
 global configuration and instrument definitions.

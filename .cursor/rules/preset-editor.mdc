@@ -1,13 +1,16 @@
 ---
-description: Preset editor lives in-repo; never use faderpunk-scenes
+description: Presetpunk/Scopepunk live on kosmar/, never PR to ATOV
 globs:
   - faderpunk-preset-editor/**
+  - faderpunk-diagnostics/**
   - "**/faderpunk-scenes/**"
 alwaysApply: false
 ---
 
-# Preset editor location
+# Presetpunk & Scopepunk
 
-- **Use:** `faderpunk-preset-editor/` in this monorepo (branch `add-preset-editor` or worktree `faderpunk-preset-editor-wt`).
+- **Presetpunk** lives in `faderpunk-preset-editor/` (brand h1: Presetpunk).
+- **Scopepunk** lives in `faderpunk-diagnostics/`.
+- Canonical home: https://github.com/kosmar/faderpunk-tools (or branches on https://github.com/kosmar/faderpunk).
+- **Never** open a PR against `ATOVproject/faderpunk` for either app.
 - **Never** open, edit, or `move_agent_to_root` into `faderpunk-scenes` or `~/Projects/_archived/faderpunk-scenes`.
-- If a path under `faderpunk-scenes` appears, stop and switch to `faderpunk-preset-editor/` instead.
