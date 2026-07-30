@@ -1,5 +1,5 @@
 /**
- * Faderpunk Preset Editor — EN / DE / FR
+ * Presetpunk — EN / DE / FR
  * Usage: t("key"), t("key", { name: "x" }), applyI18n(), setLang("en"|"de"|"fr")
  */
 (function (global) {
@@ -8,8 +8,8 @@
 
   const I18N = {
     en: {
-      "doc.title": "Faderpunk Preset Editor",
-      "app.h1": "Preset Editor",
+      "doc.title": "Presetpunk",
+      "app.h1": "Presetpunk",
       "app.compat": "Works with beta configurator",
       "lang.label": "Language",
 
@@ -73,7 +73,7 @@
       "bar.exportAll": "ZIP all JSON",
       "bar.cheatsheet": "Print cheatsheet ✎",
       "bar.cheatsheetTitle":
-        "Print 16 faders as a strip (20 cm) along the top of A4 — number, instrument, app, CC",
+        "Print 16 faders as a strip (20 cm) along the top of A4 — number, instrument, app, CC, plus key/mode",
       "bar.copy": "Copy JSON",
       "bar.jsonImport": "JSON → active preset",
       "port.out1": "Out1",
@@ -103,6 +103,14 @@
       "global.meteorDiv": "Meteor Div",
       "global.cube": "Cube",
       "global.cubeDiv": "Cube Div",
+      "global.midi": "MIDI Outs",
+      "global.midiModeTitle":
+        "None = off · Local = apps only · Thru = pass selected sources · Merge = sources + apps",
+      "global.midiClock": "Send Clock",
+      "global.midiTransport": "Send Transport",
+      "global.midiSources": "Sources",
+      "global.midiSrcUsbNote": "DIN routed to USB",
+      "global.midiSrcDin": "DIN",
 
       "dock.ready": "ready",
       "dock.logToggle": "Log ▴",
@@ -339,8 +347,8 @@
     },
 
     de: {
-      "doc.title": "Faderpunk Preset Editor",
-      "app.h1": "Preset Editor",
+      "doc.title": "Presetpunk",
+      "app.h1": "Presetpunk",
       "app.compat": "Funktioniert mit dem Beta-Configurator",
       "lang.label": "Sprache",
 
@@ -404,7 +412,7 @@
       "bar.exportAll": "ZIP all JSON",
       "bar.cheatsheet": "Cheatsheet drucken ✎",
       "bar.cheatsheetTitle":
-        "16 Fader als Streifen (20 cm) am oberen A4-Rand drucken — Nummer, Instrument, App, CC",
+        "16 Fader als Streifen (20 cm) am oberen A4-Rand drucken — Nummer, Instrument, App, CC, plus Key/Mode",
       "bar.copy": "JSON kopieren",
       "bar.jsonImport": "JSON → aktives Preset",
       "port.out1": "Out1",
@@ -434,6 +442,14 @@
       "global.meteorDiv": "Meteor Div",
       "global.cube": "Cube",
       "global.cubeDiv": "Cube Div",
+      "global.midi": "MIDI Outs",
+      "global.midiModeTitle":
+        "None = aus · Local = nur Apps · Thru = Quellen durchreichen · Merge = Quellen + Apps",
+      "global.midiClock": "Send Clock",
+      "global.midiTransport": "Send Transport",
+      "global.midiSources": "Quellen",
+      "global.midiSrcUsbNote": "DIN → USB",
+      "global.midiSrcDin": "DIN",
 
       "dock.ready": "bereit",
       "dock.logToggle": "Log ▴",
@@ -687,8 +703,8 @@
     },
 
     fr: {
-      "doc.title": "Éditeur de presets Faderpunk",
-      "app.h1": "Éditeur de presets",
+      "doc.title": "Presetpunk",
+      "app.h1": "Presetpunk",
       "app.compat": "Fonctionne avec le configurateur bêta",
       "lang.label": "Langue",
 
@@ -752,7 +768,7 @@
       "bar.exportAll": "ZIP all JSON",
       "bar.cheatsheet": "Imprimer l’aide-mémoire ✎",
       "bar.cheatsheetTitle":
-        "Imprimer 16 faders en bande (20 cm) en haut d’un A4 — numéro, instrument, app, CC",
+        "Imprimer 16 faders en bande (20 cm) en haut d’un A4 — numéro, instrument, app, CC, plus key/mode",
       "bar.copy": "Copier JSON",
       "bar.jsonImport": "JSON → preset actif",
       "port.out1": "Out1",
@@ -782,6 +798,14 @@
       "global.meteorDiv": "Meteor Div",
       "global.cube": "Cube",
       "global.cubeDiv": "Cube Div",
+      "global.midi": "Sorties MIDI",
+      "global.midiModeTitle":
+        "None = off · Local = apps seules · Thru = sources · Merge = sources + apps",
+      "global.midiClock": "Send Clock",
+      "global.midiTransport": "Send Transport",
+      "global.midiSources": "Sources",
+      "global.midiSrcUsbNote": "DIN → USB",
+      "global.midiSrcDin": "DIN",
 
       "dock.ready": "prêt",
       "dock.logToggle": "Log ▴",

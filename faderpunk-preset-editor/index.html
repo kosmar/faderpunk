@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title data-i18n="doc.title">Faderpunk Preset Editor</title>
+  <title data-i18n="doc.title">Presetpunk</title>
   <link rel="icon" href="/favicon.ico" sizes="any" />
   <link rel="icon" type="image/png" href="/favicon.png" />
   <script src="/i18n.js"></script>
@@ -130,12 +130,12 @@
       color: var(--text);
       padding-bottom: var(--dock-pad, 88px);
     }
+    .th-live {
+      text-align: right;
+      white-space: nowrap;
+    }
     .fab-live {
-      position: fixed;
-      top: 162px;
-      right: max(8px, calc((100vi - var(--layout-max)) / 2 + 12px));
-      z-index: 900;
-      display: flex;
+      display: inline-flex;
       align-items: center;
       gap: 0.4rem;
       padding: 0.35rem 0.55rem;
@@ -1383,8 +1383,21 @@
         font-size: 8pt;
         line-height: 1.2;
       }
+      #cheatsheetPrint .head-left {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 6px;
+        min-width: 0;
+      }
       #cheatsheetPrint .head strong { font-size: 10pt; }
       #cheatsheetPrint .head .muted { color: #555; }
+      #cheatsheetPrint .head .key-mode {
+        flex: 0 0 auto;
+        font-weight: 500;
+        color: #222;
+        white-space: nowrap;
+      }
       #cheatsheetPrint .row {
         display: grid;
         grid-template-columns: repeat(16, 1fr);
@@ -1746,8 +1759,87 @@
       --aux-tint: var(--fp-magenta);
       --group-line: var(--line-magenta);
     }
+    .global-group.midi {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      align-items: start;
+      grid-column: 1 / -1;
+    }
+    .global-group.midi .global-group-label {
+      grid-column: 1 / -1;
+    }
+    .midi-out {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 8px;
+      align-items: stretch;
+    }
+    .midi-out > label {
+      min-width: 0;
+      margin: 0;
+    }
+    .midi-out > label select {
+      width: 100%;
+      max-width: 100%;
+    }
+    .midi-out-title {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+      font-size: 12px;
+      font-weight: 450;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      color: var(--text);
+    }
+    .midi-flag {
+      display: inline-flex !important;
+      flex-direction: row !important;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--text);
+      cursor: pointer;
+    }
+    .midi-flag input[type="checkbox"] {
+      width: 14px;
+      height: 14px;
+      margin: 0;
+      accent-color: var(--accent);
+      flex: 0 0 auto;
+    }
+    .midi-sources {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px 12px;
+      padding-top: 2px;
+      border-top: 1px solid color-mix(in srgb, var(--group-line, var(--line)) 55%, transparent);
+    }
+    .midi-sources[hidden] {
+      display: none !important;
+    }
+    .midi-sources-label {
+      flex: 1 0 100%;
+      font-size: 11px;
+      font-weight: 450;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .midi-sources-note {
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .midi-out.usb { --group-line: var(--line-cyan); }
+    .midi-out.out1 { --group-line: var(--line-yellow); }
+    .midi-out.out2 { --group-line: var(--line-magenta); }
     @media (max-width: 820px) {
-      .global-group.aux {
+      .global-group.aux,
+      .global-group.midi {
         grid-template-columns: 1fr;
       }
     }
@@ -2020,15 +2112,11 @@
     <span class="fab-face" aria-hidden="true"></span>
     <span class="fab-lines"><span data-i18n="push.fabLine1">Push</span><span data-i18n="push.fabLine2">to Punk</span></span>
   </button>
-  <label class="fab-live" id="fabLiveWrap" data-i18n-title="push.liveTitle" title="Live: param edits → SetAppParams; app swap / row changes → SetLayout + params">
-    <input type="checkbox" id="chkLivePush" />
-    <span data-i18n="push.liveToggle">Live sync</span>
-  </label>
   <header>
     <div class="brand">
       <img class="brand-logo" src="/img/fp-logo.svg" width="55" height="72" alt="Faderpunk">
       <div class="brand-text">
-        <h1 data-i18n="app.h1">Preset Editor</h1>
+        <h1 data-i18n="app.h1">Presetpunk</h1>
         <p class="compat-note">
           <span class="app-ver">v0.1.0</span>
           <span data-i18n="app.compat" data-i18n-html>Works with beta configurator</span>
@@ -2224,6 +2312,78 @@
             </label>
           </div>
         </div>
+
+        <div class="global-group midi" role="group" aria-labelledby="gGroupMidi">
+          <div class="global-group-label" id="gGroupMidi" data-i18n="global.midi">MIDI Outs</div>
+          <div class="midi-out usb">
+            <label>
+              <span class="midi-out-title" data-i18n="port.usb">USB</span>
+              <select id="gMidi0Mode" data-i18n-title="global.midiModeTitle" title=""></select>
+            </label>
+            <label class="midi-flag">
+              <input type="checkbox" id="gMidi0Clock" />
+              <span data-i18n="global.midiClock">Send Clock</span>
+            </label>
+            <label class="midi-flag">
+              <input type="checkbox" id="gMidi0Transport" />
+              <span data-i18n="global.midiTransport">Send Transport</span>
+            </label>
+            <div class="midi-sources" id="gMidi0Sources" hidden>
+              <span class="midi-sources-label" data-i18n="global.midiSources">Sources</span>
+              <span class="midi-sources-note" data-i18n="global.midiSrcUsbNote">DIN routed to USB</span>
+            </div>
+          </div>
+          <div class="midi-out out1">
+            <label>
+              <span class="midi-out-title" data-i18n="port.out1">Out1</span>
+              <select id="gMidi1Mode" data-i18n-title="global.midiModeTitle" title=""></select>
+            </label>
+            <label class="midi-flag">
+              <input type="checkbox" id="gMidi1Clock" />
+              <span data-i18n="global.midiClock">Send Clock</span>
+            </label>
+            <label class="midi-flag">
+              <input type="checkbox" id="gMidi1Transport" />
+              <span data-i18n="global.midiTransport">Send Transport</span>
+            </label>
+            <div class="midi-sources" id="gMidi1Sources" hidden>
+              <span class="midi-sources-label" data-i18n="global.midiSources">Sources</span>
+              <label class="midi-flag">
+                <input type="checkbox" id="gMidi1SrcUsb" />
+                <span data-i18n="port.usb">USB</span>
+              </label>
+              <label class="midi-flag">
+                <input type="checkbox" id="gMidi1SrcDin" />
+                <span data-i18n="global.midiSrcDin">DIN</span>
+              </label>
+            </div>
+          </div>
+          <div class="midi-out out2">
+            <label>
+              <span class="midi-out-title" data-i18n="port.out2">Out2</span>
+              <select id="gMidi2Mode" data-i18n-title="global.midiModeTitle" title=""></select>
+            </label>
+            <label class="midi-flag">
+              <input type="checkbox" id="gMidi2Clock" />
+              <span data-i18n="global.midiClock">Send Clock</span>
+            </label>
+            <label class="midi-flag">
+              <input type="checkbox" id="gMidi2Transport" />
+              <span data-i18n="global.midiTransport">Send Transport</span>
+            </label>
+            <div class="midi-sources" id="gMidi2Sources" hidden>
+              <span class="midi-sources-label" data-i18n="global.midiSources">Sources</span>
+              <label class="midi-flag">
+                <input type="checkbox" id="gMidi2SrcUsb" />
+                <span data-i18n="port.usb">USB</span>
+              </label>
+              <label class="midi-flag">
+                <input type="checkbox" id="gMidi2SrcDin" />
+                <span data-i18n="global.midiSrcDin">DIN</span>
+              </label>
+            </div>
+          </div>
+        </div>
       </div>
     </details>
 
@@ -2252,7 +2412,12 @@
             <th data-i18n="table.ccNote">MIDI CC / Note</th>
             <th data-i18n="table.port">MIDI Out</th>
             <th data-i18n="table.flags">Flags</th>
-            <th></th>
+            <th class="th-live">
+              <label class="fab-live" id="fabLiveWrap" data-i18n-title="push.liveTitle" title="Live: param edits → SetAppParams; app swap / row changes → SetLayout + params">
+                <input type="checkbox" id="chkLivePush" />
+                <span data-i18n="push.liveToggle">Live sync</span>
+              </label>
+            </th>
           </tr>
         </thead>
         <tbody id="rows"></tbody>
@@ -2758,11 +2923,36 @@
       ["Jump", "Jump (immediate)"],
       ["Scale", "Scale (gradual)"],
     ];
+    const MIDI_OUT_MODE_OPTS = [
+      ["None", "None"],
+      ["Local", "Local"],
+      ["MidiThru", "MIDI Thru"],
+      ["MidiMerge", "MIDI Merge"],
+    ];
+    const MIDI_OUT_MODE_TAGS = new Set(MIDI_OUT_MODE_OPTS.map(([v]) => v));
 
     function fillSelect(el, opts, value) {
       el.innerHTML = opts
         .map(([v, label]) => `<option value="${v}" ${v === value ? "selected" : ""}>${label}</option>`)
         .join("");
+    }
+
+    function defaultMidiOut(index = 0, extra = {}) {
+      const mode = MIDI_OUT_MODE_TAGS.has(extra.mode) ? extra.mode : "Local";
+      // USB thru/merge always listens to DIN and never loops USB→USB.
+      let sourceUsb = false;
+      let sourceDin = index === 0;
+      if (index !== 0) {
+        if (typeof extra.sourceUsb === "boolean") sourceUsb = extra.sourceUsb;
+        if (typeof extra.sourceDin === "boolean") sourceDin = extra.sourceDin;
+      }
+      return {
+        mode,
+        sendClock: extra.sendClock !== false,
+        sendTransport: extra.sendTransport !== false,
+        sourceUsb,
+        sourceDin,
+      };
     }
 
     function defaultGlobal(extra = {}) {
@@ -2771,6 +2961,7 @@
         { mode: "None", div: "_1" },
         { mode: "None", div: "_1" },
       ];
+      const baseMidi = [0, 1, 2].map((i) => defaultMidiOut(i));
       const merged = {
         clockSrc: "Internal",
         resetSrc: "None",
@@ -2785,6 +2976,9 @@
         mode: extra.aux?.[i]?.mode || baseAux[i].mode,
         div: extra.aux?.[i]?.div || baseAux[i].div,
       }));
+      merged.midi = [0, 1, 2].map((i) =>
+        defaultMidiOut(i, { ...baseMidi[i], ...(extra.midi?.[i] || {}) }),
+      );
       return merged;
     }
 
@@ -2795,6 +2989,7 @@
         mode: g.aux?.[i]?.mode || d.aux[i].mode,
         div: g.aux?.[i]?.div || d.aux[i].div,
       }));
+      const midi = [0, 1, 2].map((i) => defaultMidiOut(i, g.midi?.[i] || d.midi[i]));
       return {
         clockSrc: g.clockSrc || d.clockSrc,
         resetSrc: g.resetSrc || d.resetSrc,
@@ -2808,6 +3003,7 @@
         tonic: g.tonic || d.tonic,
         takeover: g.takeover || d.takeover,
         aux,
+        midi,
       };
     }
 
@@ -2815,6 +3011,46 @@
       if (a.mode === "ClockOut") return { tag: "ClockOut", value: { tag: a.div || "_1" } };
       if (a.mode === "ResetOut") return { tag: "ResetOut" };
       return { tag: "None" };
+    }
+
+    function midiOutToJson(out, index) {
+      const send_clock = !!out.sendClock;
+      const send_transport = !!out.sendTransport;
+      const mode = MIDI_OUT_MODE_TAGS.has(out.mode) ? out.mode : "Local";
+      if (mode === "MidiThru" || mode === "MidiMerge") {
+        // USB cannot loop itself; DIN is the only valid USB thru/merge source.
+        const sourceUsb = index === 0 ? false : !!out.sourceUsb;
+        const sourceDin = index === 0 ? true : !!out.sourceDin;
+        return {
+          send_clock,
+          send_transport,
+          mode: {
+            tag: mode,
+            value: { sources: [[sourceUsb, sourceDin]] },
+          },
+        };
+      }
+      return {
+        send_clock,
+        send_transport,
+        mode: { tag: mode },
+      };
+    }
+
+    function midiFromConfigOuts(outs) {
+      return [0, 1, 2].map((i) => {
+        const o = outs?.[i] || {};
+        const tag = o.mode?.tag;
+        const mode = MIDI_OUT_MODE_TAGS.has(tag) ? tag : "Local";
+        const sources = o.mode?.value?.sources?.[0];
+        return defaultMidiOut(i, {
+          mode,
+          sendClock: o.send_clock !== false,
+          sendTransport: o.send_transport !== false,
+          sourceUsb: Array.isArray(sources) ? !!sources[0] : undefined,
+          sourceDin: Array.isArray(sources) ? !!sources[1] : undefined,
+        });
+      });
     }
 
     // v20: blank bank by default (no shipped studio seeds). Old keys not migrated.
@@ -2858,6 +3094,7 @@
           mode: a?.tag || "None",
           div: a?.value?.tag || "_1",
         })),
+        midi: midiFromConfigOuts(cfg.midi?.outs),
       });
     }
 
@@ -2891,20 +3128,14 @@
       if (row.app === "grooves") {
         const chs = groovesChs(row);
         const notes = groovesNotes(row);
-        const groove = Number.isFinite(Number(row.groove)) ? Number(row.groove) : 3;
-        const swingMax = Number.isFinite(Number(row.swingMax)) ? Number(row.swingMax) : 50;
         let ci = 0;
         let ni = 0;
-        let i32i = 0;
         for (const p of out) {
           if (!p || typeof p !== "object") continue;
           if (p.tag === "MidiChannel" && ci < 3) p.value = [chs[ci++]];
           if (p.tag === "MidiNote" && ni < 3) p.value = [notes[ni++]];
-          if (p.tag === "Enum") p.value = Math.max(0, Math.min(7, groove));
-          if (p.tag === "i32") {
-            if (i32i === 0) p.value = Math.max(10, Math.min(100, swingMax));
-            i32i++;
-          }
+          // Genre / Swing / Jack / CV Dest stay in the vector (schema path).
+          // Never stamp row.groove onto every Enum — that corrupted Jack/Dest.
           if (p.tag === "MidiOut") p.value = [flagsFromPort(wantPort)];
           if (p.tag === "Color" && appCol?.value?.tag) p.value = { tag: appCol.value.tag };
         }
@@ -3643,20 +3874,14 @@
       if (row.app === "grooves") {
         const chs = groovesChs(row);
         const notes = groovesNotes(row);
-        const groove = Number.isFinite(Number(row.groove)) ? Number(row.groove) : 3;
-        const swingMax = Number.isFinite(Number(row.swingMax)) ? Number(row.swingMax) : 50;
         let ci = 0;
         let ni = 0;
-        let i32i = 0;
         for (const p of params) {
           if (!p || typeof p !== "object") continue;
           if (p.tag === "MidiChannel" && ci < 3) p.value = [chs[ci++]];
           if (p.tag === "MidiNote" && ni < 3) p.value = [notes[ni++]];
-          if (p.tag === "Enum") p.value = Math.max(0, Math.min(7, groove));
-          if (p.tag === "i32") {
-            if (i32i === 0) p.value = Math.max(10, Math.min(100, swingMax));
-            i32i++;
-          }
+          // Leave Enum / i32 (Groove, Swing, GATE, Jack, Dest, Att) alone —
+          // catalog schemaValues are what the UI edits.
           if (p.tag === "Color") {
             p.value = colorForApp(row.instrumentId || row.app, resolveColor(row, 0)).value;
           }
@@ -4048,6 +4273,22 @@
       row.ch = row.chs[0];
       row.cc = row.ccs[0];
       row.kind = "note";
+    }
+
+    /** Keep denormalized groove/swingMax mirrors in sync with catalog schemaValues. */
+    function syncGroovesRowFromSchema(row) {
+      if (!row || row.app !== "grooves") return;
+      if (!Array.isArray(row.schemaValues) || row.schemaValues.length < 8) return;
+      const g = row.schemaValues[6];
+      const sw = row.schemaValues[7];
+      if (g?.tag === "Enum") {
+        const n = Number(g.value);
+        if (Number.isFinite(n)) row.groove = Math.max(0, Math.min(7, n));
+      }
+      if (sw?.tag === "i32") {
+        const n = Number(Array.isArray(sw.value) ? sw.value[0] : sw.value);
+        if (Number.isFinite(n)) row.swingMax = Math.max(10, Math.min(100, n));
+      }
     }
 
     /** Echolot CH labels: Single → Out; Ping-Pong → Out Ping / Out Pong. */
@@ -4471,6 +4712,66 @@
     function applyColumnOverlaysToSchema(row, portKey) {
       const cat = catalogApp(row.app);
       if (!cat || !Array.isArray(row.schemaValues)) return;
+      // Custom column UI writes denormalized row.* fields — mirror into
+      // schemaValues before any live/full SetAppParams (otherwise device keeps
+      // stale pull defaults while the editor shows the new fields).
+      const sv = row.schemaValues;
+      if (row.app === "echolot") {
+        if (sv[0]?.tag === "Enum") {
+          sv[0] = enumVal(Number(row.echoIo != null ? row.echoIo : 0));
+        }
+        if (sv[1]?.tag === "Enum") {
+          sv[1] = enumVal(Number(row.echoDelayMode != null ? row.echoDelayMode : 0));
+        }
+        if (sv[2]?.tag === "i32") {
+          sv[2] = i32(Math.max(10, Math.min(8000, Number(row.echoMaxMs) || 500)));
+        }
+        if (sv[3]?.tag === "Enum") {
+          sv[3] = enumVal(Number(row.echoInterval != null ? row.echoInterval : 0));
+        }
+        if (sv[4]?.tag === "Enum") {
+          sv[4] = enumVal(Number(row.echoRouting != null ? row.echoRouting : 0));
+        }
+        if (sv[5]?.tag === "Enum") {
+          sv[5] = enumVal(Number(row.echoSignal != null ? row.echoSignal : 0));
+        }
+      }
+      if (row.app === "grooves") {
+        // 6 Groove / 7 Swing live in schemaValues (catalog UI). Do NOT
+        // clobber them from stale row.groove / row.swingMax — those fields
+        // are denormalized mirrors updated on pull / schema edit only.
+        syncGroovesRowFromSchema(row);
+      }
+      if (row.app === "fibonacci_gate") {
+        // 4 Speed, 11 Mode
+        if (sv[4]?.tag === "Enum" && row.gateSpeed != null) {
+          sv[4] = enumVal(Math.max(0, Math.min(9, Number(row.gateSpeed) || 0)));
+        }
+        if (sv[11]?.tag === "Enum" && row.gateMode != null) {
+          sv[11] = enumVal(Math.max(0, Math.min(3, Number(row.gateMode) || 0)));
+        }
+      }
+      if (APPS_WITH_SPEED.has(row.app) && row.lfoSpeed != null && sv[0]?.tag === "Enum") {
+        sv[0] = enumVal(Number(row.lfoSpeed));
+      }
+      if (row.app === "super_lfo") {
+        // 8 Mix Mode, 9 Osc B, 10 Mix balance, 11 Rate-mod depth, 12 CV Dest
+        if (sv[8]?.tag === "Enum" && row.mixMode != null) {
+          sv[8] = enumVal(Math.max(0, Math.min(3, Number(row.mixMode) || 0)));
+        }
+        if (sv[9]?.tag === "Enum" && row.oscB != null) {
+          sv[9] = enumVal(Math.max(0, Math.min(1, Number(row.oscB) || 0)));
+        }
+        if (sv[10]?.tag === "i32" && row.mixBalance != null) {
+          sv[10] = i32(Math.max(0, Math.min(100, Number(row.mixBalance) || 50)));
+        }
+        if (sv[11]?.tag === "i32" && row.rateModDepth != null) {
+          sv[11] = i32(Math.max(0, Math.min(100, Number(row.rateModDepth) || 50)));
+        }
+        if (sv[12]?.tag === "Enum" && row.cvDest != null) {
+          sv[12] = enumVal(Math.max(0, Math.min(8, Number(row.cvDest) || 0)));
+        }
+      }
       const wantPort = row.port || portKey;
       const col = resolveColor(row, 0);
       let ci = 0;
@@ -4731,6 +5032,7 @@
           row.gateSpeed = Math.max(0, Math.min(9, schemaEnumIndex(row, speedI)));
         }
       }
+      if (row.app === "grooves") syncGroovesRowFromSchema(row);
     }
 
     function setSchemaValue(row, pi, value) {
@@ -4758,6 +5060,7 @@
           row.gateSpeed = Math.max(0, Math.min(9, Number(value?.value) || 0));
         }
       }
+      if (row.app === "grooves") syncGroovesRowFromSchema(row);
       if (p.tag === "Enum") coerceParamDeps(row);
     }
 
@@ -5440,6 +5743,14 @@
       }).catch(() => {});
     }
 
+    function syncAllGroovesFromSchema() {
+      for (const p of bank || []) {
+        for (const row of p.rows || []) {
+          if (row?.app === "grooves") syncGroovesRowFromSchema(row);
+        }
+      }
+    }
+
     async function hydrateBankFromServer() {
       const local = loadBankFromLocal();
       try {
@@ -5687,7 +5998,7 @@
         Object.entries(APPS).map(([k, v]) => [v.id, k]),
       );
       const rows = data.layout
-        .filter((x) => x.appId)
+        .filter((x) => x.appId != null && Number(x.appId) > 0)
         .map((x, rowIndex) => {
           const appKey = idToApp[x.appId] || "control";
           let channel = 1;
@@ -5702,27 +6013,41 @@
           const params = Array.isArray(x.params) ? x.params : [];
           const allChs = [];
           const allNotes = [];
+          const midiChannelNum = (val) => {
+            if (val?.tag !== "MidiChannel") return null;
+            const raw = val.value;
+            const n = Number(Array.isArray(raw) ? raw[0] : raw);
+            if (!Number.isFinite(n)) return null;
+            return Math.max(1, Math.min(16, Math.round(n)));
+          };
           for (const val of params) {
-            if (val?.tag === "MidiChannel") {
-              channel = val.value?.[0] ?? 1;
-              allChs.push(Number(val.value?.[0] ?? 1));
+            const chN = midiChannelNum(val);
+            if (chN != null) {
+              channel = chN;
+              allChs.push(chN);
             }
             if (val?.tag === "MidiCc") {
-              midiCc = val.value?.[0] ?? 32;
+              midiCc = Number(Array.isArray(val.value) ? val.value[0] : val.value) || 32;
             }
             if (val?.tag === "MidiNote") {
-              midiNote = val.value?.[0] ?? 36;
-              allNotes.push(Number(val.value?.[0] ?? 36));
+              const nn = Number(Array.isArray(val.value) ? val.value[0] : val.value);
+              midiNote = Number.isFinite(nn) ? nn : 36;
+              allNotes.push(Number.isFinite(nn) ? nn : 36);
             }
             if (val?.tag === "MidiMode" && val.value?.tag) midiModeTag = val.value.tag;
             if (val?.tag === "Color" && val.value?.tag) colorTag = val.value.tag;
             if (val?.tag === "MidiOut") port = portFromMidiOut(val);
             if (val?.tag === "Range" && val.value?.tag) cvRange = val.value.tag;
-            if (val?.tag === "Enum" && (appKey === "lfo" || appKey === "lfo_plus")) {
+            if (
+              val?.tag === "Enum" &&
+              (appKey === "lfo" || appKey === "lfo_plus") &&
+              lfoSpeed == null
+            ) {
               const n = Number(val.value);
               if (Number.isFinite(n)) lfoSpeed = n;
             }
-            if (val?.tag === "Enum" && appKey === "grooves") {
+            // Only first Enum is Groove; later Enums are Jack / CV Dest.
+            if (val?.tag === "Enum" && appKey === "grooves" && rowGroove == null) {
               const n = Number(val.value);
               if (Number.isFinite(n)) rowGroove = n;
             }
@@ -5869,6 +6194,7 @@
           if (cvRange) row.cvRange = cvRange;
           if (catalogApp(appKey) && params.length) {
             row.schemaValues = structuredClone(params);
+            if (appKey === "grooves") syncGroovesRowFromSchema(row);
           }
           const previous = previousRows[rowIndex];
           const preferredId =
@@ -5961,12 +6287,8 @@
           i2c_mode: { tag: "Leader" },
           led_brightness: 150,
           midi: {
-            // [usb, out1, out2] — Local nötig, sonst blocken Thru/None die App-Flags
-            outs: [
-              { send_clock: true, send_transport: true, mode: { tag: "Local" } },
-              { send_clock: true, send_transport: true, mode: { tag: "Local" } },
-              { send_clock: true, send_transport: true, mode: { tag: "Local" } },
-            ],
+            // [usb, out1, out2] — Thru/None block app MIDI flags on that port
+            outs: g.midi.map((out, i) => midiOutToJson(out, i)),
           },
           quantizer: {
             key: { tag: g.scale },
@@ -5995,8 +6317,16 @@
       for (let i = 0; i < 3; i++) {
         fillSelect(document.getElementById(`gAux${i}Mode`), AUX_MODE_OPTS, g.aux[i].mode);
         fillSelect(document.getElementById(`gAux${i}Div`), AUX_DIV_OPTS, g.aux[i].div);
+        fillSelect(document.getElementById(`gMidi${i}Mode`), MIDI_OUT_MODE_OPTS, g.midi[i].mode);
+        document.getElementById(`gMidi${i}Clock`).checked = !!g.midi[i].sendClock;
+        document.getElementById(`gMidi${i}Transport`).checked = !!g.midi[i].sendTransport;
+        if (i > 0) {
+          document.getElementById(`gMidi${i}SrcUsb`).checked = !!g.midi[i].sourceUsb;
+          document.getElementById(`gMidi${i}SrcDin`).checked = !!g.midi[i].sourceDin;
+        }
       }
       updateAuxDivEnabled();
+      updateMidiSourcesVisible();
     }
 
     function syncPresetFromFields() {
@@ -6016,8 +6346,16 @@
           mode: document.getElementById(`gAux${i}Mode`).value,
           div: document.getElementById(`gAux${i}Div`).value,
         })),
+        midi: [0, 1, 2].map((i) => ({
+          mode: document.getElementById(`gMidi${i}Mode`).value,
+          sendClock: document.getElementById(`gMidi${i}Clock`).checked,
+          sendTransport: document.getElementById(`gMidi${i}Transport`).checked,
+          sourceUsb: i === 0 ? false : document.getElementById(`gMidi${i}SrcUsb`).checked,
+          sourceDin: i === 0 ? true : document.getElementById(`gMidi${i}SrcDin`).checked,
+        })),
       });
       updateAuxDivEnabled();
+      updateMidiSourcesVisible();
       saveBank();
     }
 
@@ -6028,10 +6366,21 @@
       }
     }
 
+    function updateMidiSourcesVisible() {
+      for (let i = 0; i < 3; i++) {
+        const mode = document.getElementById(`gMidi${i}Mode`).value;
+        const show = mode === "MidiThru" || mode === "MidiMerge";
+        document.getElementById(`gMidi${i}Sources`).hidden = !show;
+      }
+    }
+
     function wireGlobalFields() {
       const ids = [
         "gScale", "gTonic", "gClockSrc", "gResetSrc", "gBpm", "gSwing", "gTakeover",
         "gAux0Mode", "gAux0Div", "gAux1Mode", "gAux1Div", "gAux2Mode", "gAux2Div",
+        "gMidi0Mode", "gMidi0Clock", "gMidi0Transport",
+        "gMidi1Mode", "gMidi1Clock", "gMidi1Transport", "gMidi1SrcUsb", "gMidi1SrcDin",
+        "gMidi2Mode", "gMidi2Clock", "gMidi2Transport", "gMidi2SrcUsb", "gMidi2SrcDin",
       ];
       for (const id of ids) {
         const el = document.getElementById(id);
@@ -6194,8 +6543,17 @@
       return slots;
     }
 
+    function optLabel(opts, tag) {
+      const hit = opts.find(([k]) => k === tag);
+      return hit ? hit[1] : tag || "";
+    }
+
     function printCheatsheet(sc) {
       const slots = cheatsheetSlots(sc);
+      const g = normalizeGlobal(sc.global || {});
+      const tonicLabel = optLabel(TONIC_OPTS, g.tonic);
+      const scaleLabel = optLabel(SCALE_OPTS, g.scale);
+      const keyMode = [tonicLabel, scaleLabel].filter(Boolean).join(" ");
       const cells = slots
         .map((s) => {
           const line1 = s.instrument || s.app || "";
@@ -6226,10 +6584,13 @@
       root.innerHTML = `
         <div class="sheet">
           <div class="head">
-            <strong>${escapeHtml(sc.name)}</strong>
-            <span class="muted">${escapeHtml(t("cheatsheet.preset", { index: presetGlyphFor(sc) }))}${
-              sc.desc ? " · " + escapeHtml(sc.desc) : ""
-            }</span>
+            <div class="head-left">
+              <strong>${escapeHtml(sc.name)}</strong>
+              <span class="muted">${escapeHtml(t("cheatsheet.preset", { index: presetGlyphFor(sc) }))}${
+                sc.desc ? " · " + escapeHtml(sc.desc) : ""
+              }</span>
+            </div>
+            ${keyMode ? `<span class="key-mode">${escapeHtml(keyMode)}</span>` : ""}
           </div>
           <div class="row">${cells}</div>
         </div>`;
@@ -6684,21 +7045,58 @@
         rowRef.kind = kindForApp(rowRef.app, rowRef.midiMode);
       } else if (k === "lfoSpeed") {
         rowRef.lfoSpeed = Number(el.value);
+        delete rowRef.rawParams;
+        if (catalogApp(rowRef.app)) {
+          ensureSchemaValues(rowRef);
+          if (rowRef.schemaValues[0]?.tag === "Enum") {
+            rowRef.schemaValues[0] = enumVal(Number(rowRef.lfoSpeed));
+          }
+        }
       } else if (k === "mixMode") {
         rowRef.mixMode = Math.max(0, Math.min(3, Number(el.value) || 0));
         delete rowRef.rawParams;
+        if (catalogApp(rowRef.app)) {
+          ensureSchemaValues(rowRef);
+          if (rowRef.schemaValues[8]?.tag === "Enum") {
+            rowRef.schemaValues[8] = enumVal(rowRef.mixMode);
+          }
+        }
       } else if (k === "oscB") {
         rowRef.oscB = Math.max(0, Math.min(1, Number(el.value) || 0));
         delete rowRef.rawParams;
+        if (catalogApp(rowRef.app)) {
+          ensureSchemaValues(rowRef);
+          if (rowRef.schemaValues[9]?.tag === "Enum") {
+            rowRef.schemaValues[9] = enumVal(rowRef.oscB);
+          }
+        }
       } else if (k === "cvDest") {
         rowRef.cvDest = Math.max(0, Math.min(8, Number(el.value) || 0));
         delete rowRef.rawParams;
+        if (catalogApp(rowRef.app)) {
+          ensureSchemaValues(rowRef);
+          if (rowRef.schemaValues[12]?.tag === "Enum") {
+            rowRef.schemaValues[12] = enumVal(rowRef.cvDest);
+          }
+        }
       } else if (k === "mixBalance") {
         rowRef.mixBalance = Math.max(0, Math.min(100, Number(el.value) || 50));
         delete rowRef.rawParams;
+        if (catalogApp(rowRef.app)) {
+          ensureSchemaValues(rowRef);
+          if (rowRef.schemaValues[10]?.tag === "i32") {
+            rowRef.schemaValues[10] = i32(rowRef.mixBalance);
+          }
+        }
       } else if (k === "rateModDepth") {
         rowRef.rateModDepth = Math.max(0, Math.min(100, Number(el.value) || 50));
         delete rowRef.rawParams;
+        if (catalogApp(rowRef.app)) {
+          ensureSchemaValues(rowRef);
+          if (rowRef.schemaValues[11]?.tag === "i32") {
+            rowRef.schemaValues[11] = i32(rowRef.rateModDepth);
+          }
+        }
       } else if (k === "gateSpeed") {
         rowRef.gateSpeed = Math.max(0, Math.min(9, Number(el.value) || 0));
         delete rowRef.rawParams;
@@ -6730,27 +7128,63 @@
       } else if (k === "groove") {
         rowRef.groove = Math.max(0, Math.min(7, Number(el.value) || 0));
         delete rowRef.rawParams;
+        if (catalogApp(rowRef.app)) {
+          ensureSchemaValues(rowRef);
+          if (rowRef.schemaValues[6]?.tag === "Enum") {
+            rowRef.schemaValues[6] = enumVal(rowRef.groove);
+          }
+        }
       } else if (k === "swingMax") {
         rowRef.swingMax = Math.max(10, Math.min(100, Number(el.value) || 50));
         delete rowRef.rawParams;
+        if (catalogApp(rowRef.app)) {
+          ensureSchemaValues(rowRef);
+          if (rowRef.schemaValues[7]?.tag === "i32") {
+            rowRef.schemaValues[7] = i32(rowRef.swingMax);
+          }
+        }
       } else if (k === "echoIo") {
         rowRef.echoIo = Math.max(0, Math.min(2, Number(el.value) || 0));
         delete rowRef.rawParams;
+        if (catalogApp(rowRef.app)) {
+          ensureSchemaValues(rowRef);
+          applyColumnOverlaysToSchema(rowRef, sc.port);
+        }
       } else if (k === "echoDelayMode") {
         rowRef.echoDelayMode = Math.max(0, Math.min(1, Number(el.value) || 0));
         delete rowRef.rawParams;
+        if (catalogApp(rowRef.app)) {
+          ensureSchemaValues(rowRef);
+          applyColumnOverlaysToSchema(rowRef, sc.port);
+        }
       } else if (k === "echoMaxMs") {
         rowRef.echoMaxMs = Math.max(10, Math.min(8000, Number(el.value) || 500));
         delete rowRef.rawParams;
+        if (catalogApp(rowRef.app)) {
+          ensureSchemaValues(rowRef);
+          applyColumnOverlaysToSchema(rowRef, sc.port);
+        }
       } else if (k === "echoInterval") {
         rowRef.echoInterval = Math.max(0, Math.min(2, Number(el.value) || 0));
         delete rowRef.rawParams;
+        if (catalogApp(rowRef.app)) {
+          ensureSchemaValues(rowRef);
+          applyColumnOverlaysToSchema(rowRef, sc.port);
+        }
       } else if (k === "echoRouting") {
         rowRef.echoRouting = Math.max(0, Math.min(1, Number(el.value) || 0));
         delete rowRef.rawParams;
+        if (catalogApp(rowRef.app)) {
+          ensureSchemaValues(rowRef);
+          applyColumnOverlaysToSchema(rowRef, sc.port);
+        }
       } else if (k === "echoSignal") {
         rowRef.echoSignal = Math.max(0, Math.min(3, Number(el.value) || 0));
         delete rowRef.rawParams;
+        if (catalogApp(rowRef.app)) {
+          ensureSchemaValues(rowRef);
+          applyColumnOverlaysToSchema(rowRef, sc.port);
+        }
       } else if (k === "cvRange") {
         rowRef.cvRange = el.value;
       } else if (k === "chs") {
@@ -7335,8 +7769,14 @@
           const rowsFor = layoutToRows.get(layoutId) || ids;
           try {
             appendPushLog(`→ Live · layoutId=${layoutId}`);
+            const slotForId = setup.layout.find(
+              (x) => Number(x.layoutId) === Number(layoutId),
+            );
             await midi.pushAppParamsToDevice(layoutId, values, {
               onLog: (line) => appendPushLog(line),
+              // Guard: never write params into a stale slot (cross-app corruption
+              // after an aborted structure push).
+              expectAppId: slotForId?.appId ?? null,
             });
             liveNote("ok", t("push.liveOkSlot", { id: layoutId }));
             finishRowMeteorSpin(rowsFor, { ok: true });
@@ -7834,6 +8274,7 @@
       });
       await loadAppsCatalog();
       const fromServer = await hydrateBankFromServer();
+      syncAllGroovesFromSchema();
       await refillCsvSelect();
       await loadInstruments();
       renderInstruments();
