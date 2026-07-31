@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "source": "faderpunk/src/apps/*.rs CONFIG (tools/gen-apps-catalog.py)",
+  "source": "/Users/kosmar/Projects/faderpunk-playground/faderpunk/src/apps CONFIG (tools/gen-apps-catalog.py)",
   "apps": [
     {
       "id": 1,
@@ -2138,153 +2138,12 @@
       ]
     },
     {
-      "id": 28,
-      "slug": "sift",
-      "module": "sift",
-      "channels": 2,
-      "name": "Sift",
-      "description": "Threshold and level sequencer",
-      "color": "Rose",
-      "icon": "SequenceSquare",
-      "params": [
-        {
-          "tag": "i32",
-          "value": {
-            "name": "CV Steps",
-            "min": 1,
-            "max": 32
-          }
-        },
-        {
-          "tag": "i32",
-          "value": {
-            "name": "Gate Steps",
-            "min": 1,
-            "max": 32
-          }
-        },
-        {
-          "tag": "Range",
-          "value": {
-            "name": "Range",
-            "variants": [
-              {
-                "tag": "_0_10V"
-              },
-              {
-                "tag": "_0_5V"
-              },
-              {
-                "tag": "_Neg5_5V"
-              }
-            ]
-          }
-        },
-        {
-          "tag": "Enum",
-          "value": {
-            "name": "Polarity",
-            "variants": [
-              "Positive",
-              "Bipolar",
-              "Negative"
-            ]
-          }
-        },
-        {
-          "tag": "i32",
-          "value": {
-            "name": "Min CV x0.1V",
-            "min": -50,
-            "max": 100
-          }
-        },
-        {
-          "tag": "i32",
-          "value": {
-            "name": "Max CV x0.1V",
-            "min": -50,
-            "max": 100
-          }
-        },
-        {
-          "tag": "Enum",
-          "value": {
-            "name": "Clock Division",
-            "variants": [
-              "4 bars",
-              "2 bars",
-              "1 bar",
-              "1/2",
-              "1/4",
-              "1/8T",
-              "1/8",
-              "1/16T",
-              "1/16",
-              "1/32T",
-              "1/32",
-              "1/64"
-            ]
-          }
-        },
-        {
-          "tag": "i32",
-          "value": {
-            "name": "Gate Length %",
-            "min": 5,
-            "max": 95
-          }
-        },
-        {
-          "tag": "Color",
-          "value": {
-            "name": "Color",
-            "variants": [
-              {
-                "tag": "Blue"
-              },
-              {
-                "tag": "Green"
-              },
-              {
-                "tag": "Rose"
-              },
-              {
-                "tag": "Orange"
-              },
-              {
-                "tag": "Cyan"
-              },
-              {
-                "tag": "Pink"
-              },
-              {
-                "tag": "Violet"
-              },
-              {
-                "tag": "Yellow"
-              }
-            ]
-          }
-        },
-        {
-          "tag": "MidiChannel",
-          "value": {
-            "name": "MIDI Channel"
-          }
-        },
-        {
-          "tag": "MidiOut"
-        }
-      ]
-    },
-    {
       "id": 29,
       "slug": "house_pump",
       "module": "heat_pump",
       "channels": 1,
       "name": "Heat Pump",
-      "description": "Clock-synced sidechain ducking envelope",
+      "description": "Clock-synced sidechain ducking: hold + log release",
       "color": "Pink",
       "icon": "AdEnv",
       "params": [
@@ -2351,6 +2210,35 @@
         },
         {
           "tag": "MidiOut"
+        },
+        {
+          "tag": "Enum",
+          "value": {
+            "name": "Jack",
+            "variants": [
+              "CV Out",
+              "CV In"
+            ]
+          }
+        },
+        {
+          "tag": "Enum",
+          "value": {
+            "name": "CV Dest",
+            "variants": [
+              "Depth",
+              "Release",
+              "Duck"
+            ]
+          }
+        },
+        {
+          "tag": "i32",
+          "value": {
+            "name": "CV Att",
+            "min": 0,
+            "max": 100
+          }
         }
       ]
     },
@@ -2360,7 +2248,7 @@
       "module": "grooves",
       "channels": 1,
       "name": "Grooves",
-      "description": "Multi-genre MIDI drum grooves with swing",
+      "description": "Multi-genre MIDI drum grooves with feel",
       "color": "Orange",
       "icon": "Die",
       "params": [
@@ -2407,10 +2295,11 @@
             "variants": [
               "Dub",
               "Disco",
-              "Hip-Hop",
               "House",
               "Techno",
               "Trip-Hop",
+              "Hip-Hop",
+              "Jungle",
               "UK Garage",
               "Dubstep"
             ]
@@ -2433,39 +2322,50 @@
           }
         },
         {
-          "tag": "Color",
+          "tag": "MidiOut"
+        },
+        {
+          "tag": "Enum",
           "value": {
-            "name": "Color",
+            "name": "Jack",
+            "variants": [
+              "CV Out",
+              "CV In"
+            ]
+          }
+        },
+        {
+          "tag": "Range",
+          "value": {
+            "name": "Range",
             "variants": [
               {
-                "tag": "Orange"
+                "tag": "_0_10V"
               },
               {
-                "tag": "Yellow"
-              },
-              {
-                "tag": "Pink"
-              },
-              {
-                "tag": "Cyan"
-              },
-              {
-                "tag": "Violet"
-              },
-              {
-                "tag": "Green"
-              },
-              {
-                "tag": "Blue"
-              },
-              {
-                "tag": "Rose"
+                "tag": "_Neg5_5V"
               }
             ]
           }
         },
         {
-          "tag": "MidiOut"
+          "tag": "Enum",
+          "value": {
+            "name": "CV Dest",
+            "variants": [
+              "Density",
+              "Feel",
+              "Reset"
+            ]
+          }
+        },
+        {
+          "tag": "i32",
+          "value": {
+            "name": "CV Att",
+            "min": 0,
+            "max": 100
+          }
         }
       ]
     },
@@ -2510,9 +2410,16 @@
           "value": {
             "name": "Speed",
             "variants": [
-              "16th",
-              "8th",
-              "Quarter"
+              "1/1",
+              "1/2",
+              "1/4.",
+              "1/4",
+              "1/8.",
+              "1/4T",
+              "1/8",
+              "1/8T",
+              "1/16",
+              "1/32"
             ]
           }
         },
@@ -2550,6 +2457,61 @@
         },
         {
           "tag": "MidiOut"
+        },
+        {
+          "tag": "Enum",
+          "value": {
+            "name": "Jack",
+            "variants": [
+              "CV Out",
+              "CV In"
+            ]
+          }
+        },
+        {
+          "tag": "Range",
+          "value": {
+            "name": "Range",
+            "variants": [
+              {
+                "tag": "_0_10V"
+              },
+              {
+                "tag": "_Neg5_5V"
+              }
+            ]
+          }
+        },
+        {
+          "tag": "Enum",
+          "value": {
+            "name": "CV Dest",
+            "variants": [
+              "Depth",
+              "Cycle",
+              "Reset"
+            ]
+          }
+        },
+        {
+          "tag": "i32",
+          "value": {
+            "name": "CV Att",
+            "min": 0,
+            "max": 100
+          }
+        },
+        {
+          "tag": "Enum",
+          "value": {
+            "name": "Mode",
+            "variants": [
+              "Note",
+              "CC",
+              "Pitch",
+              "Phi"
+            ]
+          }
         }
       ]
     },
@@ -2675,19 +2637,27 @@
           }
         },
         {
+          "tag": "i32",
+          "value": {
+            "name": "Rate-mod depth",
+            "min": 0,
+            "max": 100
+          }
+        },
+        {
           "tag": "Enum",
           "value": {
             "name": "CV Dest",
             "variants": [
-              "Speed",
+              "Rate Mod",
               "Phase",
-              "Amp",
               "Reset",
+              "Amp",
+              "Speed",
               "Morph",
               "Skew",
               "Warp",
-              "Symmetry",
-              "Rate Mod"
+              "Symmetry"
             ]
           }
         }
@@ -2729,7 +2699,7 @@
           "value": {
             "name": "Max delay (ms)",
             "min": 10,
-            "max": 2000
+            "max": 8000
           }
         },
         {
@@ -2739,7 +2709,7 @@
             "variants": [
               "Fixed",
               "Stack",
-              "Pong"
+              "Bounce"
             ]
           }
         },
@@ -2826,13 +2796,13 @@
         {
           "tag": "MidiChannel",
           "value": {
-            "name": "MIDI Out A"
+            "name": "MIDI Out"
           }
         },
         {
           "tag": "MidiChannel",
           "value": {
-            "name": "MIDI Out B"
+            "name": "MIDI Out Pong"
           }
         },
         {
@@ -2855,7 +2825,7 @@
       "module": "arp_de_levy",
       "channels": 1,
       "name": "Arp de L\u00e9vy",
-      "description": "L\u00e9vy-flight generative arpeggiator \u2014 evolving phrase, classic arp modes",
+      "description": "L\u00e9vy-flight generative arpeggiator \u2014 evolve, texture, and flight character",
       "color": "Rose",
       "icon": "SoftRandom",
       "params": [
@@ -2905,6 +2875,454 @@
         },
         {
           "tag": "MidiOut"
+        },
+        {
+          "tag": "VoltPerOct"
+        },
+        {
+          "tag": "bool",
+          "value": {
+            "name": "Bypass quantizer"
+          }
+        },
+        {
+          "tag": "Enum",
+          "value": {
+            "name": "Jack",
+            "variants": [
+              "CV Out",
+              "CV In"
+            ]
+          }
+        },
+        {
+          "tag": "Range",
+          "value": {
+            "name": "Range",
+            "variants": [
+              {
+                "tag": "_0_10V"
+              },
+              {
+                "tag": "_Neg5_5V"
+              }
+            ]
+          }
+        },
+        {
+          "tag": "Enum",
+          "value": {
+            "name": "CV Out",
+            "variants": [
+              "Pitch",
+              "Gate",
+              "Velocity"
+            ]
+          }
+        },
+        {
+          "tag": "Enum",
+          "value": {
+            "name": "CV Dest",
+            "variants": [
+              "Evolve",
+              "Texture",
+              "Reroll"
+            ]
+          }
+        },
+        {
+          "tag": "i32",
+          "value": {
+            "name": "CV Att",
+            "min": 0,
+            "max": 100
+          }
+        }
+      ]
+    },
+    {
+      "id": 35,
+      "slug": "vamp",
+      "module": "vamp",
+      "channels": 1,
+      "name": "Chord Vamp",
+      "description": "Chord progressions \u2014 perform, shift+tap capture, or auto vamp",
+      "color": "Violet",
+      "icon": "NoteGrid",
+      "params": [
+        {
+          "tag": "MidiOut"
+        },
+        {
+          "tag": "MidiChannel",
+          "value": {
+            "name": "MIDI Channel"
+          }
+        },
+        {
+          "tag": "MidiNote",
+          "value": {
+            "name": "Root"
+          }
+        },
+        {
+          "tag": "Enum",
+          "value": {
+            "name": "Scale",
+            "variants": [
+              "Ionian",
+              "Dorian",
+              "Phrygian",
+              "Lydian",
+              "Mixolydian",
+              "Aeolian",
+              "Locrian",
+              "Pent Maj",
+              "Pent Min"
+            ]
+          }
+        },
+        {
+          "tag": "Enum",
+          "value": {
+            "name": "Genre",
+            "variants": [
+              "Dub",
+              "Disco",
+              "House",
+              "Techno",
+              "Trip-Hop",
+              "Hip-Hop",
+              "Jungle",
+              "UK Garage",
+              "Dubstep"
+            ]
+          }
+        },
+        {
+          "tag": "Enum",
+          "value": {
+            "name": "Voicing",
+            "variants": [
+              "Triads",
+              "7ths",
+              "9ths",
+              "Spread"
+            ]
+          }
+        },
+        {
+          "tag": "i32",
+          "value": {
+            "name": "Velocity",
+            "min": 1,
+            "max": 127
+          }
+        },
+        {
+          "tag": "Enum",
+          "value": {
+            "name": "Auto style",
+            "variants": [
+              "Repeat",
+              "Meander"
+            ]
+          }
+        },
+        {
+          "tag": "Enum",
+          "value": {
+            "name": "Start mode",
+            "variants": [
+              "Perform",
+              "Auto"
+            ]
+          }
+        },
+        {
+          "tag": "Enum",
+          "value": {
+            "name": "Capture length",
+            "variants": [
+              "16 bars",
+              "8 bars",
+              "4 bars",
+              "2 bars",
+              "1 bar"
+            ]
+          }
+        },
+        {
+          "tag": "Color",
+          "value": {
+            "name": "Color",
+            "variants": [
+              {
+                "tag": "Blue"
+              },
+              {
+                "tag": "Green"
+              },
+              {
+                "tag": "Rose"
+              },
+              {
+                "tag": "Orange"
+              },
+              {
+                "tag": "Cyan"
+              },
+              {
+                "tag": "Pink"
+              },
+              {
+                "tag": "Violet"
+              },
+              {
+                "tag": "Yellow"
+              }
+            ]
+          }
+        },
+        {
+          "tag": "Enum",
+          "value": {
+            "name": "Jack",
+            "variants": [
+              "CV Out",
+              "CV In"
+            ]
+          }
+        },
+        {
+          "tag": "Range",
+          "value": {
+            "name": "Range",
+            "variants": [
+              {
+                "tag": "_0_10V"
+              },
+              {
+                "tag": "_Neg5_5V"
+              }
+            ]
+          }
+        },
+        {
+          "tag": "VoltPerOct"
+        },
+        {
+          "tag": "Enum",
+          "value": {
+            "name": "CV Dest",
+            "variants": [
+              "Macro",
+              "Panic"
+            ]
+          }
+        },
+        {
+          "tag": "i32",
+          "value": {
+            "name": "CV Att",
+            "min": 0,
+            "max": 100
+          }
+        }
+      ]
+    },
+    {
+      "id": 36,
+      "slug": "hold_sam",
+      "module": "hold_sam",
+      "channels": 1,
+      "name": "Hold Sam",
+      "description": "Clocked sample & hold to MIDI note/CC",
+      "color": "Cyan",
+      "icon": "NoteBox",
+      "params": [
+        {
+          "tag": "MidiMode"
+        },
+        {
+          "tag": "MidiChannel",
+          "value": {
+            "name": "MIDI Channel"
+          }
+        },
+        {
+          "tag": "MidiNote",
+          "value": {
+            "name": "Base Note"
+          }
+        },
+        {
+          "tag": "MidiCc",
+          "value": {
+            "name": "CC number"
+          }
+        },
+        {
+          "tag": "Color",
+          "value": {
+            "name": "Color",
+            "variants": [
+              {
+                "tag": "Blue"
+              },
+              {
+                "tag": "Green"
+              },
+              {
+                "tag": "Rose"
+              },
+              {
+                "tag": "Orange"
+              },
+              {
+                "tag": "Cyan"
+              },
+              {
+                "tag": "Pink"
+              },
+              {
+                "tag": "Violet"
+              },
+              {
+                "tag": "Yellow"
+              }
+            ]
+          }
+        },
+        {
+          "tag": "Range",
+          "value": {
+            "name": "Range",
+            "variants": [
+              {
+                "tag": "_0_10V"
+              },
+              {
+                "tag": "_Neg5_5V"
+              }
+            ]
+          }
+        },
+        {
+          "tag": "MidiOut"
+        },
+        {
+          "tag": "VoltPerOct"
+        },
+        {
+          "tag": "bool",
+          "value": {
+            "name": "Bypass quantizer"
+          }
+        },
+        {
+          "tag": "i32",
+          "value": {
+            "name": "Attenuverter",
+            "min": 0,
+            "max": 4095
+          }
+        },
+        {
+          "tag": "i32",
+          "value": {
+            "name": "Base Velocity",
+            "min": 1,
+            "max": 127
+          }
+        }
+      ]
+    },
+    {
+      "id": 37,
+      "slug": "harmonica",
+      "module": "harmonica",
+      "channels": 1,
+      "name": "Harmonica",
+      "description": "Monophonic MIDI/CV harmonizer",
+      "color": "Orange",
+      "icon": "Note",
+      "params": [
+        {
+          "tag": "Enum",
+          "value": {
+            "name": "I/O",
+            "variants": [
+              "MIDI\u2192MIDI",
+              "MIDI\u2192CV",
+              "CV\u2192MIDI"
+            ]
+          }
+        },
+        {
+          "tag": "Range",
+          "value": {
+            "name": "Range",
+            "variants": [
+              {
+                "tag": "_0_10V"
+              },
+              {
+                "tag": "_Neg5_5V"
+              }
+            ]
+          }
+        },
+        {
+          "tag": "Color",
+          "value": {
+            "name": "Color",
+            "variants": [
+              {
+                "tag": "Blue"
+              },
+              {
+                "tag": "Green"
+              },
+              {
+                "tag": "Rose"
+              },
+              {
+                "tag": "Orange"
+              },
+              {
+                "tag": "Cyan"
+              },
+              {
+                "tag": "Pink"
+              },
+              {
+                "tag": "Violet"
+              },
+              {
+                "tag": "Yellow"
+              }
+            ]
+          }
+        },
+        {
+          "tag": "MidiIn"
+        },
+        {
+          "tag": "MidiChannel",
+          "value": {
+            "name": "MIDI In CH"
+          }
+        },
+        {
+          "tag": "MidiOut"
+        },
+        {
+          "tag": "MidiChannel",
+          "value": {
+            "name": "MIDI Out CH"
+          }
         },
         {
           "tag": "VoltPerOct"

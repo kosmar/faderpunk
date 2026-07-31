@@ -2139,11 +2139,11 @@
     },
     {
       "id": 29,
-      "slug": "heat_pump",
+      "slug": "house_pump",
       "module": "heat_pump",
       "channels": 1,
       "name": "Heat Pump",
-      "description": "Clock-synced sidechain ducking envelope",
+      "description": "Clock-synced sidechain ducking: hold + log release",
       "color": "Pink",
       "icon": "AdEnv",
       "params": [
@@ -2295,10 +2295,11 @@
             "variants": [
               "Dub",
               "Disco",
-              "Hip-Hop",
               "House",
               "Techno",
               "Trip-Hop",
+              "Hip-Hop",
+              "Jungle",
               "UK Garage",
               "Dubstep"
             ]
@@ -2318,38 +2319,6 @@
             "name": "GATE %",
             "min": 1,
             "max": 100
-          }
-        },
-        {
-          "tag": "Color",
-          "value": {
-            "name": "Color",
-            "variants": [
-              {
-                "tag": "Orange"
-              },
-              {
-                "tag": "Yellow"
-              },
-              {
-                "tag": "Pink"
-              },
-              {
-                "tag": "Cyan"
-              },
-              {
-                "tag": "Violet"
-              },
-              {
-                "tag": "Green"
-              },
-              {
-                "tag": "Blue"
-              },
-              {
-                "tag": "Rose"
-              }
-            ]
           }
         },
         {
@@ -3021,10 +2990,11 @@
             "variants": [
               "Dub",
               "Disco",
-              "Hip-Hop",
               "House",
               "Techno",
               "Trip-Hop",
+              "Hip-Hop",
+              "Jungle",
               "UK Garage",
               "Dubstep"
             ]
@@ -3158,6 +3128,209 @@
             "name": "CV Att",
             "min": 0,
             "max": 100
+          }
+        }
+      ]
+    },
+    {
+      "id": 36,
+      "slug": "hold_sam",
+      "module": "hold_sam",
+      "channels": 1,
+      "name": "Hold Sam",
+      "description": "Clocked sample & hold to MIDI note/CC",
+      "color": "Cyan",
+      "icon": "NoteBox",
+      "params": [
+        {
+          "tag": "MidiMode"
+        },
+        {
+          "tag": "MidiChannel",
+          "value": {
+            "name": "MIDI Channel"
+          }
+        },
+        {
+          "tag": "MidiNote",
+          "value": {
+            "name": "Base Note"
+          }
+        },
+        {
+          "tag": "MidiCc",
+          "value": {
+            "name": "CC number"
+          }
+        },
+        {
+          "tag": "Color",
+          "value": {
+            "name": "Color",
+            "variants": [
+              {
+                "tag": "Blue"
+              },
+              {
+                "tag": "Green"
+              },
+              {
+                "tag": "Rose"
+              },
+              {
+                "tag": "Orange"
+              },
+              {
+                "tag": "Cyan"
+              },
+              {
+                "tag": "Pink"
+              },
+              {
+                "tag": "Violet"
+              },
+              {
+                "tag": "Yellow"
+              }
+            ]
+          }
+        },
+        {
+          "tag": "Range",
+          "value": {
+            "name": "Range",
+            "variants": [
+              {
+                "tag": "_0_10V"
+              },
+              {
+                "tag": "_Neg5_5V"
+              }
+            ]
+          }
+        },
+        {
+          "tag": "MidiOut"
+        },
+        {
+          "tag": "VoltPerOct"
+        },
+        {
+          "tag": "bool",
+          "value": {
+            "name": "Bypass quantizer"
+          }
+        },
+        {
+          "tag": "i32",
+          "value": {
+            "name": "Attenuverter",
+            "min": 0,
+            "max": 4095
+          }
+        },
+        {
+          "tag": "i32",
+          "value": {
+            "name": "Base Velocity",
+            "min": 1,
+            "max": 127
+          }
+        }
+      ]
+    },
+    {
+      "id": 37,
+      "slug": "harmonica",
+      "module": "harmonica",
+      "channels": 1,
+      "name": "Harmonica",
+      "description": "Monophonic MIDI/CV harmonizer",
+      "color": "Orange",
+      "icon": "Note",
+      "params": [
+        {
+          "tag": "Enum",
+          "value": {
+            "name": "I/O",
+            "variants": [
+              "MIDI\u2192MIDI",
+              "MIDI\u2192CV",
+              "CV\u2192MIDI"
+            ]
+          }
+        },
+        {
+          "tag": "Range",
+          "value": {
+            "name": "Range",
+            "variants": [
+              {
+                "tag": "_0_10V"
+              },
+              {
+                "tag": "_Neg5_5V"
+              }
+            ]
+          }
+        },
+        {
+          "tag": "Color",
+          "value": {
+            "name": "Color",
+            "variants": [
+              {
+                "tag": "Blue"
+              },
+              {
+                "tag": "Green"
+              },
+              {
+                "tag": "Rose"
+              },
+              {
+                "tag": "Orange"
+              },
+              {
+                "tag": "Cyan"
+              },
+              {
+                "tag": "Pink"
+              },
+              {
+                "tag": "Violet"
+              },
+              {
+                "tag": "Yellow"
+              }
+            ]
+          }
+        },
+        {
+          "tag": "MidiIn"
+        },
+        {
+          "tag": "MidiChannel",
+          "value": {
+            "name": "MIDI In CH"
+          }
+        },
+        {
+          "tag": "MidiOut"
+        },
+        {
+          "tag": "MidiChannel",
+          "value": {
+            "name": "MIDI Out CH"
+          }
+        },
+        {
+          "tag": "VoltPerOct"
+        },
+        {
+          "tag": "bool",
+          "value": {
+            "name": "Bypass quantizer"
           }
         }
       ]
