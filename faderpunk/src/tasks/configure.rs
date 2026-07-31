@@ -23,9 +23,7 @@ use crate::fpapps::FPAPP_STORE;
 use crate::layout::{EvictionCmd, LAYOUT_EVICTION_REQ, LAYOUT_EVICTION_RES, LAYOUT_WATCH};
 use crate::storage::{factory_reset, store_layout};
 use crate::tasks::global_config::{get_global_config, GLOBAL_CONFIG_WATCH};
-use crate::tasks::max::{MaxCmd, MAX_CHANNEL, MAX_VALUES_DAC};
-use crate::tasks::midi::{SharedUsbSender, CONFIG_CABLE};
-use crate::tasks::voct_freq::{VOCT_MEASURE_REQ, VOCT_MEASURE_RES};
+use crate::tasks::midi::{SharedUsbSender, PERF_CABLE};
 use crate::version::FIRMWARE_VERSION;
 use crate::version::FPAPP_FIRMWARE_ABI;
 
@@ -45,10 +43,9 @@ pub static CONFIG_RX_CHANNEL: Channel<CriticalSectionRawMutex, Vec<u8, CONFIG_FR
 /// 1ms performance-MIDI timeout: config frames must not be silently
 /// truncated, but a stalled host must not block the USB sender forever.
 const CONFIG_WRITE_TIMEOUT_MS: u64 = 500;
-/// How long to wait for apps to answer a param request
-const APP_PARAM_TIMEOUT_MS: u64 = 1000;
-/// How often to check whether every app has answered `GetAllAppParams`
-const APP_PARAM_POLL_MS: u64 = 5;
+/// Per-app param collect/set timeout. Full layouts contend on FRAM; 1s was
+/// enough for half-density but drops AppState under 12–16 heavy apps.
+const APP_PARAM_TIMEOUT_MS: u64 = 2500;
 
 pub enum AppParamCmd {
     SetAppParams {
@@ -289,17 +286,37 @@ pub async fn start_config_loop<'a>(usb_tx: &'a SharedUsbSender<'a>) {
             }
             ConfigMsgIn::GetAllAppParams => {
                 let layout_ids = layout.get_layout_ids();
-                send_app_param_batch(&mut proto, &layout_ids).await
-            }
-            ConfigMsgIn::GetChangedAppParams => {
-                let dirty = APP_PARAM_DIRTY.swap(0, Ordering::Relaxed);
-                defmt::info!("DEBUG GetChangedAppParams dirty={:016b}", dirty);
-                let changed_ids: Vec<u8, GLOBAL_CHANNELS> = layout
-                    .get_layout_ids()
-                    .into_iter()
-                    .filter(|id| dirty & (1 << id) != 0)
-                    .collect();
-                send_app_param_batch(&mut proto, &changed_ids).await
+                let app_count = layout_ids.len();
+
+                let mut res = proto.send_msg(ConfigMsgOut::BatchMsgStart(app_count)).await;
+
+                if app_count > 0 && res.is_ok() {
+                    for id in layout_ids {
+                        APP_PARAM_SIGNALS[id as usize].signal(AppParamCmd::RequestParamValues);
+                    }
+                    let receiver = async {
+                        for _ in 0..app_count {
+                            let (res_layout_id, values) = APP_PARAM_CHANNEL.receive().await;
+                            proto
+                                .send_msg(ConfigMsgOut::AppState(res_layout_id, &values))
+                                .await?;
+                        }
+                        Ok(())
+                    };
+
+                    let batch_timeout_ms =
+                        APP_PARAM_TIMEOUT_MS.saturating_mul(app_count.max(1) as u64);
+                    if let Ok(receiver_res) =
+                        with_timeout(Duration::from_millis(batch_timeout_ms), receiver).await
+                    {
+                        res = receiver_res;
+                    }
+                }
+
+                if res.is_ok() {
+                    res = proto.send_msg(ConfigMsgOut::BatchMsgEnd).await;
+                }
+                res
             }
             ConfigMsgIn::SetGlobalConfig(mut global_config) => {
                 global_config.validate();
@@ -1050,9 +1067,13 @@ impl<'a> ConfigTransport<'a> {
         let frame_len = 1 + SYSEX_HEADER.len() + packed_len + 1;
         self.frame_buf[frame_len - 1] = SYSEX_EOX;
 
-        // Packetize into cable-1 USB-MIDI event packets, flushed per 64-byte
-        // USB packet. The sender mutex is released between USB packets so
-        // performance MIDI (cable 0) interleaves during long transfers.
+        // Packetize into USB-MIDI event packets on the performance cable
+        // (cable 0), flushed per 64-byte USB packet. macOS/CoreMIDI often
+        // exposes only one port mapped to cable 0; sending on both cables
+        // interleaves/corrupts SysEx on that single port. Cable 1 is still
+        // accepted on RX for multi-cable hosts. The sender mutex is released
+        // between USB packets so other MIDI can interleave during long
+        // transfers.
         let mut usb_packet = [0u8; USB_MAX_PACKET_SIZE as usize];
         let mut usb_len = 0;
         let total_chunks = frame_len.div_ceil(3);
@@ -1070,7 +1091,7 @@ impl<'a> ConfigTransport<'a> {
                 // SysEx starts or continues
                 0x4
             };
-            usb_packet[usb_len] = (CONFIG_CABLE << 4) | cin;
+            usb_packet[usb_len] = (PERF_CABLE << 4) | cin;
             usb_packet[usb_len + 1..usb_len + 4].fill(0);
             usb_packet[usb_len + 1..usb_len + 1 + chunk.len()].copy_from_slice(chunk);
             usb_len += 4;

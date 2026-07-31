@@ -231,12 +231,34 @@ export async function sendMessage(config, msg) {
 
 export async function receiveBatchMessages(config, count) {
   const results = [];
-  for (let i = 0n; i < count; i++) {
-    results.push(await receiveFromRx(config.rx, RECEIVE_TIMEOUT_MS));
+  const n = Number(count);
+  const deadline = Date.now() + RECEIVE_TIMEOUT_MS * Math.max(4, n + 2);
+  while (results.length < n && Date.now() < deadline) {
+    const remaining = Math.max(300, deadline - Date.now());
+    const msg = await receiveFromRx(config.rx, Math.min(RECEIVE_TIMEOUT_MS, remaining));
+    if (msg.tag === "BatchMsgEnd") {
+      // Early end — return what we have (caller may fill gaps).
+      return results;
+    }
+    // GetAllApps → AppConfig; GetAllAppParams → AppState. Accept both.
+    // Skip stray Layout / Version / GlobalConfig from other tabs.
+    if (msg.tag === "AppConfig" || msg.tag === "AppState") {
+      results.push(msg);
+      continue;
+    }
   }
-  const endMessage = await receiveFromRx(config.rx, RECEIVE_TIMEOUT_MS);
-  if (endMessage.tag !== "BatchMsgEnd") {
-    throw new Error("Expected BatchMsgEnd but received: " + endMessage.tag);
+  if (results.length < n) {
+    throw new Error(
+      `Batch incomplete: got ${results.length}/${n} items (timeout or cable noise)`,
+    );
   }
-  return results;
+  const endDeadline = Date.now() + RECEIVE_TIMEOUT_MS;
+  while (Date.now() < endDeadline) {
+    const endMessage = await receiveFromRx(
+      config.rx,
+      Math.max(200, endDeadline - Date.now()),
+    );
+    if (endMessage.tag === "BatchMsgEnd") return results;
+  }
+  throw new Error("Expected BatchMsgEnd but timed out");
 }

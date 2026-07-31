@@ -57,7 +57,7 @@ function compareChannelOrder(a, b) {
 }
 
 /** Place apps at final startChannel (holes OK). Falls back to packed order. */
-function buildSendLayout(appLayout) {
+export function buildSendLayout(appLayout) {
   const sendLayout = [Array.from({ length: 16 }, () => undefined)];
   const placed = appLayout.filter((s) => s.app);
   const useStart =
@@ -106,7 +106,7 @@ function toPlainJson(value) {
 }
 
 /** Coerce editor/JSON quirks into postcard Value shapes. */
-function normalizeValueForWire(v) {
+export function normalizeValueForWire(v) {
   if (!v || typeof v !== "object" || !("tag" in v)) return v;
   const tag = v.tag;
   // i32/f32/Enum/bool are scalars — never single-element arrays
@@ -123,7 +123,7 @@ function normalizeValueForWire(v) {
   return v;
 }
 
-function padParams(values) {
+export function padParams(values) {
   const result = Array.from({ length: 16 }, () => undefined);
   (values || []).forEach((v, i) => {
     if (i < 16) result[i] = normalizeValueForWire(v);
@@ -178,6 +178,8 @@ async function waitForSlotReady(config, layoutId, log, timeoutMs = 12000) {
   log(`  wait layoutId=${id} ready (not muted / spawned) …`);
   const deadline = Date.now() + timeoutMs;
   let lastDetail = "no reply";
+  let emptyStreak = 0;
+  let warnedScope = false;
   while (Date.now() < deadline) {
     try {
       drainConfigQueue(config.rx);
@@ -198,7 +200,18 @@ async function waitForSlotReady(config, layoutId, log, timeoutMs = 12000) {
         log(`  ✓ layoutId=${id} ready (${n} params)`);
         return config;
       }
+      emptyStreak++;
       lastDetail = "empty AppState (mute or not spawned)";
+      // Scopepunk soft-poll / GetAllAppParams often injects empty AppStates
+      // mid-spawn — back off so our next GetAppParams can land.
+      if (emptyStreak >= 6 && !warnedScope) {
+        warnedScope = true;
+        log(
+          "  ⚠ still empty — close Scopepunk / other tabs on the config MIDI cable",
+        );
+      }
+      await delay(Math.min(1200, 300 + emptyStreak * 80));
+      continue;
     } catch (e) {
       lastDetail = e.message || String(e);
       // Resync probe — if Version works, keep polling; if not, surface cable death.
@@ -206,14 +219,14 @@ async function waitForSlotReady(config, layoutId, log, timeoutMs = 12000) {
         await probeConfigCable(config);
       } catch (cableErr) {
         throw new Error(
-          `layoutId=${id} not ready; config cable quiet (${cableErr.message || cableErr})`,
+          `layoutId=${id} not ready; config cable quiet (${cableErr.message || cableErr}). Close Scopepunk / Configurator, then retry.`,
         );
       }
     }
-    await delay(200);
+    await delay(250);
   }
   throw new Error(
-    `layoutId=${id} not ready after SetLayout (${lastDetail})`,
+    `layoutId=${id} not ready after SetLayout (${lastDetail}). Close Scopepunk / other config-MIDI tabs, Release mute, retry Push.`,
   );
 }
 
@@ -341,6 +354,9 @@ async function applySetLayoutIncremental(
       growing.push(ordered[i]);
       const slot = ordered[i];
       const label = `${slot.app?.name || slot.app?.appId}(ch${Number(slot.startChannel) || 0})`;
+      // Dense tail (many live tasks): longer settle so param_handler is up
+      // before we poll — Control ×5 at the end is the usual failure window.
+      const denseTail = i >= 7;
       cfg = await applySetLayout(
         cfg,
         growing,
@@ -348,11 +364,15 @@ async function applySetLayoutIncremental(
         LAYOUT_SETTLE_INCREMENTAL_MS,
         deviceRef,
         `SetLayout (${i + 1}/${n}) ${label}`,
-        { headStartMs: 400, pollBudgetMs: 2500 },
+        {
+          headStartMs: denseTail ? 900 : 400,
+          pollBudgetMs: denseTail ? 4000 : 2500,
+        },
       );
+      if (denseTail) await delay(600);
       // Confirm this slot's param_handler is up before adding the next app.
-      cfg = await waitForSlotReady(cfg, slot.id, log, 25_000);
-      await delay(250);
+      cfg = await waitForSlotReady(cfg, slot.id, log, denseTail ? 45_000 : 35_000);
+      await delay(denseTail ? 400 : 250);
     }
 
     const ids = ordered.map((s) => Number(s.id));
@@ -563,18 +583,21 @@ async function applySetAppParams(config, paramsById, layoutIds, log) {
 
 async function getAllApps(config, log) {
   log?.("GetAllApps …");
-  const response = await sendAndReceive(config, { tag: "GetAllApps" });
-  if (response.tag !== "BatchMsgStart") {
-    throw new Error(`GetAllApps failed: ${response.tag}`);
-  }
+  const response = await sendAndReceiveExpect(
+    config,
+    { tag: "GetAllApps" },
+    "BatchMsgStart",
+    { onLog: log || (() => {}), timeoutMs: 5000, attempts: 12 },
+  );
   const apps = await receiveBatchMessages(config, response.value);
   const map = new Map();
   for (const item of apps) {
     if (item.tag !== "AppConfig") continue;
     const [appId, channels, meta] = item.value;
-    map.set(appId, {
-      appId,
-      channels,
+    const id = Number(appId);
+    map.set(id, {
+      appId: id,
+      channels: Number(channels),
       paramCount: meta[0],
       name: meta[1],
       description: meta[2],
@@ -599,14 +622,15 @@ function transformLayout(layoutMsg, allApps) {
       return;
     }
     const [appId, channels, layoutId] = slot;
-    const app = allApps.get(appId);
+    const id = Number(appId);
+    const app = allApps.get(id) ?? allApps.get(appId);
     if (!app) {
       lastUsed++;
       layout.push({ id: nextEmptyId++, app: null, startChannel: idx });
       return;
     }
     lastUsed = idx + Number(channels) - 1;
-    layout.push({ id: layoutId, app, startChannel: idx });
+    layout.push({ id: Number(layoutId), app, startChannel: idx });
   });
   return layout;
 }
@@ -615,12 +639,23 @@ function toLayoutFile(appLayout, paramsById, globalConfig, description) {
   return {
     version: 1,
     description,
-    layout: appLayout.map(({ id, app, startChannel }) => ({
-      layoutId: id,
-      appId: !app?.appId || !paramsById.has(id) ? null : app.appId,
-      startChannel,
-      params: paramsById.get(id) || null,
-    })),
+    layout: appLayout.map(({ id, app, startChannel }) => {
+      const lid = Number(id);
+      const params =
+        paramsById.get(lid) ??
+        paramsById.get(id) ??
+        paramsById.get(String(lid)) ??
+        null;
+      const hasParams = Array.isArray(params) && params.length > 0;
+      // Keep appId even when params failed — dropping it made Pull throw
+      // "Layout ohne Apps" whenever GetAllAppParams raced with Scopepunk.
+      return {
+        layoutId: lid,
+        appId: app?.appId == null ? null : Number(app.appId),
+        startChannel: Number(startChannel),
+        params: hasParams ? params : null,
+      };
+    }),
     config: globalConfig,
   };
 }
@@ -643,33 +678,89 @@ export async function pullSetupFromDevice(opts = {}) {
     const allApps = await getAllApps(config, log);
 
     log("GetLayout …");
-    const layoutResponse = await sendAndReceive(config, { tag: "GetLayout" });
-    if (layoutResponse.tag !== "Layout") {
-      throw new Error(`GetLayout failed: ${layoutResponse.tag}`);
-    }
+    drainConfigQueue(config.rx);
+    const layoutResponse = await sendAndReceiveExpect(
+      config,
+      { tag: "GetLayout" },
+      "Layout",
+      { onLog: log, timeoutMs: 4000, attempts: 12 },
+    );
     const appLayout = transformLayout(layoutResponse, allApps);
     const appSlots = appLayout.filter((s) => s.app);
     log(`  → ${appSlots.length} app slot(s)`);
 
     log("GetAllAppParams …");
-    const paramsResponse = await sendAndReceive(config, { tag: "GetAllAppParams" });
-    if (paramsResponse.tag !== "BatchMsgStart") {
-      throw new Error(`GetAllAppParams failed: ${paramsResponse.tag}`);
-    }
-    const paramMsgs = await receiveBatchMessages(config, paramsResponse.value);
     const paramsById = new Map();
-    for (const item of paramMsgs) {
-      if (item.tag !== "AppState") continue;
-      const [layoutId, values] = item.value;
-      paramsById.set(layoutId, values);
+    try {
+      const paramsResponse = await sendAndReceiveExpect(
+        config,
+        { tag: "GetAllAppParams" },
+        "BatchMsgStart",
+        { onLog: log, timeoutMs: 5000, attempts: 16 },
+      );
+      const paramMsgs = await receiveBatchMessages(config, paramsResponse.value);
+      for (const item of paramMsgs) {
+        if (item.tag !== "AppState") continue;
+        const [layoutId, values] = item.value;
+        const lid = Number(layoutId);
+        // FW returns empty AppState during spawn — don't treat that as "CH1 defaults".
+        if (Array.isArray(values) && values.length > 0) {
+          paramsById.set(lid, values);
+        }
+      }
+      log(`  → ${paramsById.size} param set(s) from batch`);
+    } catch (e) {
+      log(`  ⚠ batch failed (${e.message || e}) — per-slot GetAppParams …`);
     }
-    log(`  → ${paramsById.size} param set(s)`);
+
+    // Scopepunk-style fallback: per-slot GetAppParams when the batch was empty
+    // or incomplete (spawn window / timeout / stray Layout from other tabs).
+    const fillMissingParams = async (label) => {
+      for (const slot of appSlots) {
+        const lid = Number(slot.id);
+        if (paramsById.has(lid)) continue;
+        log(`  ↻ GetAppParams layoutId=${lid}${label} …`);
+        try {
+          const st = await sendAndReceiveExpect(
+            config,
+            { tag: "GetAppParams", value: { layout_id: lid } },
+            "AppState",
+            { matchLayoutId: lid, onLog: log, timeoutMs: 5000, attempts: 10 },
+          );
+          const [id, values] = st.value;
+          if (Number(id) === lid && Array.isArray(values) && values.length > 0) {
+            paramsById.set(lid, values);
+          }
+        } catch (e) {
+          log(`  ⚠ layoutId=${lid}: ${e.message || e}`);
+        }
+      }
+    };
+
+    await fillMissingParams(paramsById.size ? " (batch miss)" : "");
+    if (paramsById.size < appSlots.length) {
+      log("  ↻ retry missing params once …");
+      await delay(400);
+      drainConfigQueue(config.rx);
+      await fillMissingParams(" (retry)");
+    }
+    log(`  → ${paramsById.size}/${appSlots.length} param set(s) total`);
+    if (appSlots.length === 0) {
+      throw new Error("Device layout is empty — nothing to pull");
+    }
+    if (paramsById.size === 0) {
+      log(
+        "  ⚠ no params read (cable busy?) — keeping app map; channels may default until re-pull",
+      );
+    }
 
     log("GetGlobalConfig …");
-    const gcResponse = await sendAndReceive(config, { tag: "GetGlobalConfig" });
-    if (gcResponse.tag !== "GlobalConfig") {
-      throw new Error(`GetGlobalConfig failed: ${gcResponse.tag}`);
-    }
+    const gcResponse = await sendAndReceiveExpect(
+      config,
+      { tag: "GetGlobalConfig" },
+      "GlobalConfig",
+      { onLog: log, timeoutMs: 4000, attempts: 12 },
+    );
 
     const setup = toPlainJson(
       toLayoutFile(
@@ -785,8 +876,37 @@ export async function pushLiveStructureToDevice(setup, opts = {}) {
 }
 
 /**
+ * Pure check: does the device Layout message place `layoutId` with `expectAppId`?
+ * `layoutValue` is the Layout msg value: [ InnerLayout ] where InnerLayout is a
+ * 16-slot array of undefined | [appId, channels, layoutId].
+ * Returns { ok, reason, found } — `found` is { appId, channels, ch } when the
+ * layoutId exists anywhere on the device.
+ */
+export function verifyLayoutSlot(layoutValue, layoutId, expectAppId) {
+  const inner = Array.isArray(layoutValue?.[0]) ? layoutValue[0] : [];
+  const id = Number(layoutId);
+  for (let ch = 0; ch < inner.length; ch++) {
+    const s = inner[ch];
+    if (!s) continue;
+    const [appId, channels, lid] = s;
+    if (Number(lid) !== id) continue;
+    if (expectAppId != null && Number(appId) !== Number(expectAppId)) {
+      return {
+        ok: false,
+        reason: `layoutId=${id} is app ${appId} on device, editor expects ${expectAppId}`,
+        found: { appId: Number(appId), channels: Number(channels), ch },
+      };
+    }
+    return { ok: true, reason: null, found: { appId: Number(appId), channels: Number(channels), ch } };
+  }
+  return { ok: false, reason: `layoutId=${id} not in device layout`, found: null };
+}
+
+/**
  * Push params for a single layout_id only (no SetLayout).
  * Use after the device layout already matches the editor (one full Push first).
+ * Pass `opts.expectAppId` to verify the device slot before writing — params
+ * sent to a stale layoutId land in the wrong app (cross-app corruption).
  */
 export async function pushAppParamsToDevice(layoutId, values, opts = {}) {
   const log = opts.onLog || (() => {});
@@ -800,6 +920,20 @@ export async function pushAppParamsToDevice(layoutId, values, opts = {}) {
     device = await connectDevice();
     const { config } = device;
     drainConfigQueue(config.rx);
+    if (opts.expectAppId != null) {
+      const layoutMsg = await sendAndReceiveExpect(
+        config,
+        { tag: "GetLayout" },
+        "Layout",
+        { onLog: log, timeoutMs: 4000, attempts: 6 },
+      );
+      const check = verifyLayoutSlot(layoutMsg.value, id, opts.expectAppId);
+      if (!check.ok) {
+        throw new Error(
+          `Device layout out of sync (${check.reason}) — run a full Push before live edits.`,
+        );
+      }
+    }
     log(`Live SetAppParams(layoutId=${id}) …`);
     let lastErr = null;
     for (let attempt = 0; attempt < SET_PARAMS_RETRIES; attempt++) {
