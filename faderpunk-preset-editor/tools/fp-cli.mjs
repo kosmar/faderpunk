@@ -208,6 +208,126 @@ const BREAK_SCIENCE = [
 
 // ---- scenarios ---------------------------------------------------------------
 const scenarios = {
+  // Dump the device GlobalConfig as JSON
+  async gconf() {
+    log("fw", await getVersion());
+    const gc = await request({ tag: "GetGlobalConfig" }, "GlobalConfig", 4000);
+    console.log(JSON.stringify(gc.value, null, 2));
+  },
+
+  // Point the device clock at MIDI USB (Scopepunk host clock)
+  async usbclock() {
+    log("fw", await getVersion());
+    const gc = await request({ tag: "GetGlobalConfig" }, "GlobalConfig", 4000);
+    if (gc.value.clock.clock_src.tag === "MidiUsb") {
+      log("clock_src already MidiUsb");
+      return;
+    }
+    gc.value.clock.clock_src = { tag: "MidiUsb" };
+    send({ tag: "SetGlobalConfig", value: gc.value });
+    await sleep(300);
+    const chk = await request({ tag: "GetGlobalConfig" }, "GlobalConfig", 4000);
+    log(`clock_src now ${chk.value.clock.clock_src.tag}`);
+  },
+
+  // Dump GetAllAppParams MidiChannel shapes (pull path)
+  async pullchs() {
+    log("fw", await getVersion());
+    drainRx();
+    send({ tag: "GetAllAppParams" });
+    const start = await recv("BatchMsgStart", 5000);
+    const n = Number(start.value);
+    log(`batch ${n}`);
+    const states = [];
+    const deadline = Date.now() + Math.max(8000, n * 500);
+    while (states.length < n && Date.now() < deadline) {
+      while (rxQueue.length) {
+        const m = rxQueue.shift();
+        if (m.tag === "AppState") states.push(m);
+        if (m.tag === "BatchMsgEnd") break;
+      }
+      await sleep(20);
+    }
+    for (const st of states) {
+      const id = st.value[0];
+      const vals = Array.isArray(st.value[1]) ? st.value[1] : [];
+      const chs = vals
+        .filter((v) => v?.tag === "MidiChannel")
+        .map((v) => {
+          const raw = v.value;
+          return {
+            json: JSON.stringify(raw),
+            type: typeof raw,
+            arr: Array.isArray(raw),
+            via0: raw?.[0],
+            asNum: Number(Array.isArray(raw) ? raw[0] : raw),
+          };
+        });
+      log(`id=${id} params=${vals.length} MidiChannels=${chs.length}`, JSON.stringify(chs));
+    }
+  },
+
+  // After a clear, any AppState with values = zombie param_handler
+  async zombie() {
+    log("fw", await getVersion());
+    await setLayout([], "clear");
+    await sleep(2500);
+    for (const id of [0, 1, 2, 3]) {
+      try {
+        drainRx();
+        send({ tag: "GetAppParams", value: { layout_id: id } });
+        const st = await recv("AppState", 6000);
+        const n = Array.isArray(st.value[1]) ? st.value[1].length : 0;
+        log(`GetAppParams(${id}) → id=${st.value[0]} n=${n}${n > 0 ? "  ← ZOMBIE!" : ""}`);
+      } catch (e) {
+        log(`GetAppParams(${id}) → ${e.message || e}`);
+      }
+      await sleep(150);
+    }
+  },
+
+  // Dump layout + per-slot param values from the device
+  async check() {
+    log("fw", await getVersion());
+    const lay = await request({ tag: "GetLayout" }, "Layout", 4000);
+    const slots = lay.value[0] || [];
+    for (let ch = 0; ch < slots.length; ch++) {
+      const s = slots[ch];
+      if (!s) continue;
+      const [appId, channels, id] = s;
+      try {
+        drainRx();
+        send({ tag: "GetAppParams", value: { layout_id: Number(id) } });
+        // Apps also push AppState unsolicited (live sync) — match our id.
+        let st;
+        const until = Date.now() + 5000;
+        while (Date.now() < until) {
+          const msg = await recv("AppState", until - Date.now());
+          if (Number(msg.value[0]) === Number(id)) {
+            st = msg;
+            break;
+          }
+        }
+        if (!st) throw new Error("timeout waiting AppState");
+        const vals = Array.isArray(st.value[1]) ? st.value[1] : [];
+        log(
+          `ch${ch} app=${appId} layoutId=${id} params=${vals.length}: ` +
+            vals.map((v) => JSON.stringify(v)).join(" "),
+        );
+      } catch (e) {
+        log(`ch${ch} app=${appId} layoutId=${id} ✗ ${e.message || e}`);
+      }
+      await sleep(120);
+    }
+  },
+
+  // Unstick a device left in HoldPerfMute (parked apps, stale green LEDs)
+  async release() {
+    log("fw", await getVersion());
+    await release();
+    log("ReleasePerfMute sent — apps should resume");
+  },
+
   async version() {
     log("fw", await getVersion());
   },

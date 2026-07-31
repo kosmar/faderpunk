@@ -10,7 +10,6 @@
     en: {
       "doc.title": "Presetpunk",
       "app.h1": "Presetpunk",
-      "app.compat": "Works with beta configurator",
       "lang.label": "Language",
 
       "push.fabTitle": "Push the active preset to the Faderpunk",
@@ -349,7 +348,6 @@
     de: {
       "doc.title": "Presetpunk",
       "app.h1": "Presetpunk",
-      "app.compat": "Funktioniert mit dem Beta-Configurator",
       "lang.label": "Sprache",
 
       "push.fabTitle": "Aktives Preset zum Faderpunk: Push",
@@ -705,7 +703,6 @@
     fr: {
       "doc.title": "Presetpunk",
       "app.h1": "Presetpunk",
-      "app.compat": "Fonctionne avec le configurateur bêta",
       "lang.label": "Langue",
 
       "push.fabTitle": "Push le preset actif vers le Faderpunk",
