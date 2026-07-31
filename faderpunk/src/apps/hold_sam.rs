@@ -24,6 +24,9 @@ use crate::app::{
 pub const CHANNELS: usize = 1;
 pub const PARAMS: usize = 11;
 
+/// Mid→Low button duck duration for CC samples (Note uses gate hold).
+const BUTTON_DUCK_MS: u16 = 25;
+
 pub static CONFIG: Config<PARAMS> = Config::new(
     "Hold Sam",
     "Clocked sample & hold to MIDI note/CC",
@@ -268,6 +271,8 @@ pub async fn run(
     let last_tick_at = app.make_global(Instant::now());
     // Measured ms between PPQN ticks (for Stop fallback).
     let tick_period_ms = app.make_global(21u64);
+    // Mid→Low button duck (CC samples / brief hit); Note stays Low while gated.
+    let button_duck = app.make_global(0u16);
 
     let (res, muted) = storage.query(|s| (s.res_saved, s.muted));
     div_glob.set(resolution[(res as usize / 345).min(resolution.len() - 1)]);
@@ -362,6 +367,7 @@ pub async fn run(
                                     let amount = storage.query(|s| s.gate_saved);
                                     let cc_val = attenuate(sample, amount);
                                     midi.send_cc(midi_cc, cc_val).await;
+                                    button_duck.set(BUTTON_DUCK_MS);
                                     leds.set(
                                         0,
                                         Led::Top,
@@ -491,6 +497,7 @@ pub async fn run(
                             let amount = storage.query(|s| s.gate_saved);
                             let cc_val = attenuate(sample, amount);
                             midi.send_cc(midi_cc, cc_val).await;
+                            button_duck.set(BUTTON_DUCK_MS);
                             leds.set(
                                 0,
                                 Led::Top,
@@ -546,6 +553,22 @@ pub async fn run(
                 LatchLayer::Third => Color::Orange,
             };
             leds.set(0, Led::Bottom, color, Brightness::Custom(ledj[1]));
+
+            // Mid→Low duck: Low while note held, or brief duck on CC sample.
+            let duck = button_duck.get();
+            if duck > 0 {
+                button_duck.set(duck.saturating_sub(1));
+            }
+            if glob_muted.get() {
+                leds.unset(0, Led::Button);
+            } else {
+                let bright = if note_on.get() || duck > 0 {
+                    Brightness::Low
+                } else {
+                    Brightness::Mid
+                };
+                leds.set(0, Led::Button, led_color, bright);
+            }
         }
     };
 

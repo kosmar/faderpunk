@@ -605,13 +605,19 @@ pub async fn run(
                        now_ms: u64,
                        now_tick: u32|
          -> bool {
-            // Feedback gens yield to NoteOff / fresh input when the queue is tight.
-            if generation > 0 && queue.len() + QUEUE_FEEDBACK_RESERVE >= QUEUE_CAP {
+            // Feedback NoteOns/GateHighs yield when the queue is tight so NoteOffs
+            // and fresh input still land. Never apply this reserve to Offs/Lows —
+            // refusing those leaves sounding notes beeping until panic.
+            let is_release = matches!(kind, EventKind::NoteOff | EventKind::GateLow);
+            if generation > 0
+                && !is_release
+                && queue.len() + QUEUE_FEEDBACK_RESERVE >= QUEUE_CAP
+            {
                 return false;
             }
             // Prefer landing NoteOffs: drop oldest feedback NoteOn if full, else any NoteOn.
             if queue.is_full() {
-                if matches!(kind, EventKind::NoteOff | EventKind::GateLow) {
+                if is_release {
                     if let Some(pos) = queue
                         .iter()
                         .position(|e| e.generation > 0 && matches!(e.kind, EventKind::NoteOn | EventKind::GateHigh))
@@ -669,8 +675,9 @@ pub async fn run(
             let feedback = feedback_glob.get();
             let pulse = pulse_from_feedback(feedback);
 
-            // Idle delay metronome: one blink per delay period, no input required.
-            // Floor period so near-zero delay still reads as a pulse (~25 Hz max).
+            // Idle delay metronome: tempo cue on the button only. Do NOT set
+            // activity_glob — that drives Top/Bottom "output" LEDs and made
+            // the app look alive when no MIDI/CV was actually leaving.
             const MIN_METRO_MS: u64 = 40;
             // Retarget immediately when Main fader changes delay.
             if delay_ms != last_metro_delay_ms || delay_ticks != last_metro_delay_ticks {
@@ -682,12 +689,10 @@ pub async fn run(
             if !glob_muted.get() {
                 if clocked {
                     if now_tick.wrapping_sub(next_metro_tick) < (u32::MAX / 2) {
-                        activity_glob.set(pulse);
                         button_duck_glob.set(BUTTON_DUCK_MS);
                         next_metro_tick = now_tick.wrapping_add(delay_ticks);
                     }
                 } else if now_ms >= next_metro_ms {
-                    activity_glob.set(pulse);
                     button_duck_glob.set(BUTTON_DUCK_MS);
                     next_metro_ms = now_ms.saturating_add(delay_ms.max(MIN_METRO_MS));
                 }
@@ -1113,11 +1118,14 @@ pub async fn run(
                             let earlier = match queue[i].due_ms.cmp(&queue[j].due_ms) {
                                 core::cmp::Ordering::Less => true,
                                 core::cmp::Ordering::Greater => false,
+                                // Same due: release before attack so a gate≈delay
+                                // Off for gen N cannot kill gen N+1 after it starts,
+                                // and zero-length ties still end cleanly.
                                 core::cmp::Ordering::Equal => {
                                     matches!(
                                         (queue[i].kind, queue[j].kind),
-                                        (EventKind::NoteOn, EventKind::NoteOff)
-                                            | (EventKind::GateHigh, EventKind::GateLow)
+                                        (EventKind::NoteOff, EventKind::NoteOn)
+                                            | (EventKind::GateLow, EventKind::GateHigh)
                                     )
                                 }
                             };

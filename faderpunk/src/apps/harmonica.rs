@@ -24,6 +24,8 @@ pub const CHANNELS: usize = 1;
 pub const PARAMS: usize = 9;
 
 const LED_BRIGHTNESS: Brightness = Brightness::Mid;
+/// Mid→Low button duck on each harmony trigger — same length as Heat Pump / Grooves.
+const BUTTON_DUCK_MS: u16 = 25;
 const NUM_CHORD_TYPES: usize = 7;
 const MAX_VOICES: usize = 4;
 const SPREAD_STEPS: usize = 4;
@@ -36,15 +38,23 @@ const IO_CV_MIDI: usize = 2;
 const CV_STABLE_MS: u16 = 12;
 /// Sliding window for peak-to-peak "slew / unplug" detection.
 const CV_HIST: usize = 32;
-/// Peak-to-peak above this → transitioning / floating HF noise (not a held pitch).
-const CV_NOISE_PP: u16 = 96;
+/// Peak-to-peak → mark motion (patch / Note Fader step) while Idle/Armed.
+const CV_MOTION_PP: u16 = 96;
+/// Peak-to-peak to leave Playing — higher so held pitch CV doesn't chatter off.
+const CV_RETRIG_PP: u16 = 320;
+/// Ms of high retrig noise before we drop the chord (unplug).
+const CV_UNPLUG_MS: u16 = 200;
+/// Floor so Third-fader-at-bottom can't emit MIDI note-on vel 0 (= note-off).
+const VEL_FLOOR: u16 = 512;
 
-/// CV→MIDI voice state: park the first stable float, only play after a pitch change
-/// (or after a noisy slew settles while already live).
+/// CV→MIDI voice state.
+/// Quiet boot/float → Armed (silent). After ADC motion (patch / Note Fader
+/// trigger / slew) the next stable pitch plays — so a single stepped CV
+/// update is enough; we do not require a second pitch change.
 #[derive(Clone, Copy, PartialEq)]
 enum CvVoice {
     Idle,
-    /// Stable pitch seen, silent — kills unpatched mid-rail drones.
+    /// Stable pitch with no prior motion — kills unpatched mid-rail drones.
     Armed { note: u8 },
     /// Sounding; brief noise keeps us live so stepped CV still retriggers.
     Playing { note: u8 },
@@ -245,6 +255,8 @@ async fn revoice(
     root_vel: u16,
     harm_vel: u16,
 ) {
+    let root_vel = root_vel.max(VEL_FLOOR);
+    let harm_vel = harm_vel.max(VEL_FLOOR);
     for &n in old.iter() {
         if !new.contains(&n) {
             midi.send_note_off(MidiNote::from(n)).await;
@@ -360,6 +372,7 @@ pub async fn run(
     let revoice_flag = app.make_global(true);
     let root_glob = app.make_global(None::<u8>);
     let root_vel_glob = app.make_global(4095u16);
+    let button_duck = app.make_global(0u16);
 
     if muted {
         leds.unset(0, Led::Button);
@@ -377,6 +390,8 @@ pub async fn run(
         let mut cv_hist_i = 0usize;
         let mut cv_hist_fill = 0usize;
         let mut cv_slew_ms = 0u16;
+        // True after ADC motion — next stable lock may sound (vs quiet float park).
+        let mut cv_saw_motion = false;
 
         loop {
             let midi_msg = if io_mode == IO_CV_MIDI {
@@ -438,6 +453,7 @@ pub async fn run(
                 cv_hist_fill = 0;
                 cv_hist_i = 0;
                 cv_slew_ms = 0;
+                cv_saw_motion = false;
                 if let Some(ref jack) = out_jack {
                     jack.set_value(0);
                 }
@@ -452,6 +468,7 @@ pub async fn run(
                         root_glob.set(Some(key_n));
                         root_vel_glob.set(vel12);
                         revoice_flag.set(true);
+                        button_duck.set(BUTTON_DUCK_MS);
                     }
                     MidiMessage::NoteOn { key, vel } if vel == 0 => {
                         let key_n = key.as_int();
@@ -477,7 +494,7 @@ pub async fn run(
                 }
             }
 
-            // ── CV→MIDI: park float, play on pitch change / post-slew ─────
+            // ── CV→MIDI: park quiet float; play after motion then lock ────
             if let Some(ref jack) = in_jack {
                 let raw = jack.get_value();
                 cv_hist[cv_hist_i] = raw;
@@ -486,14 +503,19 @@ pub async fn run(
                     cv_hist_fill += 1;
                 }
 
-                let noisy = if cv_hist_fill >= CV_HIST {
+                let pp = if cv_hist_fill >= CV_HIST {
                     let (mn, mx) = cv_hist.iter().fold((u16::MAX, 0u16), |(a, b), &v| {
                         (a.min(v), b.max(v))
                     });
-                    mx.saturating_sub(mn) > CV_NOISE_PP
+                    mx.saturating_sub(mn)
                 } else {
-                    false
+                    0
                 };
+                let motion = pp > CV_MOTION_PP;
+                let retrig = pp > CV_RETRIG_PP;
+                if motion {
+                    cv_saw_motion = true;
+                }
 
                 let pitched = quantizer.get_quantized_note(raw).await;
                 let note = midi_u8(pitched.as_midi());
@@ -510,24 +532,31 @@ pub async fn run(
                 match cv_voice {
                     CvVoice::Idle => {
                         cv_slew_ms = 0;
-                        if !noisy && locked {
-                            // Park — do not sound (unpatched mid-rail stays here).
-                            cv_voice = CvVoice::Armed { note };
+                        if !motion && locked {
+                            if cv_saw_motion {
+                                // Patch / stepped CV / post-slew settle → sound.
+                                cv_voice = CvVoice::Playing { note };
+                                start_note = Some(note);
+                                cv_saw_motion = false;
+                            } else {
+                                // Quiet from boot — park unpatched mid-rail.
+                                cv_voice = CvVoice::Armed { note };
+                            }
                         }
                     }
                     CvVoice::Armed { note: armed } => {
                         cv_slew_ms = 0;
-                        if noisy {
+                        if motion {
                             cv_voice = CvVoice::Idle;
                         } else if locked && note != armed {
-                            // Real pitch change after park → start sounding.
                             cv_voice = CvVoice::Playing { note };
                             start_note = Some(note);
                         }
                     }
                     CvVoice::Playing { note: playing } => {
                         cv_slew_ms = 0;
-                        if noisy {
+                        if retrig {
+                            // Real slew / unplug — ignore small ADC chatter on held CV.
                             cv_voice = CvVoice::Slewing;
                             cv_slew_ms = 1;
                         } else if locked && note != playing {
@@ -536,22 +565,24 @@ pub async fn run(
                         }
                     }
                     CvVoice::Slewing => {
-                        if !noisy && locked {
+                        if !retrig && locked {
                             cv_voice = CvVoice::Playing { note };
                             cv_slew_ms = 0;
                             start_note = Some(note);
+                            cv_saw_motion = false;
                         } else {
                             cv_slew_ms = cv_slew_ms.saturating_add(1);
-                            // Unplug / float: don't hold the last chord forever.
-                            if cv_slew_ms > 80 {
+                            if cv_slew_ms > CV_UNPLUG_MS {
                                 cv_voice = CvVoice::Idle;
                                 cv_slew_ms = 0;
+                                cv_saw_motion = false;
                             }
                         }
                     }
                 }
 
-                let keep_ringout = matches!(cv_voice, CvVoice::Slewing) && cv_slew_ms <= 80;
+                let keep_ringout =
+                    matches!(cv_voice, CvVoice::Slewing) && cv_slew_ms <= CV_UNPLUG_MS;
                 if !keep_ringout
                     && !matches!(cv_voice, CvVoice::Playing { .. })
                     && start_note.is_none()
@@ -564,6 +595,7 @@ pub async fn run(
                     root_glob.set(Some(n));
                     root_vel_glob.set(4095);
                     revoice_flag.set(true);
+                    button_duck.set(BUTTON_DUCK_MS);
                 }
             }
 
@@ -587,17 +619,17 @@ pub async fn run(
                     )
                     .await;
 
-                    if io_mode != IO_MIDI_CV {
-                        revoice(
-                            &midi,
-                            &sounding,
-                            &new_voices,
-                            Some(root),
-                            root_vel_glob.get(),
-                            vel_glob.get(),
-                        )
-                        .await;
-                    }
+                    // Always MIDI-out (incl. MIDI→CV) so Scopepunk can monitor;
+                    // jack still follows sounding below when Out mode is CV.
+                    revoice(
+                        &midi,
+                        &sounding,
+                        &new_voices,
+                        Some(root),
+                        root_vel_glob.get(),
+                        vel_glob.get(),
+                    )
+                    .await;
                     sounding = new_voices;
                 } else if !sounding.is_empty() {
                     all_notes_off(&midi, &mut sounding).await;
@@ -644,6 +676,22 @@ pub async fn run(
                 if latch_layer == LatchLayer::Main {
                     leds.set(0, Led::Top, led_color, Brightness::Custom(led[0].saturating_mul(2)));
                 }
+            }
+
+            // Mid→Low duck on harmony triggers (yields to mute).
+            let duck = button_duck.get();
+            if duck > 0 {
+                button_duck.set(duck.saturating_sub(1));
+            }
+            if muted_glob.get() {
+                leds.unset(0, Led::Button);
+            } else {
+                let bright = if duck > 0 {
+                    Brightness::Low
+                } else {
+                    LED_BRIGHTNESS
+                };
+                leds.set(0, Led::Button, led_color, bright);
             }
         }
     };
