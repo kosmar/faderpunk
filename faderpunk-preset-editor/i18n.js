@@ -246,7 +246,7 @@
       "push.liveToggle": "Live sync",
       "push.liveTitle":
         "Live sync: param edits → SetAppParams (even if layout is dirty). App swap / add / reorder → SetLayout. Full Push still best after big layout changes.",
-      "push.liveOkSlot": "✓ live · layoutId {id}",
+      "push.liveOkSlot": "✓ live · {slot} · {app}",
       "push.liveErr": "Live push failed: {msg}",
       "push.liveNeedFull":
         "Live: layout out of sync — param edits still push; app/row changes need Push or live structure",
@@ -669,7 +669,7 @@
       "push.liveToggle": "Live Sync",
       "push.liveTitle":
         "Live Sync: Param-Edits → SetAppParams (auch wenn Layout dirty). App tauschen / adden / umsortieren → SetLayout. Nach großen Layout-Änderungen weiter Push empfohlen.",
-      "push.liveOkSlot": "✓ live · layoutId {id}",
+      "push.liveOkSlot": "✓ live · {slot} · {app}",
       "push.liveErr": "Live-Push fehlgeschlagen: {msg}",
       "push.liveNeedFull":
         "Live: Layout nicht synchron — Param-Edits gehen trotzdem; App/Reihenfolge braucht Push",
@@ -1024,7 +1024,7 @@
       "push.liveToggle": "Sync live",
       "push.liveTitle":
         "Sync live : params → SetAppParams (même si layout dirty). Changer d’app / ordre → SetLayout. Push complet encore utile après gros changements.",
-      "push.liveOkSlot": "✓ live · layoutId {id}",
+      "push.liveOkSlot": "✓ live · {slot} · {app}",
       "push.liveErr": "Échec push live : {msg}",
       "push.liveNeedFull":
         "Live : layout désync — les params partent quand même ; apps/ordre → Push",
