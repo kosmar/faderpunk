@@ -105,18 +105,33 @@ def file_consts(src: str) -> dict[str, object]:
     """Resolve simple `const NAME: … = …` used inside CONFIG (usize / &[&str])."""
     out: dict[str, object] = {}
     for m in re.finditer(
-        r"const\s+(\w+)\s*:\s*usize\s*=\s*(\d+)\s*;", src
+        r"(?:pub\s+)?const\s+(\w+)\s*:\s*usize\s*=\s*(\d+)\s*;", src
     ):
         out[m.group(1)] = int(m.group(2))
     for m in re.finditer(
-        r"const\s+(\w+)\s*:\s*&\[&str\]\s*=\s*&\[(.*?)\];", src, re.S
+        r"(?:pub\s+)?const\s+(\w+)\s*:\s*&\[&str\]\s*=\s*&\[(.*?)\];", src, re.S
     ):
         out[m.group(1)] = re.findall(r'"([^"]*)"', m.group(2))
     return out
 
 
+def load_shared_consts(apps_dir: pathlib.Path) -> dict[str, object]:
+    """Pull shared string tables (e.g. GENRE_NAMES) from sibling modules."""
+    out: dict[str, object] = {}
+    for name in ("genre_palette.rs", "groove.rs"):
+        path = apps_dir / name
+        if path.is_file():
+            out.update(file_consts(path.read_text()))
+    return out
+
+
+def strip_rs_line_comments(s: str) -> str:
+    return re.sub(r"//[^\n]*", "", s)
+
+
 def parse_param(inner: str, consts: dict[str, object] | None = None) -> dict:
     consts = consts or {}
+    inner = strip_rs_line_comments(inner)
     # Param::MidiIn / MidiOut / …
     um = re.match(r"Param::(MidiIn|MidiOut|MidiNrpn|MidiMode|VoltPerOct)\s*$", inner)
     if um:
@@ -171,7 +186,7 @@ def parse_param(inner: str, consts: dict[str, object] | None = None) -> dict:
             )
             variants = re.findall(r'"([^"]*)"', um2.group(1)) if um2 else []
         else:
-            name = variants_expr.strip()
+            name = variants_expr.strip().rstrip(',')
             variants = consts.get(name) if isinstance(consts.get(name), list) else None
             if variants is None:
                 return {"tag": "None", "raw": inner[:120]}
@@ -245,11 +260,22 @@ def to_wire(p: dict) -> dict:
 
 
 def main() -> int:
-    regs = re.findall(r"(\d+)\s*=>\s*(\w+)", MOD_RS.read_text())
+    apps_dir = APPS_DIR
+    mod_rs = MOD_RS
+    if len(sys.argv) > 1:
+        apps_dir = pathlib.Path(sys.argv[1]).expanduser().resolve()
+        mod_rs = apps_dir / "mod.rs"
+        if not mod_rs.is_file():
+            print(f"missing mod.rs under {apps_dir}", file=sys.stderr)
+            return 1
+        print(f"source apps: {apps_dir}")
+
+    regs = re.findall(r"(\d+)\s*=>\s*(\w+)", mod_rs.read_text())
+    shared = load_shared_consts(apps_dir)
     apps = []
     errors = []
     for app_id, mod_name in regs:
-        path = APPS_DIR / f"{mod_name}.rs"
+        path = apps_dir / f"{mod_name}.rs"
         if not path.exists():
             errors.append(f"missing {mod_name}.rs")
             continue
@@ -262,7 +288,7 @@ def main() -> int:
         if not header:
             errors.append(f"no Config::new header: {mod_name}")
             continue
-        consts = file_consts(src)
+        consts = {**shared, **file_consts(src)}
         raw_params = parse_add_params(body, consts)
         if any(p["tag"] == "None" for p in raw_params):
             errors.append(
@@ -283,7 +309,7 @@ def main() -> int:
 
     payload = {
         "version": 1,
-        "source": "faderpunk/src/apps/*.rs CONFIG (tools/gen-apps-catalog.py)",
+        "source": f"{apps_dir} CONFIG (tools/gen-apps-catalog.py)",
         "apps": apps,
     }
     text = json.dumps(payload, indent=2) + "\n"
@@ -295,9 +321,18 @@ def main() -> int:
         except OSError as e:
             print(f"skip {out}: {e}", file=sys.stderr)
 
-    # Sanity: echolot = 15, control = 13
+    # Sanity vs current playground CONFIG param counts
     by_slug = {a["slug"]: a for a in apps}
-    expect = {"echolot": 15, "control": 13, "super_lfo": 12, "grooves": 15, "house_pump": 9, "fibonacci_gate": 11, "arp_de_levy": 10, "vamp": 13}
+    expect = {
+        "echolot": 15,
+        "control": 13,
+        "super_lfo": 13,
+        "grooves": 14,
+        "house_pump": 9,
+        "fibonacci_gate": 12,
+        "arp_de_levy": 11,
+        "vamp": 16,
+    }
     for slug, n in expect.items():
         got = len(by_slug.get(slug, {}).get("params", []))
         if got != n:
