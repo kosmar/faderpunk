@@ -398,7 +398,10 @@ impl MidiOutput {
     }
 
     async fn send_midi_msg(&self, msg: MidiMessage) {
-        if crate::tasks::midi::perf_local_muted_public() {
+        // NoteOff always passes the soft-mute — dropping it hangs a note.
+        if crate::tasks::midi::perf_local_muted_public()
+            && !matches!(msg, MidiMessage::NoteOff { .. })
+        {
             return;
         }
         let event = LiveEvent::Midi {
@@ -806,21 +809,20 @@ impl<const N: usize> App<N> {
         Timer::after_millis(millis).await
     }
 
-    /// Stall until post-layout / HoldPerfMute Local quiet ends.
-    /// During host Full Push, sleep long — many apps × short polls starved
-    /// Core0/USB while the next app was spawning.
+    /// Park only during a host HoldPerfMute (editor Full Push) — many apps ×
+    /// heavy init starved Core0/USB while the next app was spawning.
+    ///
+    /// Do NOT park on the post-layout soft mute: that one also arms on every
+    /// FRAM boot, and standalone (no host to release) the apps would sit on
+    /// the green spawn LEDs for its whole duration. Local MIDI is dropped in
+    /// the midi tasks while soft-muted, so running early is safe.
     pub async fn wait_while_perf_muted(&self) {
-        let slice_ms = if crate::tasks::midi::host_holds_perf_mute() {
-            200
-        } else {
-            50
-        };
         loop {
-            while crate::tasks::midi::perf_local_muted_public() {
-                self.delay_millis(slice_ms).await;
+            while crate::tasks::midi::host_holds_perf_mute() {
+                self.delay_millis(200).await;
             }
             self.delay_millis(30).await;
-            if !crate::tasks::midi::perf_local_muted_public() {
+            if !crate::tasks::midi::host_holds_perf_mute() {
                 break;
             }
         }

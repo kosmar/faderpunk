@@ -27,6 +27,8 @@ pub const CHANNELS: usize = 1;
 pub const PARAMS: usize = 16;
 
 const LED_BRIGHTNESS: Brightness = Brightness::Mid;
+/// Mid→Low button duck on each chord — same length as Heat Pump metronome duck.
+const BUTTON_DUCK_MS: u16 = 25;
 const VAMP_CAP: usize = 32;
 const RING_CAP: usize = 64;
 const SOUNDING_CAP: usize = 8;
@@ -1056,11 +1058,14 @@ pub async fn run(
     let glob_perform_count = app.make_global(PERFORM_CAP as u8);
     let glob_perform_idx = app.make_global(0u8);
     let glob_activity = app.make_global(0u8);
+    let glob_button_duck = app.make_global(0u16);
     let glob_capture_flash = app.make_global(0u8);
     let long_press_fired = app.make_global(false);
     let panic_flag = app.make_global(false);
     let glob_cv_val = app.make_global(2047u16);
     let chord_held = app.make_global(false);
+    // True while MIDI chord is sounding — CV Out follows this gate.
+    let cv_gate = app.make_global(false);
     let ring_write = app.make_global(0u8);
     let ring_len = app.make_global(0u8);
     let ring_open = app.make_global(255u8); // 255 = no open note-on
@@ -1492,6 +1497,7 @@ pub async fn run(
                 midi.send_note_off(MidiNote::from(*n)).await;
             }
             sounding.clear();
+            cv_gate.set(false);
         };
 
         let play_degree =
@@ -1512,6 +1518,8 @@ pub async fn run(
                 glob_degree.set(degree);
                 glob_octave.set(octave);
                 glob_activity.set(255);
+                glob_button_duck.set(BUTTON_DUCK_MS);
+                cv_gate.set(true);
             };
 
         loop {
@@ -1612,6 +1620,7 @@ pub async fn run(
 
     let button_handler = async {
         // Commit the always-record ring into a timed clip and jump to Auto+Play.
+        // Empty ring still switches to Auto (genre phrase) — Capture is optional.
         let commit_capture = || -> bool {
             close_ring(ticks() as u32);
             chord_held.set(false);
@@ -1631,8 +1640,18 @@ pub async fn run(
             );
 
             if n == 0 {
-                // Bright enough to notice: empty ring / clock not advancing.
-                glob_capture_flash.set(200);
+                // Empty ring: still enter Auto on the current genre phrase — Capture
+                // is optional. (Previously this only flashed and stayed in Perform.)
+                let g = glob_last_genre.get().min(NUM_GENRES - 1);
+                glob_genre.set(g);
+                glob_genre_fader.set(genre_fader_center(g, NUM_GENRES));
+                glob_mode_auto.set(true);
+                glob_auto_running.set(true);
+                glob_capture_flash.set(96);
+                storage.modify_and_save(|s| {
+                    s.mode_auto = true;
+                    s.auto_running = true;
+                });
                 return false;
             }
 
@@ -1686,7 +1705,7 @@ pub async fn run(
                         s.auto_running = glob_auto_running.get();
                     });
                 } else {
-                    // Perform + Shift+Tap → capture last N bars.
+                    // Perform + Shift+Tap → Auto (capture if ring has chords).
                     let _ = commit_capture();
                 }
                 continue;
@@ -1930,18 +1949,24 @@ pub async fn run(
         loop {
             app.delay_millis(1).await;
 
-            // CV Out: root of the current chord degree (always tracks selection).
+            // CV Out: root pitch only while a chord is sounding (button hold /
+            // Auto hit) — matches MIDI gate; idle → 0V.
             if let Some(ref jack) = out_jack {
-                let degree = glob_degree.get();
-                let octave = glob_octave.get();
-                let key = scale_index_to_key(glob_scale.get());
-                let notes = build_chord(root_midi, key, degree, voicing, octave);
-                if let Some(&n) = notes.first() {
-                    let counts = note_to_pitch(n).as_counts(range, vpo);
-                    if counts != last_pitch_counts {
-                        jack.set_value(counts);
-                        last_pitch_counts = counts;
+                if cv_gate.get() {
+                    let degree = glob_degree.get();
+                    let octave = glob_octave.get();
+                    let key = scale_index_to_key(glob_scale.get());
+                    let notes = build_chord(root_midi, key, degree, voicing, octave);
+                    if let Some(&n) = notes.first() {
+                        let counts = note_to_pitch(n).as_counts(range, vpo);
+                        if counts != last_pitch_counts {
+                            jack.set_value(counts);
+                            last_pitch_counts = counts;
+                        }
                     }
+                } else if last_pitch_counts != 0 {
+                    jack.set_value(0);
+                    last_pitch_counts = 0;
                 }
             }
 
@@ -2001,6 +2026,11 @@ pub async fn run(
                 leds.set(0, Led::Button, Color::White, Brightness::Custom(loop_flash));
             }
 
+            let duck = glob_button_duck.get();
+            if duck > 0 {
+                glob_button_duck.set(duck.saturating_sub(1));
+            }
+
             match layer {
                 LatchLayer::Main => {
                     let (slot, count) = if glob_mode_auto.get() {
@@ -2046,7 +2076,12 @@ pub async fn run(
                         Brightness::Custom(led[1].max(pulse / 2)),
                     );
                     if flash == 0 && loop_flash == 0 {
-                        leds.set(0, Led::Button, button_color, button_bright);
+                        let bright = if duck > 0 && !chord_held.get() {
+                            Brightness::Low
+                        } else {
+                            button_bright
+                        };
+                        leds.set(0, Led::Button, button_color, bright);
                     }
                 }
                 LatchLayer::Alt => {

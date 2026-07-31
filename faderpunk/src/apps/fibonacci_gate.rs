@@ -25,6 +25,8 @@ pub const PARAMS: usize = 12;
 const LED_BRIGHTNESS: Brightness = Brightness::Mid;
 /// Reverse gesture LED feedback length (white↔off fade), same as Heat Pump invert.
 const REVERSE_FADE_MS: u16 = 500;
+/// Mid→Low button duck on each hit — same length as Heat Pump metronome duck.
+const BUTTON_DUCK_MS: u16 = 25;
 
 /// Fibonacci gaps (in steps) between consecutive hits.
 const FIB: [u16; 11] = [1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89];
@@ -448,6 +450,9 @@ pub async fn run(
     let glob_reverse_fade = app.make_global(0u16);
     // true = none→white, false = white→none.
     let glob_reverse_fade_up = app.make_global(false);
+    let glob_button_duck = app.make_global(0u16);
+    // Mute from the button task: clock owns `note_on`, so clear via flag.
+    let pending_mute_clear = app.make_global(false);
 
     let (fader_saved, shift_fader_saved, muted, reversed, _stored_mode, speed_saved) =
         storage.query(|s| {
@@ -552,6 +557,7 @@ pub async fn run(
                     }
                     step = 0;
                     glob_reset.set(false);
+                    pending_mute_clear.set(false);
                     if !is_pitch_mode(cached_mode) {
                         if let Some(ref gate_jack) = gate_out { gate_jack.set_low().await; }
                     }
@@ -559,6 +565,27 @@ pub async fn run(
                     leds.unset(0, Led::Bottom);
                 }
                 ClockEvent::Tick => {
+                    // Hard-clear from mute (button task): kill the actual sounding note.
+                    if pending_mute_clear.get() {
+                        pending_mute_clear.set(false);
+                        if let Some(n) = note_on.take() {
+                            midi.send_note_off(n).await;
+                        }
+                        if cached_mode == MODE_PITCH_PHI {
+                            midi.send_pitch_bend(8192).await;
+                        }
+                        if cc_on {
+                            midi.send_cc(cc, 0).await;
+                            cc_on = false;
+                        }
+                        if !is_pitch_mode(cached_mode) {
+                            if let Some(ref gate_jack) = gate_out {
+                                gate_jack.set_low().await;
+                            }
+                        }
+                        leds.unset(0, Led::Bottom);
+                    }
+
                     let clkn = ticks() as u32;
 
                     // Mode changed on the device: reconfigure the jack.
@@ -651,6 +678,7 @@ pub async fn run(
                                 }
                             }
                             leds.set(0, Led::Bottom, led_color, Brightness::High);
+                            glob_button_duck.set(BUTTON_DUCK_MS);
                         }
 
                         step += 1;
@@ -737,6 +765,8 @@ pub async fn run(
                     let muted = glob_muted.toggle();
                     storage.modify_and_save(|s| s.muted = muted);
                     if muted {
+                        // Flag clock to NoteOff the *sounding* note (may differ in Pitch/φ).
+                        pending_mute_clear.set(true);
                         midi.send_note_off(note).await;
                         midi.send_cc(cc, 0).await;
                         if !is_pitch_mode(glob_mode.get()) {
@@ -946,6 +976,10 @@ pub async fn run(
 
             // Reverse gesture feedback (white↔off), mirrors Heat Pump invert.
             let fade_left = glob_reverse_fade.get();
+            let duck = glob_button_duck.get();
+            if duck > 0 {
+                glob_button_duck.set(duck.saturating_sub(1));
+            }
             if fade_left > 0 {
                 let elapsed = REVERSE_FADE_MS.saturating_sub(fade_left);
                 let bright = if glob_reverse_fade_up.get() {
@@ -966,6 +1000,18 @@ pub async fn run(
                 } else if next == 0 && glob_muted.get() {
                     leds.unset(0, Led::Button);
                 }
+            } else if !glob_muted.get() {
+                let bright = if duck > 0 {
+                    Brightness::Low
+                } else {
+                    LED_BRIGHTNESS
+                };
+                leds.set(
+                    0,
+                    Led::Button,
+                    mode_color(glob_mode.get(), led_color),
+                    bright,
+                );
             }
         }
     };

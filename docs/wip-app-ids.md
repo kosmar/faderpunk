@@ -19,5 +19,7 @@ Flash integration branch: **`test/playground`** (count-agnostic; formerly
 | 33 | Echolot | `feat/echolot` | MIDI/CV delay |
 | 34 | Arp de Lévy | `feat/arp-de-levy` | |
 | 35 | Chord Vamp | `feat/vamp` | Chord progressions (MIDI + optional root CV out) |
+| 36 | Hold Sam | `feat/hold-sam` | Clocked S&H CV → MIDI Note/CC |
+| 37 | Harmonica | `feat/harmonica` | Monophonic MIDI/CV harmonizer |
 
-Next free WIP ID: **36**
+Next free WIP ID: **38**

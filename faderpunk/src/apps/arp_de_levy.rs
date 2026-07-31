@@ -33,6 +33,8 @@ const REVERSE_FADE_MS: u16 = 500;
 const OCTAVE_BLINK_MS: u16 = 250;
 /// Hold off periodic button LED writes so LedMode::Flash can finish.
 const BUTTON_FLASH_MS: u16 = 850;
+/// Mid→Low button duck on each note — same length as Heat Pump metronome duck.
+const BUTTON_DUCK_MS: u16 = 25;
 
 const POOL_CAP: usize = 16;
 const MIN_PHRASE: usize = 4;
@@ -521,6 +523,7 @@ pub async fn run(
     let glob_reverse_fade_up = app.make_global(false);
     let glob_octave_blink = app.make_global(0u16);
     let glob_btn_flash = app.make_global(0u16);
+    let glob_button_duck = app.make_global(0u16);
     let glob_reload_pool = app.make_global(false);
     // Clock watch → voice engine (never await MIDI/quantizer inside the clock subscriber).
     // Same isolation pattern as Chord Vamp — keeps USB MIDI from stalling the clock path.
@@ -529,6 +532,8 @@ pub async fn run(
     let pending_vel = app.make_global(0u16);
     let pending_note_off = app.make_global(false);
     let pending_silence = app.make_global(false);
+    // MIDI note number currently held by voice (255 = none) for immediate mute clear.
+    let glob_sounding = app.make_global(255u8);
 
     // Clear any note left sounding by a prior run() that was dropped mid-gate
     // (e.g. on a param-change respawn) — same MIDI hygiene as Golden Gate.
@@ -734,6 +739,7 @@ pub async fn run(
                 if let Some(n) = note_on.take() {
                     midi.send_note_off(n).await;
                 }
+                glob_sounding.set(255);
                 if let Some(ref jack) = out_jack {
                     jack.set_value(0);
                 }
@@ -746,6 +752,7 @@ pub async fn run(
                 if let Some(n) = note_on.take() {
                     midi.send_note_off(n).await;
                 }
+                glob_sounding.set(255);
                 // Gate / Velocity drop with the note; Pitch holds until next hit / silence.
                 if glob_cv_out.get() != OUT_PITCH {
                     if let Some(ref jack) = out_jack {
@@ -772,6 +779,10 @@ pub async fn run(
                         &mut note_on,
                     )
                     .await;
+                    glob_button_duck.set(BUTTON_DUCK_MS);
+                    if let Some(n) = note_on {
+                        glob_sounding.set(u7::from(n).as_int());
+                    }
                 }
             }
         }
@@ -824,6 +835,15 @@ pub async fn run(
                     storage.modify_and_save(|s| s.muted = muted);
                     if muted {
                         pending_silence.set(true);
+                        // Immediate hard-clear (don't wait for the voice task's 1 ms poll).
+                        let sn = glob_sounding.get();
+                        if sn != 255 {
+                            midi.send_note_off(MidiNote::from(sn)).await;
+                            glob_sounding.set(255);
+                        }
+                        if let Some(ref jack) = out_jack {
+                            jack.set_value(0);
+                        }
                         leds.unset(0, Led::Button);
                         leds.unset(0, Led::Bottom);
                     } else {
@@ -1005,6 +1025,10 @@ pub async fn run(
             let fade_left = glob_reverse_fade.get();
             let blink_left = glob_octave_blink.get();
             let flash_left = glob_btn_flash.get();
+            let duck = glob_button_duck.get();
+            if duck > 0 {
+                glob_button_duck.set(duck.saturating_sub(1));
+            }
             if flash_left > 0 {
                 glob_btn_flash.set(flash_left.saturating_sub(1));
             } else if fade_left > 0 {
@@ -1039,6 +1063,13 @@ pub async fn run(
                 } else if next == 0 && glob_muted.get() {
                     leds.unset(0, Led::Button);
                 }
+            } else if !glob_muted.get() {
+                let bright = if duck > 0 {
+                    Brightness::Low
+                } else {
+                    LED_BRIGHTNESS
+                };
+                leds.set(0, Led::Button, led_color, bright);
             }
         }
     };

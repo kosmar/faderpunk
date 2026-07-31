@@ -79,9 +79,11 @@ static SPAWN_START_HELD: AtomicBool = AtomicBool::new(false);
 const PERF_LOCAL_MIN_GAP_MS: u64 = 8;
 static PERF_LOCAL_LAST_MS: portable_atomic::AtomicU32 = portable_atomic::AtomicU32::new(0);
 
-/// How long Local MIDI stays muted after spawn finishes.
-/// Dense Alpha presets need headroom until SetAppParams finishes.
-pub const POST_LAYOUT_PERF_MUTE_MS: u32 = 30_000;
+/// How long Local MIDI stays muted after spawn finishes. Short: apps run
+/// during soft mute (only their Local MIDI is dropped), and a host push keeps
+/// it alive via CONFIG_SOFT_MUTE_EXTEND_MS on every config message anyway.
+/// This also arms on FRAM boot, so long values stall standalone MIDI output.
+pub const POST_LAYOUT_PERF_MUTE_MS: u32 = 4_000;
 
 /// Sliding extension on every config SysEx so soft-mute cannot expire mid-push.
 pub const CONFIG_SOFT_MUTE_EXTEND_MS: u32 = 8_000;
@@ -162,6 +164,29 @@ fn perf_local_muted() -> bool {
 /// Apps can stall heavy loops until post-layout Local MIDI mute ends.
 pub fn perf_local_muted_public() -> bool {
     perf_local_muted()
+}
+
+/// Note events must never be silently dropped mid-stream: a swallowed NoteOff
+/// hangs a note, a swallowed NoteOn breaks the groove (drum apps fire kick,
+/// snare and hats within the same tick — well under any per-packet gap).
+fn is_note_event(event: &LiveEvent<'_>) -> bool {
+    matches!(
+        event,
+        LiveEvent::Midi {
+            message: MidiMessage::NoteOn { .. } | MidiMessage::NoteOff { .. },
+            ..
+        }
+    )
+}
+
+fn is_note_off_event(event: &LiveEvent<'_>) -> bool {
+    matches!(
+        event,
+        LiveEvent::Midi {
+            message: MidiMessage::NoteOff { .. },
+            ..
+        }
+    )
 }
 
 fn perf_local_allowed() -> bool {
@@ -425,6 +450,7 @@ pub async fn midi_distributor() {
             Either::First((start_channel, ev)) => {
                 // During SetLayout, drop Local traffic before it reaches Core 0
                 // midi_out (note-off storms + mute-drain starved USB SOFs).
+                // NoteOff always passes — dropping it hangs a sounding note.
                 if perf_local_muted() {
                     let is_local = matches!(
                         &ev,
@@ -433,7 +459,11 @@ pub async fn midi_distributor() {
                             ..
                         } | MidiMsg::Nrpn { .. }
                     );
-                    if is_local {
+                    let is_note_off = matches!(
+                        &ev,
+                        MidiMsg::Live { event, .. } if is_note_off_event(event)
+                    );
+                    if is_local && !is_note_off {
                         continue;
                     }
                 }
@@ -548,7 +578,10 @@ pub async fn midi_out_task<'a>(
                         // Layout transition + post-spawn grace: drop Local
                         // (USB+DIN). Mute-only USB skips used to spin-drain
                         // this queue and starve usb.run() / config.
-                        if matches!(source, MidiEventSource::Local) && perf_local_muted() {
+                        if matches!(source, MidiEventSource::Local)
+                            && perf_local_muted()
+                            && !is_note_off_event(&event)
+                        {
                             yield_now().await;
                             continue;
                         }
@@ -559,8 +592,10 @@ pub async fn midi_out_task<'a>(
                                 target.0[i] = target.0[i] && !disabled;
                             }
                             // Global Local rate limit (USB+DIN) — DIN floods
-                            // alone wedged Core 0 / macOS (Beta DIN).
-                            if !perf_local_allowed() {
+                            // alone wedged Core 0 / macOS (Beta DIN). Notes are
+                            // exempt: the limiter is for CC streams, and drum
+                            // apps legitimately burst 3+ notes per tick.
+                            if !is_note_event(&event) && !perf_local_allowed() {
                                 yield_now().await;
                                 continue;
                             }

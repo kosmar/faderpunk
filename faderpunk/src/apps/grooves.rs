@@ -24,11 +24,13 @@ use crate::apps::groove::{
 use crate::apps::led_fx::{genre_nearest, genre_pair, lerp_i32, lerp_u8, spectrum_color};
 
 pub const CHANNELS: usize = 1;
-pub const PARAMS: usize = 15;
+pub const PARAMS: usize = 14;
 
 const LED_BRIGHTNESS: Brightness = Brightness::Mid;
 /// Reverse-swing LED feedback (white↔off), same as Heat Pump / Golden Gate.
 const REVERSE_FADE_MS: u16 = 500;
+/// Mid→Low button duck on each hit — same length as Heat Pump metronome duck.
+const BUTTON_DUCK_MS: u16 = 25;
 /// Ignore tiny ADC noise when deciding "button+fader scrub" vs long-press mute.
 const FADER_MOVE_THRESH: u16 = 64;
 
@@ -286,19 +288,6 @@ pub static CONFIG: Config<PARAMS> = Config::new(
     min: 1,
     max: 100,
 })
-.add_param(Param::Color {
-    name: "Color",
-    variants: &[
-        Color::Orange,
-        Color::Yellow,
-        Color::Pink,
-        Color::Cyan,
-        Color::Violet,
-        Color::Green,
-        Color::Blue,
-        Color::Rose,
-    ],
-})
 .add_param(Param::MidiOut)
 .add_param(Param::Enum {
     name: "Jack",
@@ -328,7 +317,6 @@ pub struct Params {
     genre: usize,
     swing_max_pct: i32,
     gatel: i32,
-    color: Color,
     midi_out: MidiOut,
     cv_jack: usize,
     range: Range,
@@ -338,15 +326,20 @@ pub struct Params {
 
 impl AppParams for Params {
     fn from_values(values: &[Value]) -> Option<Self> {
-        if values.len() < 11 {
+        // Layout without Color (current): [0..=8 core] [9 midi_out] [10..=13 cv…]
+        // Legacy with Color at [9]:       [0..=8 core] [9 color] [10 midi_out] [11..=14 cv…]
+        let legacy_color = values.len() == 11 || values.len() >= 15;
+        let midi_i = if legacy_color { 10 } else { 9 };
+        let cv_i = midi_i + 1;
+        if values.len() < midi_i + 1 {
             return None;
         }
-        let (cv_jack, range, cv_dest, cv_att) = if values.len() >= PARAMS {
+        let (cv_jack, range, cv_dest, cv_att) = if values.len() >= cv_i + 4 {
             (
-                usize::from_value(values[11]).min(1),
-                Range::from_value(values[12]),
-                usize::from_value(values[13]).min(DEST_COUNT - 1),
-                i32::from_value(values[14]).clamp(0, 100),
+                usize::from_value(values[cv_i]).min(1),
+                Range::from_value(values[cv_i + 1]),
+                usize::from_value(values[cv_i + 2]).min(DEST_COUNT - 1),
+                i32::from_value(values[cv_i + 3]).clamp(0, 100),
             )
         } else {
             (CV_JACK_OUT, Range::_0_10V, DEST_DENSITY, 100)
@@ -361,8 +354,7 @@ impl AppParams for Params {
             genre: usize::from_value(values[6]).min(NUM_GENRES - 1),
             swing_max_pct: i32::from_value(values[7]).clamp(10, 100),
             gatel: i32::from_value(values[8]),
-            color: Color::from_value(values[9]),
-            midi_out: MidiOut::from_value(values[10]),
+            midi_out: MidiOut::from_value(values[midi_i]),
             cv_jack,
             range,
             cv_dest,
@@ -381,7 +373,6 @@ impl AppParams for Params {
         vec.push(self.genre.into()).unwrap();
         vec.push(self.swing_max_pct.into()).unwrap();
         vec.push(self.gatel.into()).unwrap();
-        vec.push(self.color.into()).unwrap();
         vec.push(self.midi_out.into()).unwrap();
         vec.push(self.cv_jack.into()).unwrap();
         vec.push(self.range.into()).unwrap();
@@ -571,7 +562,6 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
             swing_max_pct: 50,
             // Short drum triggers (see TRIG_MAX_TICKS); 100% → 2 PPQN ticks.
             gatel: 100,
-            color: Color::Orange,
             midi_out: MidiOut::default(),
             cv_jack: CV_JACK_OUT,
             range: Range::_0_10V,
@@ -616,7 +606,6 @@ pub async fn run(
         genre,
         swing_max_pct,
         gatel,
-        led_color,
         cv_jack,
         range,
         cv_dest,
@@ -633,7 +622,6 @@ pub async fn run(
             p.genre.min(NUM_GENRES - 1),
             p.swing_max_pct.clamp(10, 100),
             p.gatel,
-            p.color,
             p.cv_jack.min(1),
             p.range,
             p.cv_dest.min(DEST_COUNT - 1),
@@ -686,6 +674,7 @@ pub async fn run(
     let glob_reverse_fade = app.make_global(0u16);
     let glob_reverse_fade_up = app.make_global(false);
     let glob_jack_flash = app.make_global(0u16);
+    let glob_button_duck = app.make_global(0u16);
 
     // Clear any hanging notes from a prior respawn.
     midi_kick.send_note_off(note_kick).await;
@@ -695,7 +684,12 @@ pub async fn run(
     if muted {
         leds.unset(0, Led::Button);
     } else {
-        leds.set(0, Led::Button, led_color, LED_BRIGHTNESS);
+        leds.set(
+            0,
+            Led::Button,
+            spectrum_color(glob_genre_fader.get()),
+            LED_BRIGHTNESS,
+        );
     }
 
     let fut_clock = async {
@@ -795,7 +789,7 @@ pub async fn run(
                                 jack.set_value(pulse_idle(range));
                             }
                             gate_off_at = None;
-                            leds.set(0, Led::Bottom, led_color, Brightness::Off);
+                            leds.set(0, Led::Bottom, spectrum_color(glob_genre_fader.get()), Brightness::Off);
                         }
                     }
 
@@ -927,7 +921,8 @@ pub async fn run(
                                 let room = SIXTEENTH.saturating_sub(phase).max(1);
                                 let pulse = gate_len.min(room);
                                 gate_off_at = Some(clkn.wrapping_add(pulse));
-                                leds.set(0, Led::Bottom, led_color, Brightness::High);
+                                leds.set(0, Led::Bottom, spectrum_color(glob_genre_fader.get()), Brightness::High);
+                                glob_button_duck.set(BUTTON_DUCK_MS);
                             }
                         }
                     }
@@ -939,7 +934,7 @@ pub async fn run(
                             leds.set(
                                 0,
                                 Led::Top,
-                                led_color,
+                                spectrum_color(glob_genre_fader.get()),
                                 Brightness::Custom(((step * 255) / STEPS_PER_BAR) as u8),
                             );
                         }
@@ -1000,7 +995,7 @@ pub async fn run(
                         midi_snare.send_note_off(note_snare).await;
                         midi_hats.send_note_off(note_hats).await;
                     } else {
-                        leds.set(0, Led::Button, led_color, LED_BRIGHTNESS);
+                        leds.set(0, Led::Button, spectrum_color(glob_genre_fader.get()), LED_BRIGHTNESS);
                     }
                 }
             }
@@ -1101,7 +1096,7 @@ pub async fn run(
                     if muted {
                         leds.unset(0, Led::Button);
                     } else {
-                        leds.set(0, Led::Button, led_color, LED_BRIGHTNESS);
+                        leds.set(0, Led::Button, spectrum_color(glob_genre_fader.get()), LED_BRIGHTNESS);
                     }
                 }
                 SceneEvent::SaveScene(scene) => storage.save_to_scene(scene).await,
@@ -1161,7 +1156,7 @@ pub async fn run(
                     if glob_muted.get() {
                         leds.unset(0, Led::Button);
                     } else {
-                        leds.set(0, Led::Button, led_color, LED_BRIGHTNESS);
+                        leds.set(0, Led::Button, spectrum_color(glob_genre_fader.get()), LED_BRIGHTNESS);
                     }
                 }
             }
@@ -1177,20 +1172,37 @@ pub async fn run(
                     if glob_muted.get() {
                         leds.unset(0, Led::Button);
                     } else {
-                        leds.set(0, Led::Button, led_color, LED_BRIGHTNESS);
+                        leds.set(0, Led::Button, spectrum_color(glob_genre_fader.get()), LED_BRIGHTNESS);
                     }
                 }
+            }
+
+            // Mid→Low duck on hits (yields to mute / reverse fade / jack flash / genre scrub).
+            let duck = glob_button_duck.get();
+            if duck > 0 {
+                glob_button_duck.set(duck.saturating_sub(1));
+            }
+            if fade_left == 0
+                && flash_left == 0
+                && !glob_muted.get()
+                && latch_active_layer != LatchLayer::Alt
+            {
+                let bright = if duck > 0 {
+                    Brightness::Low
+                } else {
+                    LED_BRIGHTNESS
+                };
+                leds.set(0, Led::Button, spectrum_color(glob_genre_fader.get()), bright);
             }
         }
     };
 
-    // Persist genre after Shift scrub without blocking faders.
+    // Persist genre off the fader hot-path. Flush while Shift is held too so
+    // Scopepunk / configurator see the nearest genre live (same as Chord Vamp).
     let genre_persist = async {
         loop {
             app.delay_millis(40).await;
-            // Only flush while Shift is up so scrub stays responsive.
-            let shifting = buttons.is_shift_pressed() && !buttons.is_button_pressed(0);
-            if glob_genre_dirty.get() && !shifting {
+            if glob_genre_dirty.get() {
                 glob_genre_dirty.set(false);
                 let g = glob_genre.get().min(NUM_GENRES - 1);
                 params.update(|p| p.genre = g).await;

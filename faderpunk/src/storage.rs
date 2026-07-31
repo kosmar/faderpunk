@@ -734,7 +734,14 @@ impl<P: AppParams> ParamStore<P> {
             modifier(&mut *inner);
         }
         self.save().await;
-        self.send_values().await;
+        // Unsolicited host notify — NOT send_values(): that feeds the
+        // request/response channel, where an idle-time push would be drained
+        // as a stale reply and never reach the host.
+        let values = {
+            let guard = self.inner.borrow();
+            guard.to_values()
+        };
+        let _ = crate::tasks::configure::APP_PARAM_PUSH_CHANNEL.try_send((self.layout_id, values));
     }
 
     pub async fn param_handler(&self) {

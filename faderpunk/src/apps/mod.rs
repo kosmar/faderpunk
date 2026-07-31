@@ -38,4 +38,6 @@ register_apps!(
     33 => echolot,
     34 => arp_de_levy,
     35 => vamp,
+    36 => hold_sam,
+    37 => harmonica,
 );

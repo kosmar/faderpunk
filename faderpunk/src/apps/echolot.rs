@@ -24,6 +24,8 @@ pub const CHANNELS: usize = 1;
 pub const PARAMS: usize = 15;
 
 const LED_BRIGHTNESS: Brightness = Brightness::Mid;
+/// Mid→Low button duck on delay activity — same length as Heat Pump metronome duck.
+const BUTTON_DUCK_MS: u16 = 25;
 const MAX_REPEATS: u8 = 16;
 /// Stop re-queueing once delayed velocity falls below this (≈ MIDI vel 6).
 const VELOCITY_FLOOR: u16 = 200;
@@ -471,8 +473,6 @@ pub async fn run(
     params: &ParamStore<Params>,
     storage: &ManagedStorage<Storage>,
 ) {
-    app.wait_while_perf_muted().await;
-
     let (
         io_mode,
         delay_mode,
@@ -550,6 +550,7 @@ pub async fn run(
     let feedback_glob = app.make_global(0u16);
     let interval_glob = app.make_global(0i8);
     let activity_glob = app.make_global(0u8);
+    let button_duck_glob = app.make_global(0u16);
     // White button flash on MIDI/CV note/gate input (proves listen path).
     let input_flash_glob = app.make_global(0u8);
     // 0 = Out A / top flash, 1 = Out B / bottom flash (ping-pong cue).
@@ -682,10 +683,12 @@ pub async fn run(
                 if clocked {
                     if now_tick.wrapping_sub(next_metro_tick) < (u32::MAX / 2) {
                         activity_glob.set(pulse);
+                        button_duck_glob.set(BUTTON_DUCK_MS);
                         next_metro_tick = now_tick.wrapping_add(delay_ticks);
                     }
                 } else if now_ms >= next_metro_ms {
                     activity_glob.set(pulse);
+                    button_duck_glob.set(BUTTON_DUCK_MS);
                     next_metro_ms = now_ms.saturating_add(delay_ms.max(MIN_METRO_MS));
                 }
             }
@@ -920,11 +923,14 @@ pub async fn run(
                             input_flash_glob.set(INPUT_FLASH_PEAK);
                             if accept_new {
                                 open_gate_delay = Some((delay_ms, delay_ticks, base_interval));
+                                // Out A (gen 0) at +1 delay — same seed pattern as MIDI→MIDI
+                                // so Ping-Pong Out B is paired at input (fire-path skips gen0→1).
+                                const GATE_NOTE_VEL: u16 = 4095;
                                 enqueue(
                                     &mut queue,
                                     EventKind::NoteOn,
                                     base_note_cfg,
-                                    4095,
+                                    GATE_NOTE_VEL,
                                     0,
                                     0,
                                     base_interval,
@@ -933,6 +939,42 @@ pub async fn run(
                                     now_ms,
                                     now_tick,
                                 );
+                                if ping_pong {
+                                    if let Some(b_vel) =
+                                        next_feedback_velocity(GATE_NOTE_VEL, feedback)
+                                    {
+                                        let _ = enqueue(
+                                            &mut queue,
+                                            EventKind::NoteOn,
+                                            base_note_cfg,
+                                            b_vel,
+                                            0,
+                                            1,
+                                            base_interval,
+                                            delay_ms,
+                                            delay_ticks,
+                                            now_ms.saturating_add(delay_ms),
+                                            now_tick.wrapping_add(delay_ticks),
+                                        );
+                                    } else if feedback == 0 {
+                                        let seed = ((GATE_NOTE_VEL as u32 * 3) / 4)
+                                            .max(VELOCITY_FLOOR as u32)
+                                            as u16;
+                                        let _ = enqueue(
+                                            &mut queue,
+                                            EventKind::NoteOn,
+                                            base_note_cfg,
+                                            seed,
+                                            0,
+                                            1,
+                                            base_interval,
+                                            delay_ms,
+                                            delay_ticks,
+                                            now_ms.saturating_add(delay_ms),
+                                            now_tick.wrapping_add(delay_ticks),
+                                        );
+                                    }
+                                }
                             }
                         } else if !high && prev_gate {
                             let (off_delay_ms, off_delay_ticks, off_interval) = open_gate_delay
@@ -951,6 +993,22 @@ pub async fn run(
                                 now_ms,
                                 now_tick,
                             );
+                            // Pair Ping-Pong Out B off at +2 delay (same hold as A).
+                            if ping_pong {
+                                let _ = enqueue(
+                                    &mut queue,
+                                    EventKind::NoteOff,
+                                    base_note_cfg,
+                                    0,
+                                    0,
+                                    1,
+                                    off_interval,
+                                    off_delay_ms,
+                                    off_delay_ticks,
+                                    now_ms.saturating_add(off_delay_ms),
+                                    now_tick.wrapping_add(off_delay_ticks),
+                                );
+                            }
                         }
                         prev_gate = high;
                     } else if sig == SIG_CV_CC && accept_new {
@@ -1105,6 +1163,7 @@ pub async fn run(
                         record_emit(&mut recent_emit, n, true, now_ms);
                         let _ = sounding.push((event.out_target, n));
                         activity_glob.set(pulse);
+                        button_duck_glob.set(BUTTON_DUCK_MS);
                         pong_side_glob.set(event.out_target);
                         if feedback_ok && event.generation < MAX_REPEATS {
                             let next_gen = event.generation.saturating_add(1);
@@ -1194,6 +1253,7 @@ pub async fn run(
                             }
                         }
                         activity_glob.set(pulse);
+                        button_duck_glob.set(BUTTON_DUCK_MS);
                         pong_side_glob.set(event.out_target);
                     }
                     EventKind::GateHigh => {
@@ -1201,6 +1261,7 @@ pub async fn run(
                             jack.set_value(4095);
                         }
                         activity_glob.set(pulse);
+                        button_duck_glob.set(BUTTON_DUCK_MS);
                         pong_side_glob.set(0);
                         if feedback_ok && event.generation < MAX_REPEATS {
                             if let Some(next_vel) = next_feedback_velocity(event.velocity, feedback)
@@ -1356,6 +1417,11 @@ pub async fn run(
                 input_flash_glob.set(input_flash.saturating_sub(10));
             }
 
+            let duck = button_duck_glob.get();
+            if duck > 0 {
+                button_duck_glob.set(duck.saturating_sub(1));
+            }
+
             if glob_muted.get() {
                 if input_flash == 0 {
                     leds.unset(0, Led::Button);
@@ -1391,13 +1457,14 @@ pub async fn run(
                     };
                     leds.set(0, Led::Top, led_color, Brightness::Custom(top_b));
                     leds.set(0, Led::Bottom, led_color, Brightness::Custom(bot_b));
-                    // White input flash wins over delay pulse on the button.
+                    // White input flash wins over Mid→Low out duck on the button.
                     if input_flash == 0 {
-                        if pulse > 0 {
-                            leds.set(0, Led::Button, led_color, Brightness::Custom(pulse));
+                        let bright = if duck > 0 {
+                            Brightness::Low
                         } else {
-                            leds.set(0, Led::Button, led_color, LED_BRIGHTNESS);
-                        }
+                            LED_BRIGHTNESS
+                        };
+                        leds.set(0, Led::Button, led_color, bright);
                     }
                 }
                 LatchLayer::Alt => {

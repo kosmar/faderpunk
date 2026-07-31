@@ -65,6 +65,16 @@ pub static APP_PARAM_CHANNEL: Channel<
     GLOBAL_CHANNELS,
 > = Channel::new();
 
+/// Unsolicited app→host param updates (e.g. Shift+fader genre pick on the
+/// device). Forwarded as AppState while the config loop is idle, so hosts
+/// (configurator / Scopepunk) track on-device edits live. Separate from
+/// APP_PARAM_CHANNEL, which carries request/response replies only.
+pub static APP_PARAM_PUSH_CHANNEL: Channel<
+    CriticalSectionRawMutex,
+    (u8, Vec<Value, APP_MAX_PARAMS>),
+    4,
+> = Channel::new();
+
 /// Drop stale replies left by a previous Set/Get (shared channel is not
 /// per-layout). Without this, GetAppParams(N) can ack with AppState(N-1).
 fn drain_app_param_channel() {
@@ -107,16 +117,38 @@ pub async fn start_config_loop<'a>(usb_tx: &'a SharedUsbSender<'a>) {
     let mut layout_receiver = LAYOUT_WATCH.receiver().unwrap();
     let mut layout = layout_receiver.get().await;
     loop {
-        let msg = match proto.read_msg().await {
-            Ok(msg) => msg,
-            Err(err) => {
+        // While idle, also forward unsolicited on-device param edits (genre
+        // scrub etc.) as AppState. Cancel-safe: read_msg awaits on the frame
+        // channel; no partial frame state is lost when the select flips.
+        let sel =
+            embassy_futures::select::select(proto.read_msg(), APP_PARAM_PUSH_CHANNEL.receive())
+                .await;
+        let msg = match sel {
+            embassy_futures::select::Either::First(Ok(msg)) => msg,
+            embassy_futures::select::Either::First(Err(err)) => {
                 defmt::warn!("Dropping invalid config frame: {}", err);
                 continue;
             }
+            embassy_futures::select::Either::Second((id, values)) => {
+                if let Err(err) = proto.send_msg(ConfigMsgOut::AppState(id, &values)).await {
+                    defmt::warn!("Failed to push AppState({}): {}", id, err);
+                }
+                continue;
+            }
         };
-        // Hold Local→USB while we answer — shared bulk pipe with LFO streams.
-        // Also keep post-layout soft-mute from expiring mid incremental push.
-        extend_post_layout_perf_mute(CONFIG_SOFT_MUTE_EXTEND_MS);
+        // Only mutating layout/param traffic should keep Local MIDI muted.
+        // Extending on every Get* / SetGlobalConfig made Scopepunk Start
+        // (GetGlobalConfig ± clock-src write) silence apps for ~8s ≈ 200+
+        // MIDI clocks at typical BPM before any notes appeared.
+        match &msg {
+            ConfigMsgIn::SetLayout(_)
+            | ConfigMsgIn::SetAppParams { .. }
+            | ConfigMsgIn::HoldPerfMute
+            | ConfigMsgIn::FactoryReset => {
+                extend_post_layout_perf_mute(CONFIG_SOFT_MUTE_EXTEND_MS);
+            }
+            _ => {}
+        }
         set_config_holds_perf_usb(true);
         let res = match msg {
             ConfigMsgIn::Ping => proto.send_msg(ConfigMsgOut::Pong).await,
