@@ -1,5 +1,5 @@
 use embassy_futures::{
-    join::{join, join5},
+    join::{join, join3, join5},
     select::{select, select3},
 };
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, signal::Signal};
@@ -675,6 +675,17 @@ pub async fn run(
     let glob_reverse_fade_up = app.make_global(false);
     let glob_jack_flash = app.make_global(0u16);
     let glob_button_duck = app.make_global(0u16);
+    // Clock watch → voice engine (never await MIDI inside the clock subscriber).
+    // Same isolation as Chord Vamp / Arp — keeps Harmonica / Note Fader MIDI
+    // storms from stalling CLOCK_PUBSUB and dropping 16ths.
+    let pending_silence = app.make_global(false);
+    let pending_note_off = app.make_global(false);
+    let pending_kick = app.make_global(false);
+    let pending_snare = app.make_global(false);
+    let pending_hats = app.make_global(false);
+    let pending_kick_vel = app.make_global(0u16);
+    let pending_snare_vel = app.make_global(0u16);
+    let pending_hats_vel = app.make_global(0u16);
 
     // Clear any hanging notes from a prior respawn.
     midi_kick.send_note_off(note_kick).await;
@@ -711,18 +722,15 @@ pub async fn run(
         loop {
             match clock.wait_for_event(ClockDivision::_1).await {
                 ClockEvent::Reset | ClockEvent::Stop => {
-                    if kick_on {
-                        midi_kick.send_note_off(note_kick).await;
-                        kick_on = false;
-                    }
-                    if snare_on {
-                        midi_snare.send_note_off(note_snare).await;
-                        snare_on = false;
-                    }
-                    if hats_on {
-                        midi_hats.send_note_off(note_hats).await;
-                        hats_on = false;
-                    }
+                    // Flag only — voice owns MIDI so we keep draining clock ticks.
+                    pending_kick.set(false);
+                    pending_snare.set(false);
+                    pending_hats.set(false);
+                    pending_note_off.set(false);
+                    pending_silence.set(true);
+                    kick_on = false;
+                    snare_on = false;
+                    hats_on = false;
                     if let Some(ref jack) = out_jack {
                         jack.set_value(pulse_idle(range));
                     }
@@ -773,16 +781,15 @@ pub async fn run(
                     // Note / jack off
                     if let Some(off_at) = gate_off_at {
                         if clkn >= off_at {
-                            if kick_on {
-                                midi_kick.send_note_off(note_kick).await;
+                            if kick_on || snare_on || hats_on {
+                                // Cancel any unsent note-ons so a stalled voice
+                                // does not fire a hit after its gate expired.
+                                pending_kick.set(false);
+                                pending_snare.set(false);
+                                pending_hats.set(false);
+                                pending_note_off.set(true);
                                 kick_on = false;
-                            }
-                            if snare_on {
-                                midi_snare.send_note_off(note_snare).await;
                                 snare_on = false;
-                            }
-                            if hats_on {
-                                midi_hats.send_note_off(note_hats).await;
                                 hats_on = false;
                             }
                             if let Some(ref jack) = out_jack {
@@ -840,18 +847,13 @@ pub async fn run(
                             // flush note-offs before re-triggering to avoid
                             // overlapping note-ons on the same key.
                             if (do_kick || do_snare || do_hats) && gate_off_at.is_some() {
-                                if kick_on {
-                                    midi_kick.send_note_off(note_kick).await;
-                                    kick_on = false;
-                                }
-                                if snare_on {
-                                    midi_snare.send_note_off(note_snare).await;
-                                    snare_on = false;
-                                }
-                                if hats_on {
-                                    midi_hats.send_note_off(note_hats).await;
-                                    hats_on = false;
-                                }
+                                pending_kick.set(false);
+                                pending_snare.set(false);
+                                pending_hats.set(false);
+                                pending_note_off.set(true);
+                                kick_on = false;
+                                snare_on = false;
+                                hats_on = false;
                                 gate_off_at = None;
                             }
 
@@ -869,7 +871,8 @@ pub async fn run(
                                         feel_val,
                                     ),
                                 };
-                                midi_kick.send_note_on(note_kick, midi_vel(v)).await;
+                                pending_kick_vel.set(midi_vel(v));
+                                pending_kick.set(true);
                                 kick_on = true;
                             }
                             if do_snare {
@@ -886,7 +889,8 @@ pub async fn run(
                                         feel_val,
                                     ),
                                 };
-                                midi_snare.send_note_on(note_snare, midi_vel(v)).await;
+                                pending_snare_vel.set(midi_vel(v));
+                                pending_snare.set(true);
                                 snare_on = true;
                             }
                             if do_hats {
@@ -903,7 +907,8 @@ pub async fn run(
                                         feel_val,
                                     ),
                                 };
-                                midi_hats.send_note_on(note_hats, midi_vel(v)).await;
+                                pending_hats_vel.set(midi_vel(v));
+                                pending_hats.set(true);
                                 hats_on = true;
                             }
 
@@ -959,6 +964,93 @@ pub async fn run(
         }
     };
 
+    // MIDI voice engine — isolated from the clock subscriber so APP_MIDI_CHANNEL
+    // backpressure (Harmonica chord storms, Note Fader spam) cannot stall ticks.
+    let fut_voice = async {
+        let mut kick_sounding = false;
+        let mut snare_sounding = false;
+        let mut hats_sounding = false;
+        loop {
+            app.delay_millis(1).await;
+
+            if pending_silence.get() {
+                pending_silence.set(false);
+                pending_note_off.set(false);
+                pending_kick.set(false);
+                pending_snare.set(false);
+                pending_hats.set(false);
+                if kick_sounding {
+                    midi_kick.send_note_off(note_kick).await;
+                    kick_sounding = false;
+                }
+                if snare_sounding {
+                    midi_snare.send_note_off(note_snare).await;
+                    snare_sounding = false;
+                }
+                if hats_sounding {
+                    midi_hats.send_note_off(note_hats).await;
+                    hats_sounding = false;
+                }
+                continue;
+            }
+
+            // Off before on in the same poll — re-triggers set both flags.
+            if pending_note_off.get() {
+                pending_note_off.set(false);
+                if kick_sounding {
+                    midi_kick.send_note_off(note_kick).await;
+                    kick_sounding = false;
+                }
+                if snare_sounding {
+                    midi_snare.send_note_off(note_snare).await;
+                    snare_sounding = false;
+                }
+                if hats_sounding {
+                    midi_hats.send_note_off(note_hats).await;
+                    hats_sounding = false;
+                }
+            }
+
+            if pending_kick.get() {
+                pending_kick.set(false);
+                if !glob_muted.get() {
+                    // Retrigger hygiene if a prior on was still held.
+                    if kick_sounding {
+                        midi_kick.send_note_off(note_kick).await;
+                    }
+                    midi_kick
+                        .send_note_on(note_kick, pending_kick_vel.get())
+                        .await;
+                    kick_sounding = true;
+                }
+            }
+            if pending_snare.get() {
+                pending_snare.set(false);
+                if !glob_muted.get() {
+                    if snare_sounding {
+                        midi_snare.send_note_off(note_snare).await;
+                    }
+                    midi_snare
+                        .send_note_on(note_snare, pending_snare_vel.get())
+                        .await;
+                    snare_sounding = true;
+                }
+            }
+            if pending_hats.get() {
+                pending_hats.set(false);
+                if !glob_muted.get() {
+                    if hats_sounding {
+                        midi_hats.send_note_off(note_hats).await;
+                    }
+                    midi_hats
+                        .send_note_on(note_hats, pending_hats_vel.get())
+                        .await;
+                    hats_sounding = true;
+                }
+            }
+        }
+    };
+
     let fut_buttons = async {
         loop {
             buttons.wait_for_any_down().await;
@@ -991,9 +1083,11 @@ pub async fn run(
                         if let Some(ref jack) = out_jack {
                             jack.set_value(pulse_idle(range));
                         }
-                        midi_kick.send_note_off(note_kick).await;
-                        midi_snare.send_note_off(note_snare).await;
-                        midi_hats.send_note_off(note_hats).await;
+                        pending_kick.set(false);
+                        pending_snare.set(false);
+                        pending_hats.set(false);
+                        pending_note_off.set(false);
+                        pending_silence.set(true);
                     } else {
                         leds.set(0, Led::Button, spectrum_color(glob_genre_fader.get()), LED_BRIGHTNESS);
                     }
@@ -1211,8 +1305,8 @@ pub async fn run(
     };
 
     join(
-        join5(fut_clock, fut_buttons, fut_faders, scene_handler, shift),
-        join(long_press, genre_persist),
+        join5(fut_clock, fut_voice, fut_buttons, fut_faders, scene_handler),
+        join3(shift, long_press, genre_persist),
     )
     .await;
 }
