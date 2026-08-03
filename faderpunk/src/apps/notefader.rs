@@ -164,11 +164,6 @@ pub async fn run(
     params: &ParamStore<Params>,
     storage: &ManagedStorage<Storage>,
 ) {
-    // Park through Hold/soft-mute before heavy bring-up so SetAppParams
-    // mid-push is not starved by sibling jack/clock init.
-    app.wait_while_perf_muted().await;
-
-
     let range = Range::_0_10V;
     let (midi_out, midi_chan, gatel, base_note, span, outmode, led_color, vpo, bypass) =
         params.query(|p| {
@@ -243,16 +238,12 @@ pub async fn run(
                 ClockEvent::Reset => {
                     midi.send_note_off(note).await;
                     note_on = false;
-                    if outmode == 1 {
-                        jack.set_value(0);
-                    }
+                    jack.set_value(0);
                 }
                 ClockEvent::Stop => {
                     midi.send_note_off(note).await;
                     note_on = false;
-                    if outmode == 1 {
-                        jack.set_value(0);
-                    }
+                    jack.set_value(0);
                 }
                 ClockEvent::Tick => {
                     let muted = glob_muted.get();
@@ -281,9 +272,8 @@ pub async fn run(
                             midi.send_note_off(note).await;
                             leds.set(0, Led::Top, led_color, Brightness::Off);
                             note_on = false;
-                            if outmode == 1 {
-                                jack.set_value(0)
-                            }
+                            // Pitch CV tracks gate (0V at rest) so CV→MIDI apps see release.
+                            jack.set_value(0);
                         }
 
                         leds.set(0, Led::Bottom, led_color, Brightness::Off);
@@ -324,9 +314,8 @@ pub async fn run(
                 Either::Second(_) => {
                     if !storage.query(|s| s.clocked) && !buttons.is_shift_pressed() {
                         midi.send_note_off(note).await;
-                        if outmode == 1 {
-                            jack.set_value(0)
-                        }
+                        // Pitch CV tracks gate (0V at rest) so CV→MIDI apps see release.
+                        jack.set_value(0);
                         leds.set(0, Led::Top, led_color, Brightness::Off);
                         leds.set(0, Led::Button, led_color, Brightness::Low);
                     }

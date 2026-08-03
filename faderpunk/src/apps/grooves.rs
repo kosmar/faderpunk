@@ -932,31 +932,17 @@ pub async fn run(
                         }
                     }
 
-                    // Top LED: bar progress by default; genre while Shift held;
-                    // Feel amount while Button held.
-                    match glob_latch_layer.get() {
-                        LatchLayer::Main => {
-                            leds.set(
-                                0,
-                                Led::Top,
-                                spectrum_color(glob_genre_fader.get()),
-                                Brightness::Custom(((step * 255) / STEPS_PER_BAR) as u8),
-                            );
-                        }
-                        LatchLayer::Alt => {
-                            let fader_now = faders.get_value();
-                            let color = spectrum_color(fader_now);
-                            let led = split_unsigned_value(fader_now);
-                            leds.set(0, Led::Top, color, Brightness::Custom(led[0]));
-                            leds.set(0, Led::Bottom, color, Brightness::Custom(led[1]));
-                            if glob_reverse_fade.get() == 0 && glob_jack_flash.get() == 0 {
-                                leds.set(0, Led::Button, color, Brightness::High);
-                            }
-                        }
-                        LatchLayer::Third => {
-                            let s = glob_feel.get();
-                            leds.set(0, Led::Top, Color::Red, Brightness::Custom((s / 16) as u8));
-                        }
+                    // Top LED: bar progress on Main (needs step). Alt/Third
+                    // genre+Feel previews live in the 1 ms shift loop so the
+                    // spectrum tracks the fader fluidly (and still works when
+                    // the clock is stopped) — same as Chord Vamp.
+                    if glob_latch_layer.get() == LatchLayer::Main {
+                        leds.set(
+                            0,
+                            Led::Top,
+                            spectrum_color(glob_genre_fader.get()),
+                            Brightness::Custom(((step * 255) / STEPS_PER_BAR) as u8),
+                        );
                     }
                 }
                 _ => {}
@@ -1233,6 +1219,25 @@ pub async fn run(
                 LatchLayer::Main
             };
             glob_latch_layer.set(latch_active_layer);
+
+            // Live Alt/Third LED previews at 1 ms (not clock-gated).
+            match latch_active_layer {
+                LatchLayer::Alt => {
+                    let fader_now = faders.get_value();
+                    let color = spectrum_color(fader_now);
+                    let led = split_unsigned_value(fader_now);
+                    leds.set(0, Led::Top, color, Brightness::Custom(led[0]));
+                    leds.set(0, Led::Bottom, color, Brightness::Custom(led[1]));
+                    if glob_reverse_fade.get() == 0 && glob_jack_flash.get() == 0 {
+                        leds.set(0, Led::Button, color, Brightness::High);
+                    }
+                }
+                LatchLayer::Third => {
+                    let s = glob_feel.get();
+                    leds.set(0, Led::Top, Color::Red, Brightness::Custom((s / 16) as u8));
+                }
+                LatchLayer::Main => {}
+            }
 
             // Reverse fade overrides button LED
             let fade_left = glob_reverse_fade.get();

@@ -853,6 +853,16 @@ impl<const N: usize> App<N> {
         Clock::new()
     }
 
+    /// 24 PPQN tick counter without subscribing to [`CLOCK_PUBSUB`].
+    ///
+    /// Use this when you only poll the counter and never call
+    /// [`Clock::wait_for_event`]. An undrained pubsub subscriber fills the
+    /// gatekeeper queue and stalls the whole internal clock (Scene+Shift
+    /// included).
+    pub fn clock_ticker(&self) -> fn() -> u64 {
+        ticks
+    }
+
     pub fn use_quantizer(&self, range: Range, vpo: VoltPerOct, bypass: bool) -> Quantizer {
         Quantizer::new(range, vpo, bypass)
     }

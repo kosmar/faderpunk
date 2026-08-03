@@ -27,6 +27,12 @@ pub const PARAMS: usize = 11;
 /// Mid→Low button duck duration for CC samples (Note uses gate hold).
 const BUTTON_DUCK_MS: u16 = 25;
 
+/// Samples within this 12-bit distance count as "unchanged" (ADC noise floor).
+const SAMPLE_DEADBAND: u16 = 24;
+/// After this many consecutive unchanged division ticks the input is
+/// considered idle (unpatched/static) and no new notes/CCs are emitted.
+const IDLE_TICKS: u8 = 2;
+
 pub static CONFIG: Config<PARAMS> = Config::new(
     "Hold Sam",
     "Clocked sample & hold to MIDI note/CC",
@@ -264,6 +270,9 @@ pub async fn run(
     let midi_note = app.make_global(MidiNote::from(0));
     let note_on = app.make_global(false);
     let prev_sample = app.make_global(0u16);
+    // Consecutive division ticks with an unchanged input sample. Starts idle
+    // so an unpatched jack stays silent from the very first tick.
+    let idle_count = app.make_global(IDLE_TICKS);
     // Tempo-relative note-off (PPQN tick count). u64::MAX = none pending.
     let gate_end_clkn = app.make_global(u64::MAX);
     // Wall-clock fallback so Stop (ticks pause) can still finish the gate.
@@ -325,12 +334,22 @@ pub async fn run(
 
                     if clkn.is_multiple_of(div as u64) {
                         let blocked = glob_muted.get() || transport_stopped.get();
-                        if !blocked {
-                            let raw = input.get_value();
-                            let sample = attenuverter(raw, att);
-                            let prev = prev_sample.get();
-                            let delta = sample.abs_diff(prev);
-                            prev_sample.set(sample);
+                        let raw = input.get_value();
+                        let sample = attenuverter(raw, att);
+                        let prev = prev_sample.get();
+                        let delta = sample.abs_diff(prev);
+                        prev_sample.set(sample);
+
+                        // Idle detection: an unpatched/static jack reads the
+                        // same value every tick; stop emitting once the input
+                        // has been unchanged for IDLE_TICKS division ticks.
+                        if delta > SAMPLE_DEADBAND {
+                            idle_count.set(0);
+                        } else {
+                            idle_count.set(idle_count.get().saturating_add(1));
+                        }
+
+                        if !blocked && idle_count.get() < IDLE_TICKS {
 
                             match midi_mode {
                                 MidiMode::Note => {
@@ -394,11 +413,16 @@ pub async fn run(
     let fut_release = async {
         loop {
             app.delay_millis(1).await;
-            // Wall-clock path: needed after Stop (PPQN ticks pause).
+            // Wall-clock path: needed after Stop, or when an external clock
+            // simply stops ticking without sending a Stop event.
+            let now = Instant::now();
+            let clock_stalled = now
+                >= last_tick_at.get()
+                    + Duration::from_millis(tick_period_ms.get().max(1).saturating_mul(4));
             if midi_mode == MidiMode::Note
                 && note_on.get()
-                && transport_stopped.get()
-                && Instant::now() >= gate_end_instant.get()
+                && (transport_stopped.get() || clock_stalled)
+                && now >= gate_end_instant.get()
             {
                 midi.send_note_off(midi_note.get()).await;
                 note_on.set(false);
@@ -511,7 +535,9 @@ pub async fn run(
                 fader_moved_during_hold.set(false);
                 long_press_fired.set(false);
                 buttons.wait_for_up(0).await;
-                if !long_press_fired.get() {
+                // Skip the toggle when the hold was used to adjust the
+                // Third-layer fader (velocity sensitivity).
+                if !long_press_fired.get() && !fader_moved_during_hold.get() {
                     // Soft mute: ausklingen — no hard note off
                     let muted = glob_muted.toggle();
                     storage.modify_and_save(|s| {
