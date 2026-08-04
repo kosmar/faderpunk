@@ -103,7 +103,7 @@ impl Default for Storage {
 
 impl AppStorage for Storage {}
 
-#[embassy_executor::task(pool_size = 16/CHANNELS)]
+#[embassy_executor::task(pool_size = 4)]
 pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMutex, bool>) {
     let param_store = ParamStore::<Params>::new(
         app.app_id,
@@ -142,6 +142,9 @@ pub async fn run(
     params: &ParamStore<Params>,
     storage: &ManagedStorage<Storage>,
 ) {
+    // Same gate as LFO+: wait out post-layout / HoldPerfMute before jack/clock init.
+    app.wait_while_perf_muted().await;
+
     let (range, midi_out, midi_chan, midi_cc, nrpn) =
         params.query(|p| (p.range, p.midi_out, p.midi_channel, p.midi_cc, p.nrpn));
 
@@ -183,6 +186,8 @@ pub async fn run(
 
     let mut count = 0;
     let mut last_val: u16 = u16::MAX;
+    let mut midi_pace: u8 = 0;
+    let mut led_pace: u8 = 0;
 
     let update_speed = async || {
         glob_lfo_speed.set((curve.at(storage.query(|s| s.layer_speed)) as f32) * 0.015 + 0.0682);
@@ -200,7 +205,8 @@ pub async fn run(
 
     let fut1 = async {
         loop {
-            app.delay_millis(1).await;
+            // 8ms: 1ms + MidiOut USB starved config SysEx with dense layouts.
+            app.delay_millis(8).await;
 
             let latch_active_layer =
                 glob_latch_layer.set(LatchLayer::from(buttons.is_shift_pressed()));
@@ -209,12 +215,7 @@ pub async fn run(
 
             count += 1;
             if glob_tick.get() {
-                // add timeout
-
-                if count < 2000 {
-                    glob_count.set(count);
-                    update_speed().await
-                }
+                glob_count.set(count);
                 count = 0;
                 glob_tick.set(false);
             }
@@ -223,10 +224,12 @@ pub async fn run(
             let quant_speed = glob_quant_speed.get();
             let lfo_pos = glob_lfo_pos.get();
 
+            // Advance ~8× so period matches the old 1ms step size.
+            let step = 8.0;
             let next_pos = if sync {
-                (lfo_pos + quant_speed / speed_mult as f32) % 4096.0
+                (lfo_pos + quant_speed * step / speed_mult as f32) % 4096.0
             } else {
-                (lfo_pos + lfo_speed / speed_mult as f32) % 4096.0
+                (lfo_pos + lfo_speed * step / speed_mult as f32) % 4096.0
             };
 
             let attenuation = storage.query(|s| s.layer_attenuation);
@@ -247,10 +250,14 @@ pub async fn run(
             };
             output.set_value(effective_val);
             if midi_out.is_some() {
-                let gate_val = midi_gate(effective_val, nrpn);
-                if gate_val != last_val {
-                    midi.send_cc(midi_cc, effective_val).await;
-                    last_val = gate_val;
+                midi_pace = midi_pace.wrapping_add(1);
+                if midi_pace >= 10 {
+                    midi_pace = 0;
+                    let gate_val = midi_gate(effective_val, nrpn);
+                    if gate_val != last_val {
+                        midi.try_send_cc(midi_cc, effective_val);
+                        last_val = gate_val;
+                    }
                 }
             }
 
@@ -262,29 +269,33 @@ pub async fn run(
 
             let color = get_color_for(wave);
 
-            if glob_muted.get() {
-                leds.unset(0, Led::Button);
-            } else if sync && next_pos as u16 > 2048 {
-                leds.set(0, Led::Button, color, Brightness::Low);
-            } else {
-                leds.set(0, Led::Button, color, Brightness::Mid);
-            }
+            led_pace = led_pace.wrapping_add(1);
+            if led_pace >= 4 {
+                led_pace = 0;
+                if glob_muted.get() {
+                    leds.unset(0, Led::Button);
+                } else if sync && next_pos as u16 > 2048 {
+                    leds.set(0, Led::Button, color, Brightness::Low);
+                } else {
+                    leds.set(0, Led::Button, color, Brightness::Mid);
+                }
 
-            match latch_active_layer {
-                LatchLayer::Main => {
-                    leds.set(0, Led::Top, color, Brightness::Custom(led[0]));
-                    leds.set(0, Led::Bottom, color, Brightness::Custom(led[1]));
+                match latch_active_layer {
+                    LatchLayer::Main => {
+                        leds.set(0, Led::Top, color, Brightness::Custom(led[0]));
+                        leds.set(0, Led::Bottom, color, Brightness::Custom(led[1]));
+                    }
+                    LatchLayer::Alt => {
+                        leds.set(
+                            0,
+                            Led::Top,
+                            Color::Red,
+                            Brightness::Custom(((attenuation / 16) / 2) as u8),
+                        );
+                        leds.unset(0, Led::Bottom);
+                    }
+                    LatchLayer::Third => {}
                 }
-                LatchLayer::Alt => {
-                    leds.set(
-                        0,
-                        Led::Top,
-                        Color::Red,
-                        Brightness::Custom(((attenuation / 16) / 2) as u8),
-                    );
-                    leds.unset(0, Led::Bottom);
-                }
-                LatchLayer::Third => {}
             }
 
             glob_lfo_pos.set(next_pos);

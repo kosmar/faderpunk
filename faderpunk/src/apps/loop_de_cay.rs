@@ -1,8 +1,14 @@
 //! Loop de Cay — clocked additive overdub loop with level decay.
 //!
-//! Gestures: Press = gate/play (mode-dependent), Long (no fader move) = mute
-//! (decay pauses), Shift+Short = arm, Shift+Long = erase. Mode via Config
-//! (Shift+Long cannot also cycle — same gesture as erase).
+//! Gestures:
+//! - Press/hold = gate/play (Pitch→MIDI / Fader→Both); release ends the note.
+//! - Shift+Short = arm/disarm recording (button blinks when armed).
+//! - Shift+Long = mute (decay pauses); again while muted = erase buffer.
+//! - Short while muted = unmute.
+//! - Shift alone + fader = decay; muted + hold button + fader = loop bars.
+//!
+//! Pitch (live + decay) snaps to the global quantizer key/tonic (nearest degree).
+//! Mode via Config.
 
 use embassy_futures::{
     join::join5,
@@ -17,8 +23,9 @@ use serde::{Deserialize, Serialize};
 use libfp::{
     ext::FromValue,
     latch::LatchLayer,
-    AppIcon, Brightness, ClockDivision, Color, Config, MidiChannel, MidiIn, MidiNote, MidiOut,
-    Param, Range, Value, VoltPerOct, APP_MAX_PARAMS,
+    utils::split_unsigned_value,
+    AppIcon, Brightness, ClockDivision, Color, Config, Key, MidiChannel, MidiIn, MidiNote, MidiOut,
+    Note, Param, Range, Value, VoltPerOct, APP_MAX_PARAMS,
 };
 
 use crate::app::{
@@ -35,7 +42,7 @@ const MAX_BARS: u8 = 8;
 const MAX_BUFFER_TICKS: u16 = TICKS_PER_BAR * MAX_BARS as u16;
 const MAX_EVENTS: usize = 32;
 const POLY: usize = 4;
-const KILL_FLOOR: u16 = 32;
+const KILL_FLOOR: u16 = 96;
 const FADER_MOVE_THRESH: u16 = 48;
 const GATE_THRESH: u16 = 406;
 const DEFAULT_GATE_TICKS: u16 = 12;
@@ -150,7 +157,7 @@ impl Default for Storage {
             decay_saved: 0,
             bars_saved: 0,
             muted: false,
-            armed: false,
+            armed: true,
         }
     }
 }
@@ -275,13 +282,17 @@ impl LoopBuf {
         }
     }
 
-    fn decay_all(&mut self, decay_fader: u16) {
+    fn decay_all(&mut self, decay_fader: u16, base_note: u8, key: Key, tonic: Note) {
         if decay_fader == 0 {
             return;
         }
-        let retain = 4095u32
-            .saturating_sub((decay_fader as u32 * 3900) / 4095)
-            .max(200);
+        // Per wrap: level retains 60..100%. Pitch pulls toward the in-scale
+        // Base Note, then snaps to the nearest scale degree.
+        let target = snap_to_scale(base_note, key, tonic);
+        let loss = (decay_fader as u32 * 1638) / 4095;
+        let retain = 4095u32.saturating_sub(loss).max(2457);
+        // At least ~12.5% of remaining offset per wrap; scales up with decay.
+        let pitch_loss = (decay_fader as u32 * 2048 / 4095).max(512).max(loss);
         for e in self.events.iter_mut() {
             if !e.used {
                 continue;
@@ -292,6 +303,19 @@ impl LoopBuf {
                 e.vel = 0;
             } else {
                 e.vel = nv;
+                let pitch_offset = e.note as i32 - target as i32;
+                if pitch_offset != 0 {
+                    let dist = pitch_offset.unsigned_abs() as u32;
+                    // Always move ≥1 semitone toward target when decay > 0.
+                    let pull = ((dist * pitch_loss) / 4095).max(1) as i32;
+                    let new_offset = if pitch_offset > 0 {
+                        (pitch_offset - pull).max(0)
+                    } else {
+                        (pitch_offset + pull).min(0)
+                    };
+                    let chromatic = (target as i32 + new_offset).clamp(0, 127) as u8;
+                    e.note = snap_to_scale_toward(chromatic, key, tonic, Some(target));
+                }
             }
         }
         if self.events.iter().all(|e| !e.used) {
@@ -374,11 +398,114 @@ fn mode_color(mode: usize) -> Color {
 }
 
 fn pitch_from_fader(fader: u16, base: MidiNote, span: i32) -> u8 {
-    let semis = (fader as i32 * (span + 3) / 120).clamp(0, 127);
-    (note_u8(base) as i32 + semis).clamp(0, 127) as u8
+    // Bipolar around Base Note: bottom = base−span/2, centre = base, top = base+span/2.
+    let offset = ((fader as i32 - 2048) * span) / 4096;
+    (note_u8(base) as i32 + offset).clamp(0, 127) as u8
 }
 
-#[embassy_executor::task(pool_size = 16/CHANNELS)]
+fn pc_in_scale(pc: u8, key: Key, tonic: Note) -> bool {
+    let mask = key.as_u16_key();
+    let tonic_pc = (tonic as u8) % 12;
+    let rel = (pc + 12 - tonic_pc) % 12;
+    (mask >> (11 - rel as u16)) & 1 != 0
+}
+
+/// Snap MIDI note to nearest degree of the global key/tonic. Chromatic / Off = passthrough.
+fn snap_to_scale(note: u8, key: Key, tonic: Note) -> u8 {
+    snap_to_scale_toward(note, key, tonic, None)
+}
+
+fn snap_to_scale_toward(note: u8, key: Key, tonic: Note, toward: Option<u8>) -> u8 {
+    if matches!(key, Key::Chromatic | Key::Off) {
+        return note;
+    }
+    if pc_in_scale(note % 12, key, tonic) {
+        return note;
+    }
+    for d in 1u8..=6 {
+        let down = note.checked_sub(d);
+        let up = (note <= 127 - d).then_some(note + d);
+        let down_ok = down.is_some_and(|n| pc_in_scale(n % 12, key, tonic));
+        let up_ok = up.is_some_and(|n| pc_in_scale(n % 12, key, tonic));
+        match (down_ok, up_ok, toward) {
+            (true, true, Some(t)) => {
+                let dn = down.unwrap();
+                let un = up.unwrap();
+                let dd = (dn as i16 - t as i16).unsigned_abs();
+                let du = (un as i16 - t as i16).unsigned_abs();
+                return if du < dd { un } else { dn };
+            }
+            (true, _, _) => return down.unwrap(),
+            (_, true, _) => return up.unwrap(),
+            _ => {}
+        }
+    }
+    note
+}
+
+/// HSV with explicit S/V (0..=255). Hue in degrees 0..360.
+fn hsv_to_rgb(hue: u16, sat: u8, val: u8) -> (u8, u8, u8) {
+    if sat == 0 {
+        return (val, val, val);
+    }
+    let sector = (hue % 360) / 60;
+    let f = (hue % 60) as u32;
+    let p = (val as u32 * (255 - sat as u32) / 255) as u8;
+    let q = (val as u32 * (255 - (sat as u32 * f) / 60) / 255) as u8;
+    let t = (val as u32 * (255 - (sat as u32 * (60 - f)) / 60) / 255) as u8;
+    match sector {
+        0 => (val, t, p),
+        1 => (q, val, p),
+        2 => (p, val, t),
+        3 => (p, q, val),
+        4 => (t, p, val),
+        _ => (val, p, q),
+    }
+}
+
+fn fader_hsv_color(hue: u16, _fader: u16) -> Color {
+    // Full sat/value — level is shown via Top/Bottom brightness, not washed RGB.
+    let (r, g, b) = hsv_to_rgb(hue, 255, 255);
+    Color::Custom(r, g, b)
+}
+
+fn pitch_fader_color(fader: u16) -> Color {
+    // Spectrum with pitch: low → red, high → violet.
+    let hue = (fader.min(4095) as u32 * 270 / 4095) as u16;
+    fader_hsv_color(hue, fader)
+}
+
+fn decay_fader_color(fader: u16) -> Color {
+    // Slow = cool violet; fast kill = hot red.
+    let t = fader.min(4095) as u32;
+    let hue = (300u32 - (t * 300) / 4095) as u16;
+    fader_hsv_color(hue, fader)
+}
+
+fn bars_fader_color(bars: u8, fader: u16) -> Color {
+    // 1 bar = amber, 8 bars = cyan.
+    let hue = (40u16).saturating_add((bars.saturating_sub(1) as u16) * 20);
+    fader_hsv_color(hue.min(180), fader)
+}
+
+fn paint_fader_meters<const N: usize>(
+    leds: &crate::app::Leds<N>,
+    color: Color,
+    fader: u16,
+    button_bright: u8,
+) {
+    let led = split_unsigned_value(fader);
+    leds.set(0, Led::Top, color, Brightness::Custom(led[0].max(12)));
+    leds.set(0, Led::Bottom, color, Brightness::Custom(led[1].max(12)));
+    leds.set(
+        0,
+        Led::Button,
+        color,
+        Brightness::Custom(button_bright.max(24)),
+    );
+}
+
+#[embassy_executor::task(pool_size = 4)]
 pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMutex, bool>) {
     let param_store = ParamStore::<Params>::new(
         app.app_id,
@@ -419,6 +546,8 @@ pub async fn run(
     params: &ParamStore<Params>,
     storage: &ManagedStorage<Storage>,
 ) {
+    app.wait_while_perf_muted().await;
+
     let (mode, midi_chan, midi_in_src, midi_out_dst, base_note, span, _base_color, range, vpo) =
         params.query(|p| {
             (
@@ -478,7 +607,7 @@ pub async fn run(
     let voices = app.make_global([(0u8, 0u16, 0u32); POLY]);
 
     if muted.get() {
-        leds.unset(0, Led::Button);
+        leds.set(0, Led::Button, Color::Red, Brightness::Low);
     } else {
         let bright = if armed.get() {
             Brightness::High
@@ -509,7 +638,8 @@ pub async fn run(
                     if let Some(pos) = b.play_pos(tick, bars) {
                         if let Some(pp) = prev_pos {
                             if pos < pp && !muted.get() {
-                                b.decay_all(decay_glob.get());
+                                let (key, tonic) = quantizer.get_scale().await;
+                                b.decay_all(decay_glob.get(), note_u8(base_note), key, tonic);
                                 buf.set(b);
                                 b = buf.get();
                             }
@@ -562,28 +692,63 @@ pub async fn run(
                     if erase_flash.get() {
                         leds.set(0, Led::Button, Color::White, Brightness::High);
                         erase_flash.set(false);
-                    } else if muted.get() {
-                        leds.unset(0, Led::Button);
-                        leds.unset(0, Led::Top);
-                    } else if flash_until.get() > tick {
-                        // Black dim/flash on playback hits
-                        leds.set(0, Led::Button, Color::Custom(0, 0, 0), Brightness::Low);
-                        leds.set(0, Led::Top, Color::Custom(0, 0, 0), Brightness::Low);
                     } else {
-                        let bright = if armed.get() {
-                            if blink_on {
-                                Brightness::High
-                            } else {
-                                Brightness::Mid
+                        match glob_latch_layer.get() {
+                            LatchLayer::Alt => {
+                                let v = decay_glob.get();
+                                paint_fader_meters(
+                                    &leds,
+                                    decay_fader_color(v),
+                                    v,
+                                    (v / 16) as u8,
+                                );
                             }
-                        } else {
-                            Brightness::Low
-                        };
-                        leds.set(0, Led::Button, led_color, bright);
-                        if armed.get() {
-                            leds.set(0, Led::Top, led_color, Brightness::Low);
-                        } else {
-                            leds.unset(0, Led::Top);
+                            LatchLayer::Third => {
+                                let v = storage.query(|s| s.bars_saved);
+                                let bars = bars_glob.get();
+                                paint_fader_meters(
+                                    &leds,
+                                    bars_fader_color(bars, v),
+                                    v,
+                                    (bars as u16 * 28).min(255) as u8,
+                                );
+                            }
+                            LatchLayer::Main => {
+                                if muted.get() {
+                                    leds.set(0, Led::Button, Color::Red, Brightness::Low);
+                                    leds.unset(0, Led::Top);
+                                    leds.unset(0, Led::Bottom);
+                                } else {
+                                    let main = main_glob.get();
+                                    let pitch_c = pitch_fader_color(main);
+                                    let meter = split_unsigned_value(main);
+                                    leds.set(
+                                        0,
+                                        Led::Top,
+                                        pitch_c,
+                                        Brightness::Custom(meter[0].max(8)),
+                                    );
+                                    leds.set(
+                                        0,
+                                        Led::Bottom,
+                                        pitch_c,
+                                        Brightness::Custom(meter[1].max(8)),
+                                    );
+                                    let bright = if armed.get() {
+                                        if blink_on {
+                                            Brightness::High
+                                        } else {
+                                            Brightness::Mid
+                                        }
+                                    } else {
+                                        Brightness::Low
+                                    };
+                                    leds.set(0, Led::Button, led_color, bright);
+                                    if flash_until.get() > tick {
+                                        leds.set(0, Led::Top, Color::White, Brightness::High);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -614,18 +779,14 @@ pub async fn run(
 
             if let Some(new_value) = latch.update(val, layer, target) {
                 match layer {
-                    LatchLayer::Main => {
-                        main_glob.set(new_value);
-                        storage.modify_and_save(|s| s.main_saved = new_value);
-                    }
                     LatchLayer::Alt => {
                         decay_glob.set(new_value);
                         storage.modify_and_save(|s| s.decay_saved = new_value);
-                        leds.set(
-                            0,
-                            Led::Top,
-                            Color::Red,
-                            Brightness::Custom((new_value / 16) as u8),
+                        paint_fader_meters(
+                            &leds,
+                            decay_fader_color(new_value),
+                            new_value,
+                            (new_value / 16) as u8,
                         );
                     }
                     LatchLayer::Third => {
@@ -636,12 +797,20 @@ pub async fn run(
                         bars_glob.set(new_bars);
                         last_bars = new_bars;
                         storage.modify_and_save(|s| s.bars_saved = new_value);
-                        leds.set(
-                            0,
-                            Led::Bottom,
-                            Color::White,
-                            Brightness::Custom((new_bars as u16 * 28) as u8),
+                        paint_fader_meters(
+                            &leds,
+                            bars_fader_color(new_bars, new_value),
+                            new_value,
+                            (new_bars as u16 * 28).min(255) as u8,
                         );
+                    }
+                    LatchLayer::Main => {
+                        main_glob.set(new_value);
+                        storage.modify_and_save(|s| s.main_saved = new_value);
+                        let pitch_c = pitch_fader_color(new_value);
+                        let meter = split_unsigned_value(new_value);
+                        leds.set(0, Led::Top, pitch_c, Brightness::Custom(meter[0].max(8)));
+                        leds.set(0, Led::Bottom, pitch_c, Brightness::Custom(meter[1].max(8)));
                     }
                 }
             }
@@ -650,8 +819,8 @@ pub async fn run(
 
     let controls = async {
         loop {
-            buttons.wait_for_down(0).await;
-            let shift = buttons.is_shift_pressed();
+            // Use down-event shift flag — polling after await misses Shift often.
+            let shift = buttons.wait_for_down(0).await;
             long_press_fired.set(false);
             fader_moved_while_held.set(false);
             button_down_fader.set(faders.get_value());
@@ -666,18 +835,44 @@ pub async fn run(
                     }
                     Either::Second(_) => {
                         long_press_fired.set(true);
-                        let mut b = buf.get();
-                        b.clear();
-                        buf.set(b);
-                        all_notes_off(&midi, &voices, &live_note, out_jack.as_ref()).await;
-                        erase_flash.set(true);
+                        if muted.get() {
+                            let mut b = buf.get();
+                            b.clear();
+                            buf.set(b);
+                            all_notes_off(&midi, &voices, &live_note, out_jack.as_ref()).await;
+                            erase_flash.set(true);
+                        } else {
+                            muted.set(true);
+                            storage.modify_and_save(|s| s.muted = true);
+                            all_notes_off(&midi, &voices, &live_note, out_jack.as_ref()).await;
+                        }
                         buttons.wait_for_up(0).await;
                     }
                 }
                 continue;
             }
 
-            if uses_button_gate && !muted.get() {
+            if muted.get() {
+                match select(buttons.wait_for_up(0), buttons.wait_for_any_long_press()).await {
+                    Either::First(_) => {
+                        if !long_press_fired.get() {
+                            muted.set(false);
+                            storage.modify_and_save(|s| s.muted = false);
+                        }
+                    }
+                    Either::Second(_) => {
+                        long_press_fired.set(true);
+                        if !fader_moved_while_held.get() {
+                            muted.set(false);
+                            storage.modify_and_save(|s| s.muted = false);
+                        }
+                        buttons.wait_for_up(0).await;
+                    }
+                }
+                continue;
+            }
+
+            if uses_button_gate {
                 let note = resolve_pitch(
                     mode,
                     &quantizer,
@@ -724,18 +919,7 @@ pub async fn run(
                 }
                 Either::Second(_) => {
                     long_press_fired.set(true);
-                    if !fader_moved_while_held.get() {
-                        if let Some(n) = live_note.get() {
-                            midi.send_note_off(MidiNote::from(n)).await;
-                            live_note.set(None);
-                            rec_open.set(false);
-                        }
-                        let m = muted.toggle();
-                        storage.modify_and_save(|s| s.muted = m);
-                        if m {
-                            all_notes_off(&midi, &voices, &live_note, out_jack.as_ref()).await;
-                        }
-                    } else if uses_button_gate {
+                    if uses_button_gate {
                         buttons.wait_for_up(0).await;
                         note_off(
                             &midi,
@@ -749,6 +933,16 @@ pub async fn run(
                         )
                         .await;
                         continue;
+                    }
+                    if !fader_moved_while_held.get() {
+                        if let Some(n) = live_note.get() {
+                            midi.send_note_off(MidiNote::from(n)).await;
+                            live_note.set(None);
+                            rec_open.set(false);
+                        }
+                        muted.set(true);
+                        storage.modify_and_save(|s| s.muted = true);
+                        all_notes_off(&midi, &voices, &live_note, out_jack.as_ref()).await;
                     }
                     buttons.wait_for_up(0).await;
                 }
@@ -769,7 +963,12 @@ pub async fn run(
                         continue;
                     }
                     if v >= GATE_THRESH && old < GATE_THRESH {
-                        let note = pitch_from_fader(main_glob.get(), base_note, span);
+                        let (key, tonic) = quantizer.get_scale().await;
+                        let note = snap_to_scale(
+                            pitch_from_fader(main_glob.get(), base_note, span),
+                            key,
+                            tonic,
+                        );
                         start_note(
                             &midi,
                             &buf,
@@ -811,7 +1010,8 @@ pub async fn run(
                             if muted.get() {
                                 continue;
                             }
-                            let n = u8::from(key);
+                            let (scale_key, tonic) = quantizer.get_scale().await;
+                            let n = snap_to_scale(u8::from(key), scale_key, tonic);
                             if u8::from(vel) == 0 {
                                 end_specific(
                                     &midi,
@@ -847,6 +1047,8 @@ pub async fn run(
                             }
                         }
                         AppMidiEvent::Message(MidiMessage::NoteOff { key, .. }) => {
+                            let (scale_key, tonic) = quantizer.get_scale().await;
+                            let n = snap_to_scale(u8::from(key), scale_key, tonic);
                             end_specific(
                                 &midi,
                                 &buf,
@@ -855,7 +1057,7 @@ pub async fn run(
                                 &rec_open,
                                 &armed,
                                 ticks,
-                                u8::from(key),
+                                n,
                                 out_jack.as_ref(),
                             )
                             .await;
@@ -871,6 +1073,7 @@ pub async fn run(
     };
 
     let layer_task = async {
+        let mut last_layer = LatchLayer::Main;
         loop {
             app.delay_millis(1).await;
             // When the button is the play/gate key, keep Main so fader = pitch.
@@ -886,6 +1089,27 @@ pub async fn run(
                 LatchLayer::Main
             };
             glob_latch_layer.set(layer);
+            // Entering Alt/Third: show meters even before the fader moves.
+            if layer != last_layer {
+                match layer {
+                    LatchLayer::Alt => {
+                        let v = decay_glob.get();
+                        paint_fader_meters(&leds, decay_fader_color(v), v, (v / 16) as u8);
+                    }
+                    LatchLayer::Third => {
+                        let v = storage.query(|s| s.bars_saved);
+                        let bars = bars_glob.get();
+                        paint_fader_meters(
+                            &leds,
+                            bars_fader_color(bars, v),
+                            v,
+                            (bars as u16 * 28).min(255) as u8,
+                        );
+                    }
+                    LatchLayer::Main => {}
+                }
+                last_layer = layer;
+            }
         }
     };
 
@@ -925,14 +1149,18 @@ async fn resolve_pitch(
     base_note: MidiNote,
     span: i32,
 ) -> u8 {
-    if mode == 0 {
+    let raw = if mode == 0 {
         if let Some(j) = in_jack {
             let pitch = quantizer.get_quantized_note(j.get_value()).await;
-            return (note_u8(base_note) as i32 + note_u8(pitch.as_midi()) as i32).clamp(0, 127)
-                as u8;
+            (note_u8(base_note) as i32 + note_u8(pitch.as_midi()) as i32).clamp(0, 127) as u8
+        } else {
+            pitch_from_fader(main, base_note, span)
         }
-    }
-    pitch_from_fader(main, base_note, span)
+    } else {
+        pitch_from_fader(main, base_note, span)
+    };
+    let (key, tonic) = quantizer.get_scale().await;
+    snap_to_scale(raw, key, tonic)
 }
 
 async fn all_notes_off(
@@ -1012,8 +1240,9 @@ async fn update_cv_out(
         .or_else(|| vs.iter().find(|v| v.0 != 0).map(|v| v.0));
     if let Some(n) = note {
         let base = note_u8(base_note);
-        let rel = (n as i32 - base as i32).clamp(0, 120);
-        let counts = ((rel as u32 * 4095) / 120) as u16;
+        // Base at mid-travel; ±60 semitones map to the full CV range.
+        let rel = (n as i32 - base as i32).clamp(-60, 60);
+        let counts = (((rel + 60) as u32 * 4095) / 120) as u16;
         let pitch = quantizer.get_quantized_note(counts).await;
         j.set_value(pitch.as_counts(range, vpo));
     } else {

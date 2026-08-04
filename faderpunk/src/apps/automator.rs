@@ -158,7 +158,7 @@ impl Default for Storage {
 
 impl AppStorage for Storage {}
 
-#[embassy_executor::task(pool_size = 16 / CHANNELS)]
+#[embassy_executor::task(pool_size = 4)]
 pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMutex, bool>) {
     let ch = app.start_channel as u8;
     let param_store = ParamStore::<Params>::new(
@@ -198,6 +198,8 @@ pub async fn run(
     params: &ParamStore<Params>,
     storage: &ManagedStorage<Storage>,
 ) {
+    app.wait_while_perf_muted().await;
+
     let (midi_out_cfg, midi_chan, midi_cc, range, nrpn, led_color, resolution) = params.query(|p| {
         (
             p.midi_out,

@@ -11,7 +11,7 @@ use libfp::{
     ext::FromValue,
     latch::LatchLayer,
     quantizer::Pitch,
-    utils::{attenuate, attenuverter, split_unsigned_value},
+    utils::{attenuate, attenuverter},
     AppIcon, Brightness, ClockDivision, Color, Config, MidiCc, MidiChannel, MidiMode, MidiNote,
     MidiOut, Param, Range, Value, VoltPerOct, APP_MAX_PARAMS,
 };
@@ -20,6 +20,7 @@ use midly::num::u7;
 use crate::app::{
     App, AppParams, AppStorage, ClockEvent, Led, ManagedStorage, ParamStore, SceneEvent,
 };
+use crate::apps::led_spectrum::{paint_fader_meters, spectrum_color};
 
 pub const CHANNELS: usize = 1;
 pub const PARAMS: usize = 11;
@@ -153,7 +154,7 @@ impl Default for Storage {
 }
 impl AppStorage for Storage {}
 
-#[embassy_executor::task(pool_size = 16/CHANNELS)]
+#[embassy_executor::task(pool_size = 4)]
 pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMutex, bool>) {
     let param_store = ParamStore::<Params>::new(
         app.app_id,
@@ -221,6 +222,8 @@ pub async fn run(
     params: &ParamStore<Params>,
     storage: &ManagedStorage<Storage>,
 ) {
+    app.wait_while_perf_muted().await;
+
     let (
         midi_out,
         midi_mode,
@@ -282,13 +285,15 @@ pub async fn run(
     let tick_period_ms = app.make_global(21u64);
     // Mid→Low button duck (CC samples / brief hit); Note stays Low while gated.
     let button_duck = app.make_global(0u16);
+    // Brief Top/Button flash on each new sample.
+    let sample_flash = app.make_global(0u16);
 
     let (res, muted) = storage.query(|s| (s.res_saved, s.muted));
     div_glob.set(resolution[(res as usize / 345).min(resolution.len() - 1)]);
     glob_muted.set(muted);
 
     if muted {
-        leds.unset(0, Led::Button);
+        leds.set(0, Led::Button, Color::Red, Brightness::Low);
     } else {
         leds.set(0, Led::Button, led_color, Brightness::Mid);
     }
@@ -364,6 +369,7 @@ pub async fn run(
                                     midi.send_note_on(note, vel).await;
                                     midi_note.set(note);
                                     note_on.set(true);
+                                    sample_flash.set(80);
 
                                     let gate_saved = storage.query(|s| s.gate_saved);
                                     let gt = gate_ticks(div, gate_saved);
@@ -374,25 +380,13 @@ pub async fn run(
                                                 gt.saturating_mul(tick_period_ms.get().max(1)),
                                             ),
                                     );
-
-                                    leds.set(
-                                        0,
-                                        Led::Top,
-                                        led_color,
-                                        Brightness::Custom((vel / 16) as u8),
-                                    );
                                 }
                                 MidiMode::Cc => {
                                     let amount = storage.query(|s| s.gate_saved);
                                     let cc_val = attenuate(sample, amount);
                                     midi.send_cc(midi_cc, cc_val).await;
                                     button_duck.set(BUTTON_DUCK_MS);
-                                    leds.set(
-                                        0,
-                                        Led::Top,
-                                        led_color,
-                                        Brightness::Custom((cc_val / 16) as u8),
-                                    );
+                                    sample_flash.set(80);
                                 }
                             }
                         }
@@ -497,6 +491,7 @@ pub async fn run(
                             midi.send_note_on(note, vel).await;
                             midi_note.set(note);
                             note_on.set(true);
+                            sample_flash.set(80);
 
                             let div = div_glob.get().max(1);
                             let gate_saved = storage.query(|s| s.gate_saved);
@@ -509,25 +504,13 @@ pub async fn run(
                                         gt.saturating_mul(tick_period_ms.get().max(1)),
                                     ),
                             );
-
-                            leds.set(
-                                0,
-                                Led::Top,
-                                led_color,
-                                Brightness::Custom((vel / 16) as u8),
-                            );
                         }
                         MidiMode::Cc => {
                             let amount = storage.query(|s| s.gate_saved);
                             let cc_val = attenuate(sample, amount);
                             midi.send_cc(midi_cc, cc_val).await;
                             button_duck.set(BUTTON_DUCK_MS);
-                            leds.set(
-                                0,
-                                Led::Top,
-                                led_color,
-                                Brightness::Custom((cc_val / 16) as u8),
-                            );
+                            sample_flash.set(80);
                         }
                     }
                 }
@@ -544,7 +527,7 @@ pub async fn run(
                         s.muted = muted;
                     });
                     if muted {
-                        leds.unset(0, Led::Button);
+                        leds.set(0, Led::Button, Color::Red, Brightness::Low);
                     } else {
                         leds.set(0, Led::Button, led_color, Brightness::Mid);
                     }
@@ -572,28 +555,32 @@ pub async fn run(
                 LatchLayer::Alt => storage.query(|s| s.res_saved),
                 LatchLayer::Third => storage.query(|s| s.sens_saved),
             };
-            let ledj = split_unsigned_value(display);
-            let color = match latch_active_layer {
-                LatchLayer::Main => led_color,
-                LatchLayer::Alt => Color::Red,
-                LatchLayer::Third => Color::Orange,
-            };
-            leds.set(0, Led::Bottom, color, Brightness::Custom(ledj[1]));
 
-            // Mid→Low duck: Low while note held, or brief duck on CC sample.
+            let flash = sample_flash.get();
+            if flash > 0 {
+                sample_flash.set(flash.saturating_sub(1));
+                leds.set(0, Led::Top, Color::White, Brightness::High);
+                leds.set(0, Led::Bottom, spectrum_color(display), Brightness::Mid);
+                if !glob_muted.get() {
+                    leds.set(0, Led::Button, Color::White, Brightness::High);
+                }
+            } else if glob_muted.get() {
+                leds.set(0, Led::Button, Color::Red, Brightness::Low);
+                leds.unset(0, Led::Top);
+                leds.unset(0, Led::Bottom);
+            } else {
+                let color = spectrum_color(display);
+                let btn = if note_on.get() || button_duck.get() > 0 {
+                    48u8
+                } else {
+                    (display / 16).max(40) as u8
+                };
+                paint_fader_meters(&leds, color, display, btn);
+            }
+
             let duck = button_duck.get();
             if duck > 0 {
                 button_duck.set(duck.saturating_sub(1));
-            }
-            if glob_muted.get() {
-                leds.unset(0, Led::Button);
-            } else {
-                let bright = if note_on.get() || duck > 0 {
-                    Brightness::Low
-                } else {
-                    Brightness::Mid
-                };
-                leds.set(0, Led::Button, led_color, bright);
             }
         }
     };
@@ -607,7 +594,7 @@ pub async fn run(
                     div_glob.set(resolution[(res as usize / 345).min(resolution.len() - 1)]);
                     glob_muted.set(muted);
                     if muted {
-                        leds.unset(0, Led::Button);
+                        leds.set(0, Led::Button, Color::Red, Brightness::Low);
                     } else {
                         leds.set(0, Led::Button, led_color, Brightness::Mid);
                     }
@@ -628,7 +615,6 @@ pub async fn run(
                 if midi_mode == MidiMode::Note && note_on.get() {
                     midi.send_note_off(midi_note.get()).await;
                     note_on.set(false);
-                    leds.set(0, Led::Top, led_color, Brightness::Off);
                     // Push gate end into the past so release paths are a no-op
                     gate_end_instant.set(Instant::from_ticks(0));
                     gate_end_clkn.set(0);
@@ -636,7 +622,7 @@ pub async fn run(
                 if !glob_muted.get() {
                     glob_muted.set(true);
                     storage.modify_and_save(|s| s.muted = true);
-                    leds.unset(0, Led::Button);
+                    leds.set(0, Led::Button, Color::Red, Brightness::Low);
                 }
             }
         }

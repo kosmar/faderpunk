@@ -169,6 +169,8 @@ pub async fn run(
     params: &ParamStore<Params>,
     storage: &ManagedStorage<Storage>,
 ) {
+    app.wait_while_perf_muted().await;
+
     let (range, midi_out, midi_chan, midi_cc, color_in, nrpn) = params.query(|p| {
         (
             p.range,
@@ -223,8 +225,6 @@ pub async fn run(
     glob_div.set(resolution[(speed as usize / 500).clamp(0, 8)]);
     let mut count = 0;
 
-    let mut last_val: u16 = u16::MAX;
-
     if storage.query(|s| s.in_mute) {
         leds.unset(0, Led::Button);
     } else {
@@ -251,8 +251,12 @@ pub async fn run(
 
     let fut1 = async {
         let mut oldinputval = 0;
+        let mut last_val: u16 = u16::MAX;
+        let mut midi_pace: u8 = 0;
+        let mut led_pace: u8 = 0;
         loop {
-            app.delay_millis(1).await;
+            // Same as classic LFO: 1ms+USB CC wedged the host (incl. Beta DIN).
+            app.delay_millis(8).await;
             let in_mute = storage.query(|s| s.in_mute);
             let in_val = if in_mute {
                 2047
@@ -289,10 +293,11 @@ pub async fn run(
             let quant_speed = glob_quant_speed.get();
             let lfo_pos = glob_lfo_pos.get();
 
+            let step = 8.0;
             let next_pos = if sync {
-                (lfo_pos + quant_speed / speed_mult as f32) % 4096.0
+                (lfo_pos + quant_speed * step / speed_mult as f32) % 4096.0
             } else {
-                (lfo_pos + lfo_speed / speed_mult as f32) % 4096.0
+                (lfo_pos + lfo_speed * step / speed_mult as f32) % 4096.0
             };
 
             let attenuation = (storage.query(|s| s.layer_attenuation) as i16
@@ -331,10 +336,14 @@ pub async fn run(
             };
             output.set_value(effective_val);
             if midi_out.is_some() {
-                let gate_val = midi_gate(effective_val, nrpn);
-                if gate_val != last_val {
-                    midi.send_cc(midi_cc, effective_val).await;
-                    last_val = gate_val;
+                midi_pace = midi_pace.wrapping_add(1);
+                if midi_pace >= 5 {
+                    midi_pace = 0;
+                    let gate_val = midi_gate(effective_val, nrpn);
+                    if gate_val != last_val {
+                        midi.try_send_cc(midi_cc, effective_val);
+                        last_val = gate_val;
+                    }
                 }
             }
 
@@ -346,47 +355,51 @@ pub async fn run(
 
             let color = get_color_for(wave);
 
-            if out_muted {
-                leds.unset(1, Led::Button);
-            } else if sync && next_pos as u16 > 2048 {
-                leds.set(1, Led::Button, color, Brightness::Low);
-            } else {
-                leds.set(1, Led::Button, color, Brightness::Mid);
-            }
+            led_pace = led_pace.wrapping_add(1);
+            if led_pace >= 4 {
+                led_pace = 0;
+                if out_muted {
+                    leds.unset(1, Led::Button);
+                } else if sync && next_pos as u16 > 2048 {
+                    leds.set(1, Led::Button, color, Brightness::Low);
+                } else {
+                    leds.set(1, Led::Button, color, Brightness::Mid);
+                }
 
-            match latch_active_layer {
-                LatchLayer::Main => {
-                    leds.set(1, Led::Top, color, Brightness::Custom(led[0]));
-                    leds.set(1, Led::Bottom, color, Brightness::Custom(led[1]));
-                    if in_mute {
-                        leds.unset(0, Led::Button);
-                    } else {
-                        leds.set(0, Led::Button, color_in, Brightness::Mid);
+                match latch_active_layer {
+                    LatchLayer::Main => {
+                        leds.set(1, Led::Top, color, Brightness::Custom(led[0]));
+                        leds.set(1, Led::Bottom, color, Brightness::Custom(led[1]));
+                        if in_mute {
+                            leds.unset(0, Led::Button);
+                        } else {
+                            leds.set(0, Led::Button, color_in, Brightness::Mid);
+                        }
                     }
-                }
-                LatchLayer::Alt => {
-                    leds.set(
-                        1,
-                        Led::Top,
-                        Color::Red,
-                        Brightness::Custom(((attenuation / 16) / 2) as u8),
-                    );
-                    leds.unset(1, Led::Bottom);
+                    LatchLayer::Alt => {
+                        leds.set(
+                            1,
+                            Led::Top,
+                            Color::Red,
+                            Brightness::Custom(((attenuation / 16) / 2) as u8),
+                        );
+                        leds.unset(1, Led::Bottom);
 
-                    let dest_color = match destination {
-                        0 => Color::Yellow,
-                        1 => Color::Pink,
-                        2 => Color::Cyan,
-                        3 => Color::Red,
-                        _ => Color::Yellow,
-                    };
-                    leds.set(0, Led::Button, dest_color, Brightness::Mid);
+                        let dest_color = match destination {
+                            0 => Color::Yellow,
+                            1 => Color::Pink,
+                            2 => Color::Cyan,
+                            3 => Color::Red,
+                            _ => Color::Yellow,
+                        };
+                        leds.set(0, Led::Button, dest_color, Brightness::Mid);
+                    }
+                    LatchLayer::Third => {}
                 }
-                LatchLayer::Third => {}
+                let led0 = split_unsigned_value(in_val);
+                leds.set(0, Led::Top, color_in, Brightness::Custom(led0[0]));
+                leds.set(0, Led::Bottom, color_in, Brightness::Custom(led0[1]));
             }
-            let led0 = split_unsigned_value(in_val);
-            leds.set(0, Led::Top, color_in, Brightness::Custom(led0[0]));
-            leds.set(0, Led::Bottom, color_in, Brightness::Custom(led0[1]));
 
             glob_lfo_pos.set(next_pos);
         }

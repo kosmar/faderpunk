@@ -94,7 +94,7 @@ impl Default for Storage {
 
 impl AppStorage for Storage {}
 
-#[embassy_executor::task(pool_size = 16/CHANNELS)]
+#[embassy_executor::task(pool_size = 4)]
 pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMutex, bool>) {
     let param_store = ParamStore::<Params>::new(
         app.app_id,
@@ -130,6 +130,8 @@ pub async fn run(
     params: &ParamStore<Params>,
     storage: &ManagedStorage<Storage>,
 ) {
+    app.wait_while_perf_muted().await;
+
     let (led_color, range, vpo, bypass) = params.query(|p| (p.color, p.range, p.vpo, p.bypass));
     let buttons = app.use_buttons();
     let faders = app.use_faders();

@@ -322,6 +322,8 @@ pub async fn run(
     params: &ParamStore<Params>,
     storage: &ManagedStorage<Storage>,
 ) {
+    app.wait_while_perf_muted().await;
+
     let (led_color, range, jack_mode, p_dest, p_att) =
         params.query(|p| (p.color, p.range, p.jack_mode, p.dest, p.cv_att));
     let (midi_out, midi_chan, midi_cc, nrpn) =

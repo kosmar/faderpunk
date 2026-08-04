@@ -1,0 +1,26 @@
+# No configurator commits / no companion-app PRs to ATOV
+
+Never `git add`, commit, or push anything under `configurator/`.
+
+- Firmware, docs/cheatsheet are fine when asked.
+- Local configurator edits for testing are OK; leave them unstaged or discard before commit.
+- If a commit accidentally includes `configurator/`, stop and unstage/restore those paths before committing.
+
+## Companion webapps (Presetpunk / Scopepunk)
+
+**Presetpunk** (`faderpunk-preset-editor/` / brand **Presetpunk**) and **Scopepunk**
+(`faderpunk-diagnostics/`) are personal tools. They must **not** be opened as PRs
+against `github.com/ATOVproject/faderpunk`.
+
+Canonical home: https://github.com/kosmar/faderpunk-tools  
+(also fine on branches of https://github.com/kosmar/faderpunk).
+
+When asked to commit/push these apps, push to `kosmar/faderpunk-tools` (or the
+`kosmar/faderpunk` fork) — never open a PR to ATOV for them.
+
+## Existing app PRs
+
+WIP **firmware/configurator** apps already have open PRs. Before opening a new PR,
+check the list and push to the matching feature branch instead:
+
+https://github.com/ATOVproject/faderpunk/pulls

@@ -26,13 +26,18 @@ use crate::{
 pub const CHANNELS: usize = 1;
 pub const PARAMS: usize = 11;
 
-const LED_BRIGHTNESS: Brightness = Brightness::Mid;
 /// Reverse gesture LED feedback length (white↔off fade), same as Golden Gate / Heat Pump.
 const REVERSE_FADE_MS: u16 = 500;
 /// Octave-span cue: one Button blink in the span color (Shift+long).
 const OCTAVE_BLINK_MS: u16 = 250;
 /// Hold off periodic button LED writes so LedMode::Flash can finish.
 const BUTTON_FLASH_MS: u16 = 850;
+/// Button latch level floor (Low-ish → High). Wide span so fader motion reads clearly.
+const BTN_LEVEL_FLOOR: u8 = 100;
+/// Top latch level: deeper dim→bright for amount.
+const TOP_LEVEL_FLOOR: u8 = 40;
+/// Bottom pitch height floor while gated.
+const PITCH_LEVEL_FLOOR: u8 = 90;
 
 const POOL_CAP: usize = 16;
 const MIN_PHRASE: usize = 4;
@@ -280,6 +285,33 @@ fn cv_out_color(mode: usize) -> Color {
     }
 }
 
+/// Map a 12-bit level into [floor, 255] with sqrt ease-in so early fader travel
+/// already brightens (Evolve leaving 0 feels alive; full throw still hits High).
+fn level_bright(value: u16, floor: u8) -> Brightness {
+    let t = value as f32 / 4095.0;
+    let curved = libm::sqrtf(t.clamp(0.0, 1.0));
+    let span = (255 - floor) as f32;
+    Brightness::Custom((floor as f32 + curved * span) as u8)
+}
+
+/// Pitch height within the current octave span → Bottom brightness.
+fn pitch_bright(raw: u8, lo: u8, hi: u8) -> Brightness {
+    let span = (hi.saturating_sub(lo)).max(1) as u16;
+    let pos = (raw.saturating_sub(lo) as u16).min(span);
+    Brightness::Custom(
+        (PITCH_LEVEL_FLOOR as u16 + pos * (255 - PITCH_LEVEL_FLOOR as u16) / span) as u8,
+    )
+}
+
+/// Latch layer → hue for Button/Top.
+fn latch_hue(layer: LatchLayer, led_color: Color) -> Color {
+    match layer {
+        LatchLayer::Main => led_color,
+        LatchLayer::Alt => Color::Orange,
+        LatchLayer::Third => Color::Violet,
+    }
+}
+
 fn cycle_cv_out(mode: u8) -> u8 {
     ((mode as usize + 1) % OUT_COUNT) as u8
 }
@@ -424,6 +456,8 @@ pub async fn run(
     params: &ParamStore<Params>,
     storage: &ManagedStorage<Storage>,
 ) {
+    app.wait_while_perf_muted().await;
+
     let (
         midi_out,
         midi_chan,
@@ -541,7 +575,13 @@ pub async fn run(
     if muted {
         leds.unset(0, Led::Button);
     } else {
-        leds.set(0, Led::Button, led_color, LED_BRIGHTNESS);
+        let c = latch_hue(LatchLayer::Main, led_color);
+        leds.set(
+            0,
+            Led::Button,
+            c,
+            level_bright(fader_saved, BTN_LEVEL_FLOOR),
+        );
     }
 
     let (density0, phrase0, _) = texture_from_value(shift_fader_saved);
@@ -697,18 +737,6 @@ pub async fn run(
                             );
                         }
 
-                        // Top LED: phrase progress in octave-span color; Button = Color param.
-                        if glob_latch_layer.get() == LatchLayer::Main {
-                            leds.set(
-                                0,
-                                Led::Top,
-                                octave_color(glob_octaves.get()),
-                                Brightness::Custom(
-                                    ((step % phrase_len.max(1)) * 255 / phrase_len.max(1)) as u8,
-                                ),
-                            );
-                        }
-
                         step = step.wrapping_add(1);
                         if phrase_len > 0 && step.is_multiple_of(phrase_len) {
                             step = 0;
@@ -756,6 +784,10 @@ pub async fn run(
             if pending_fire.get() {
                 pending_fire.set(false);
                 if !glob_muted.get() {
+                    let octaves = clamp_octaves(glob_octaves.get());
+                    let lo = base_midi(base_note);
+                    let hi = clamp_note(lo as i16 + (octaves as i16) * 12);
+                    let raw = pending_raw.get();
                     fire_note(
                         &midi,
                         out_jack.as_ref(),
@@ -765,8 +797,9 @@ pub async fn run(
                         vpo,
                         range,
                         glob_cv_out.get(),
-                        pending_raw.get(),
+                        raw,
                         pending_vel.get(),
+                        pitch_bright(raw, lo, hi),
                         &mut note_on,
                     )
                     .await;
@@ -824,9 +857,8 @@ pub async fn run(
                         pending_silence.set(true);
                         leds.unset(0, Led::Button);
                         leds.unset(0, Led::Bottom);
-                    } else {
-                        leds.set(0, Led::Button, led_color, LED_BRIGHTNESS);
                     }
+                    // Unmute: Button restored by shift loop via latch_level.
                 }
             }
         }
@@ -937,9 +969,8 @@ pub async fn run(
                     if muted {
                         midi.send_note_off(base_note).await;
                         leds.unset(0, Led::Button);
-                    } else {
-                        leds.set(0, Led::Button, led_color, LED_BRIGHTNESS);
                     }
+                    // Unmute / level: Button restored by shift loop via latch_level.
                 }
                 SceneEvent::SaveScene(scene) => {
                     storage.save_to_scene(scene).await;
@@ -976,30 +1007,17 @@ pub async fn run(
             };
             glob_latch_layer.set(latch_active_layer);
 
-            // Layer LED feedback for Alt (texture) / Third (Lévy α).
-            match latch_active_layer {
-                LatchLayer::Alt => {
-                    let t = glob_texture.get();
-                    leds.set(
-                        0,
-                        Led::Top,
-                        Color::Orange,
-                        Brightness::Custom((t / 16) as u8),
-                    );
-                }
-                LatchLayer::Third => {
-                    let a = glob_alpha.get();
-                    leds.set(
-                        0,
-                        Led::Top,
-                        Color::Violet,
-                        Brightness::Custom((a / 16) as u8),
-                    );
-                }
-                LatchLayer::Main => {}
-            }
+            // Live fader → brightness so scrubbing shows a real gradient immediately
+            // (params still go through the latch in fut_faders).
+            let layer_color = latch_hue(latch_active_layer, led_color);
+            let fader_now = faders.get_value();
+            let btn_bright = level_bright(fader_now, BTN_LEVEL_FLOOR);
+            let top_bright = level_bright(fader_now, TOP_LEVEL_FLOOR);
 
-            // Reverse gesture feedback (white↔off).
+            // Top: deeper dim→bright. Button: Low→High with sqrt ease.
+            leds.set(0, Led::Top, layer_color, top_bright);
+
+            // Reverse / octave / CV-flash cues own the Button briefly; else latch level.
             let fade_left = glob_reverse_fade.get();
             let blink_left = glob_octave_blink.get();
             let flash_left = glob_btn_flash.get();
@@ -1013,13 +1031,7 @@ pub async fn run(
                     (((REVERSE_FADE_MS - elapsed) as u32 * 255) / REVERSE_FADE_MS as u32) as u8
                 };
                 leds.set(0, Led::Button, Color::White, Brightness::Custom(bright));
-                let next = fade_left.saturating_sub(1);
-                glob_reverse_fade.set(next);
-                if next == 0 && !glob_muted.get() {
-                    leds.set(0, Led::Button, led_color, LED_BRIGHTNESS);
-                } else if next == 0 && glob_muted.get() {
-                    leds.unset(0, Led::Button);
-                }
+                glob_reverse_fade.set(fade_left.saturating_sub(1));
             } else if blink_left > 0 {
                 // Octave-span cue: one Button blink in Blue/Cyan/Yellow/Red.
                 let bright =
@@ -1030,13 +1042,11 @@ pub async fn run(
                     octave_color(glob_octaves.get()),
                     Brightness::Custom(bright),
                 );
-                let next = blink_left.saturating_sub(1);
-                glob_octave_blink.set(next);
-                if next == 0 && !glob_muted.get() {
-                    leds.set(0, Led::Button, led_color, LED_BRIGHTNESS);
-                } else if next == 0 && glob_muted.get() {
-                    leds.unset(0, Led::Button);
-                }
+                glob_octave_blink.set(blink_left.saturating_sub(1));
+            } else if glob_muted.get() {
+                leds.unset(0, Led::Button);
+            } else {
+                leds.set(0, Led::Button, layer_color, btn_bright);
             }
         }
     };
@@ -1066,6 +1076,7 @@ async fn fire_note(
     cv_out: usize,
     raw: u8,
     velocity: u16,
+    bottom_bright: Brightness,
     note_on: &mut Option<MidiNote>,
 ) {
     // Quantize via 1V/oct counts derived from the MIDI note, then emit MIDI
@@ -1095,5 +1106,6 @@ async fn fire_note(
     }
     midi.send_note_on(n, velocity).await;
     *note_on = Some(n);
-    leds.set(0, Led::Bottom, led_color, Brightness::High);
+    // Bottom: pitch height within octave span while the gate is open.
+    leds.set(0, Led::Bottom, led_color, bottom_bright);
 }

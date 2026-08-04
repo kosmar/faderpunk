@@ -32,7 +32,7 @@ macro_rules! register_apps {
             layout_id: u8,
             spawner: Spawner,
             exit_signals: &'static [Signal<NoopRawMutex, bool>; 16]
-        ) {
+        ) -> bool {
             match app_id {
                 $(
                     $id => {
@@ -48,11 +48,23 @@ macro_rules! register_apps {
                             &MIDI_USB_PUBSUB,
                         );
 
-                        spawner.spawn($app_mod::wrapper(app, &exit_signals[start_channel])).unwrap();
+                        match spawner.spawn($app_mod::wrapper(app, &exit_signals[start_channel])) {
+                            Ok(()) => true,
+                            Err(_) => {
+                                defmt::warn!(
+                                    "spawn failed app_id={} ch={} layout_id={} (pool full?)",
+                                    app_id,
+                                    start_channel,
+                                    layout_id
+                                );
+                                false
+                            }
+                        }
                     },
                 )*
                 _ => {
-                    // Do nothing if app_id isn't valid
+                    defmt::warn!("spawn unknown app_id={}", app_id);
+                    false
                 }
             }
         }

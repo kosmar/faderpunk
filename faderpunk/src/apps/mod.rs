@@ -1,4 +1,6 @@
 mod genre_palette;
+mod led_spectrum;
+
 
 register_apps!(
     1 => control,
@@ -28,7 +30,6 @@ register_apps!(
     25 => automator,
     26 => genseq,
     27 => bernoulli,
-    // ID 28 = Sift (upstream, not ours — never register here)
     29 => heat_pump,
     30 => grooves,
     31 => fibonacci_gate,

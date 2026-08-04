@@ -2,6 +2,7 @@ use defmt::info;
 use embassy_futures::{
     join::join3,
     select::{select, select3, Either, Either3},
+    yield_now,
 };
 use embassy_rp::{
     peripherals::USB,
@@ -25,10 +26,9 @@ use midly::{
     stream::MidiStream,
     MidiMessage,
 };
+use portable_atomic::{AtomicBool, Ordering};
 
-use libfp::{
-    sysex::SYSEX_HEADER, ClockSrc, MidiIn, MidiOut, MidiOutConfig, MidiOutMode, GLOBAL_CHANNELS,
-};
+use libfp::{sysex::SYSEX_HEADER, ClockSrc, MidiIn, MidiOut, MidiOutConfig, MidiOutMode};
 
 use crate::{
     events::{EventPubSubPublisher, InputEvent, EVENT_PUBSUB},
@@ -48,6 +48,163 @@ use crate::{
 pub const CONFIG_CABLE: u8 = 1;
 pub const PERF_CABLE: u8 = 0;
 
+/// Hard mute during exit/spawn. Also blocks SetAppParams (apps not ready).
+/// Hard mute: drop Local performance MIDI on the shared USB bulk pipe.
+/// Set for spawn_layout, and held for the entire host HoldPerfMute Full Push.
+pub static LAYOUT_USB_MIDI_MUTE: AtomicBool = AtomicBool::new(false);
+
+/// True only while `spawn_layout` is exiting/spawning apps. Configure stubs
+/// Get/SetAppParams during this window so the config loop cannot block on a
+/// half-booted app — but NOT for the whole HoldPerfMute (params must work).
+static LAYOUT_SPAWN_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Soft mute: drop Local performance MIDI until this Instant (ms since boot).
+/// Survives past spawn so editor settle + GetVersion see a quiet USB pipe.
+/// Does **not** block SetAppParams (see configure).
+static PERF_LOCAL_MUTE_UNTIL_MS: portable_atomic::AtomicU32 = portable_atomic::AtomicU32::new(0);
+
+/// Set for the duration of a config request/response (+ short tail).
+pub static CONFIG_HOLDS_PERF_USB: AtomicBool = AtomicBool::new(false);
+
+/// Host HoldPerfMute during incremental Full Push — LFO stays gated until Release.
+static HOST_HOLDS_PERF_MUTE: AtomicBool = AtomicBool::new(false);
+
+/// While true, newly spawned apps park in ParamStore/ManagedStorage::load
+/// before any FRAM/jack work. Set for the deferred Release spawn burst so
+/// all tasks exist as light waiters before heavy init runs.
+static SPAWN_START_HELD: AtomicBool = AtomicBool::new(false);
+
+/// Min spacing between Local performance packets (USB and DIN, all apps).
+/// DIN-only floods still starved Core 0 (Beta DIN / macOS wedge).
+const PERF_LOCAL_MIN_GAP_MS: u64 = 8;
+static PERF_LOCAL_LAST_MS: portable_atomic::AtomicU32 = portable_atomic::AtomicU32::new(0);
+
+/// How long Local MIDI stays muted after spawn finishes. Short: apps run
+/// during soft mute (only their Local MIDI is dropped), and a host push keeps
+/// it alive via CONFIG_SOFT_MUTE_EXTEND_MS on every config message anyway.
+/// This also arms on FRAM boot, so long values stall standalone MIDI output.
+pub const POST_LAYOUT_PERF_MUTE_MS: u32 = 4_000;
+
+/// Sliding extension on every config SysEx so soft-mute cannot expire mid-push.
+pub const CONFIG_SOFT_MUTE_EXTEND_MS: u32 = 8_000;
+
+pub fn set_layout_usb_midi_mute(mute: bool) {
+    LAYOUT_USB_MIDI_MUTE.store(mute, Ordering::Relaxed);
+}
+
+pub fn set_layout_spawn_active(active: bool) {
+    LAYOUT_SPAWN_ACTIVE.store(active, Ordering::Relaxed);
+}
+
+pub fn layout_spawn_active() -> bool {
+    LAYOUT_SPAWN_ACTIVE.load(Ordering::Relaxed)
+}
+
+/// After apps are spawned: allow params, keep Local MIDI quiet for host settle.
+pub fn arm_post_layout_perf_mute(duration_ms: u32) {
+    let until = Instant::now().as_millis() as u32 + duration_ms;
+    PERF_LOCAL_MUTE_UNTIL_MS.store(until, Ordering::Relaxed);
+}
+
+/// Ensure soft-mute covers at least `extend_ms` from now (does not shorten).
+pub fn extend_post_layout_perf_mute(extend_ms: u32) {
+    let now = Instant::now().as_millis() as u32;
+    let want = now.wrapping_add(extend_ms);
+    let cur = PERF_LOCAL_MUTE_UNTIL_MS.load(Ordering::Relaxed);
+    // Refresh when inactive/expired or when `want` is later than `cur`.
+    if cur == 0 || now >= cur || cur < want {
+        PERF_LOCAL_MUTE_UNTIL_MS.store(want, Ordering::Relaxed);
+    }
+}
+
+pub fn set_config_holds_perf_usb(hold: bool) {
+    CONFIG_HOLDS_PERF_USB.store(hold, Ordering::Relaxed);
+}
+
+pub fn host_holds_perf_mute() -> bool {
+    HOST_HOLDS_PERF_MUTE.load(Ordering::Relaxed)
+}
+
+pub fn set_spawn_start_held(held: bool) {
+    SPAWN_START_HELD.store(held, Ordering::Relaxed);
+}
+
+pub fn spawn_start_held() -> bool {
+    SPAWN_START_HELD.load(Ordering::Relaxed)
+}
+
+/// Editor Full Push: hard-mute Local MIDI for the whole incremental sequence.
+/// Soft mute alone was not enough — unmute-after-each-spawn + FRAM `store_layout`
+/// after every step was killing the config cable on dense presets.
+pub fn set_host_holds_perf_mute(hold: bool) {
+    HOST_HOLDS_PERF_MUTE.store(hold, Ordering::Relaxed);
+    if hold {
+        set_layout_usb_midi_mute(true);
+        arm_post_layout_perf_mute(POST_LAYOUT_PERF_MUTE_MS);
+    } else {
+        set_layout_usb_midi_mute(false);
+        arm_post_layout_perf_mute(POST_LAYOUT_PERF_MUTE_MS);
+    }
+}
+
+fn perf_local_muted() -> bool {
+    if LAYOUT_USB_MIDI_MUTE.load(Ordering::Relaxed) {
+        return true;
+    }
+    if HOST_HOLDS_PERF_MUTE.load(Ordering::Relaxed) {
+        return true;
+    }
+    let until = PERF_LOCAL_MUTE_UNTIL_MS.load(Ordering::Relaxed);
+    if until == 0 {
+        return false;
+    }
+    (Instant::now().as_millis() as u32) < until
+}
+
+/// Apps can stall heavy loops until post-layout Local MIDI mute ends.
+pub fn perf_local_muted_public() -> bool {
+    perf_local_muted()
+}
+
+/// Note events must never be silently dropped mid-stream: a swallowed NoteOff
+/// hangs a note, a swallowed NoteOn breaks the groove (drum apps fire kick,
+/// snare and hats within the same tick — well under any per-packet gap).
+fn is_note_event(event: &LiveEvent<'_>) -> bool {
+    matches!(
+        event,
+        LiveEvent::Midi {
+            message: MidiMessage::NoteOn { .. } | MidiMessage::NoteOff { .. },
+            ..
+        }
+    )
+}
+
+fn is_note_off_event(event: &LiveEvent<'_>) -> bool {
+    matches!(
+        event,
+        LiveEvent::Midi {
+            message: MidiMessage::NoteOff { .. },
+            ..
+        }
+    )
+}
+
+fn perf_local_allowed() -> bool {
+    if perf_local_muted() {
+        return false;
+    }
+    if CONFIG_HOLDS_PERF_USB.load(Ordering::Relaxed) {
+        return false;
+    }
+    let now = Instant::now().as_millis() as u32;
+    let last = PERF_LOCAL_LAST_MS.load(Ordering::Relaxed);
+    if now.wrapping_sub(last) < PERF_LOCAL_MIN_GAP_MS as u32 {
+        return false;
+    }
+    PERF_LOCAL_LAST_MS.store(now, Ordering::Relaxed);
+    true
+}
+
 /// Shared USB-MIDI sender: performance MIDI out and the config loop write
 /// through the same endpoint, interleaving per 64-byte USB packet.
 pub type SharedUsbSender<'a> = Mutex<NoopRawMutex, UsbSender<'a, Driver<'a, USB>>>;
@@ -60,8 +217,8 @@ const MIDI_CHANNEL_SIZE: usize = 16;
 const MIDI_APP_QUEUE_SIZE: usize = 16;
 const MIDI_PUBSUB_SIZE: usize = 64;
 const MIDI_BURST_PER_TICK: usize = 8;
-// Max apps
-const MIDI_PUBSUB_SUBS: usize = GLOBAL_CHANNELS;
+// Per-app USB+DIN midi-in can take 2 slots; allow SetLayout overlap.
+const MIDI_PUBSUB_SUBS: usize = 48;
 // Only one, from here
 const MIDI_PUBSUB_SENDERS: usize = 1;
 
@@ -227,11 +384,20 @@ async fn write_msg_to_usb<'a>(
     usb_tx: &SharedUsbSender<'a>,
     midi_ev: LiveEvent<'a>,
 ) -> Result<(), TimeoutError> {
+    // Hard layout mute + config hold only. Soft post-layout mute is enforced
+    // on Local events in midi_out_task so clock can still tick on USB.
+    if LAYOUT_USB_MIDI_MUTE.load(Ordering::Relaxed) || CONFIG_HOLDS_PERF_USB.load(Ordering::Relaxed)
+    {
+        return Ok(());
+    }
     let mut usb_buf = [0_u8; 4];
     // Cable nibble 0 (performance MIDI) | CIN
     usb_buf[0] = cin_from_live_event(&midi_ev) as u8;
     let mut usb_cursor = Cursor::new(&mut usb_buf[1..]);
-    midi_ev.write(&mut usb_cursor).unwrap();
+    // Never panic Core 0 on a bad event — that unplugs USB MIDI until replug.
+    if midi_ev.write(&mut usb_cursor).is_err() {
+        return Err(TimeoutError);
+    }
     let _ = with_timeout(Duration::from_millis(USB_WRITE_TIMEOUT_MS), async {
         // Write including USB-MIDI CIN
         usb_tx.lock().await.write_packet(&usb_buf).await
@@ -246,7 +412,9 @@ async fn write_msg_to_uart0(
 ) -> Result<(), UartError> {
     let mut ser_buf = [0_u8; 3];
     let mut ser_cursor = Cursor::new(&mut ser_buf);
-    midi_ev.write(&mut ser_cursor).unwrap();
+    if midi_ev.write(&mut ser_cursor).is_err() {
+        return Ok(());
+    }
     let bytes_written = ser_cursor.cursor();
     uart0_tx.write(&ser_buf[..bytes_written]).await?;
     Ok(())
@@ -258,7 +426,9 @@ async fn write_msg_to_uart1(
 ) -> Result<(), UartError> {
     let mut ser_buf = [0_u8; 3];
     let mut ser_cursor = Cursor::new(&mut ser_buf);
-    midi_ev.write(&mut ser_cursor).unwrap();
+    if midi_ev.write(&mut ser_cursor).is_err() {
+        return Ok(());
+    }
     let bytes_written = ser_cursor.cursor();
     uart1_tx.write_all(&ser_buf[..bytes_written]).await?;
     uart1_tx.flush().await?;
@@ -278,6 +448,25 @@ pub async fn midi_distributor() {
         match select(app_midi_receiver.receive(), ticker.next()).await {
             // A new message from an app has arrived, enqueue it.
             Either::First((start_channel, ev)) => {
+                // During SetLayout, drop Local traffic before it reaches Core 0
+                // midi_out (note-off storms + mute-drain starved USB SOFs).
+                // NoteOff always passes — dropping it hangs a sounding note.
+                if perf_local_muted() {
+                    let is_local = matches!(
+                        &ev,
+                        MidiMsg::Live {
+                            source: MidiEventSource::Local,
+                            ..
+                        } | MidiMsg::Nrpn { .. }
+                    );
+                    let is_note_off = matches!(
+                        &ev,
+                        MidiMsg::Live { event, .. } if is_note_off_event(event)
+                    );
+                    if is_local && !is_note_off {
+                        continue;
+                    }
+                }
                 if !app_queues[start_channel].is_full() {
                     let _ = app_queues[start_channel].push_back(ev);
                 }
@@ -314,6 +503,11 @@ async fn write_clock_msg<'a>(
     uart1_tx: &mut BufferedUartTx,
     msg: MidiClockMsg,
 ) {
+    // During SetLayout, drop clock entirely — DIN/USB clock storm plus spawn
+    // has been enough to wedge the USB device on macOS.
+    if LAYOUT_USB_MIDI_MUTE.load(Ordering::Relaxed) {
+        return;
+    }
     let event = LiveEvent::Realtime(msg.event);
     let usb_fut = async {
         if let MidiOut([true, _, _]) = msg.target {
@@ -381,30 +575,51 @@ pub async fn midi_out_task<'a>(
                         mut target,
                         source,
                     }) => {
+                        // Layout transition + post-spawn grace: drop Local
+                        // (USB+DIN). Mute-only USB skips used to spin-drain
+                        // this queue and starve usb.run() / config.
+                        if matches!(source, MidiEventSource::Local)
+                            && perf_local_muted()
+                            && !is_note_off_event(&event)
+                        {
+                            yield_now().await;
+                            continue;
+                        }
                         // Disable targets where we have a strict THRU port or no output.
                         // Only for local events; passthrough and clock are handled elsewhere.
                         if let MidiEventSource::Local = source {
                             for (i, disabled) in disabled_outs_for_local.iter().enumerate() {
                                 target.0[i] = target.0[i] && !disabled;
                             }
+                            // Global Local rate limit (USB+DIN) — DIN floods
+                            // alone wedged Core 0 / macOS (Beta DIN). Notes are
+                            // exempt: the limiter is for CC streams, and drum
+                            // apps legitimately burst 3+ notes per tick.
+                            if !is_note_event(&event) && !perf_local_allowed() {
+                                yield_now().await;
+                                continue;
+                            }
+                            if target.is_none() {
+                                yield_now().await;
+                                continue;
+                            }
                         }
 
-                        let usb_fut = async {
-                            if let MidiOut([true, _, _]) = target {
-                                let _ = write_msg_to_usb(usb_tx, event).await;
-                            }
-                        };
-                        let out1_fut = async {
-                            if let MidiOut([_, true, _]) = target {
-                                let _ = write_msg_to_uart1(&mut uart1_tx, event).await;
-                            }
-                        };
-                        let out2_fut = async {
-                            if let MidiOut([_, _, true]) = target {
-                                let _ = write_msg_to_uart0(&mut uart0_tx, event).await;
-                            }
-                        };
-                        join3(usb_fut, out1_fut, out2_fut).await;
+                        // USB first, then DIN — never hold the config pipe
+                        // behind UART TX. Yield so config/usb.run can run.
+                        if let MidiOut([true, _, _]) = target {
+                            let _ = write_msg_to_usb(usb_tx, event).await;
+                            yield_now().await;
+                        }
+                        if let MidiOut([_, true, _]) = target {
+                            let _ = write_msg_to_uart1(&mut uart1_tx, event).await;
+                        }
+                        if let MidiOut([_, _, true]) = target {
+                            let _ = write_msg_to_uart0(&mut uart0_tx, event).await;
+                        }
+                        if matches!(source, MidiEventSource::Local) {
+                            yield_now().await;
+                        }
                     }
                     MidiOutEvent::Event(MidiMsg::Nrpn {
                         channel,
@@ -412,9 +627,21 @@ pub async fn midi_out_task<'a>(
                         value,
                         mut target,
                     }) => {
+                        if perf_local_muted() {
+                            yield_now().await;
+                            continue;
+                        }
                         use libfp::utils::scale_bits_12_14;
                         for (i, disabled) in disabled_outs_for_local.iter().enumerate() {
                             target.0[i] = target.0[i] && !disabled;
+                        }
+                        if !perf_local_allowed() {
+                            yield_now().await;
+                            continue;
+                        }
+                        if target.is_none() {
+                            yield_now().await;
+                            continue;
                         }
                         let value_14 = scale_bits_12_14(value);
                         let ccs: [LiveEvent<'static>; 4] = [
@@ -450,6 +677,7 @@ pub async fn midi_out_task<'a>(
                         for event in ccs {
                             if let MidiOut([true, _, _]) = target {
                                 let _ = write_msg_to_usb(usb_tx, event).await;
+                                yield_now().await;
                             }
                             if let MidiOut([_, true, _]) = target {
                                 let _ = write_msg_to_uart1(&mut uart1_tx, event).await;
@@ -458,6 +686,7 @@ pub async fn midi_out_task<'a>(
                                 let _ = write_msg_to_uart0(&mut uart0_tx, event).await;
                             }
                         }
+                        yield_now().await;
                     }
                 }
             }

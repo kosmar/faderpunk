@@ -42,7 +42,10 @@ use {defmt_rtt as _, panic_probe as _};
 
 use crate::storage::{factory_reset, store_layout};
 
-use layout::{LayoutManager, FORCE_RESPAWN_SIGNAL, LAYOUT_MANAGER, LAYOUT_WATCH};
+use layout::{
+    LayoutManager, FORCE_RESPAWN_SIGNAL, LAYOUT_MANAGER, LAYOUT_WATCH, RELEASE_SPAWN_DONE,
+    RELEASE_SPAWN_SIGNAL,
+};
 use storage::{load_calibration_data, load_global_config, load_layout, migrate_fram};
 use tasks::{
     buttons::{is_channel_button_pressed, is_scene_button_pressed},
@@ -75,7 +78,7 @@ bind_interrupts!(struct Irqs {
     UART1_IRQ => uart::BufferedInterruptHandler<UART1>;
 });
 
-static mut CORE1_STACK: Stack<131_072> = Stack::new();
+static mut CORE1_STACK: Stack<196_608> = Stack::new();
 static EXECUTOR1: StaticCell<Executor> = StaticCell::new();
 
 /// MIDI buffers (RX and TX)
@@ -90,24 +93,45 @@ pub static QUANTIZER: LazyLock<Mutex<CriticalSectionRawMutex, Quantizer>> =
 
 #[embassy_executor::task]
 async fn main_core1(spawner: Spawner) {
-    use embassy_futures::select::{select, Either};
+    use embassy_futures::select::{select3, Either3};
 
     spawner.spawn(midi_distributor()).unwrap();
     let lm = LAYOUT_MANAGER.init(LayoutManager::new(spawner));
     let mut receiver = LAYOUT_WATCH.receiver().unwrap();
+    defmt::info!("core1 layout loop ready");
     loop {
-        match select(receiver.changed(), FORCE_RESPAWN_SIGNAL.wait()).await {
-            Either::First(layout) => {
-                // Normal layout change
+        match select3(
+            receiver.changed(),
+            FORCE_RESPAWN_SIGNAL.wait(),
+            RELEASE_SPAWN_SIGNAL.wait(),
+        )
+        .await
+        {
+            Either3::First(layout) => {
+                defmt::info!("core1 layout changed → spawn_layout");
                 if lm.spawn_layout(&layout).await {
-                    // Store new layout if it changed
-                    store_layout(&layout).await;
+                    // During editor Full Push, FRAM-persist once on ReleasePerfMute.
+                    if crate::tasks::midi::host_holds_perf_mute() {
+                        defmt::info!("core1 skip store_layout (HoldPerfMute)");
+                    } else {
+                        defmt::info!("core1 store_layout");
+                        store_layout(&layout).await;
+                        defmt::info!("core1 store_layout done");
+                    }
                 }
             }
-            Either::Second(_) => {
-                // Force respawn requested
+            Either3::Second(_) => {
+                defmt::info!("core1 FORCE_RESPAWN");
                 let layout = receiver.get().await;
                 lm.respawn_all(&layout).await;
+            }
+            Either3::Third(_) => {
+                defmt::info!("core1 RELEASE_PERF (store + unmute)");
+                let layout = receiver.get().await;
+                store_layout(&layout).await;
+                crate::tasks::midi::set_host_holds_perf_mute(false);
+                RELEASE_SPAWN_DONE.signal(true);
+                defmt::info!("core1 RELEASE_PERF done");
             }
         }
     }

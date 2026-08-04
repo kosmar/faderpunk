@@ -20,7 +20,9 @@ use libfp::{
 use crate::app::{
     App, AppParams, AppStorage, ClockEvent, Die, Led, ManagedStorage, ParamStore, SceneEvent,
 };
-use crate::apps::genre_palette::{genre_fader_center, GENRE_COLORS, GENRE_NAMES, NUM_GENRES};
+use crate::apps::genre_palette::{
+    genre_fader_center, genre_fader_color, GENRE_NAMES, NUM_GENRES,
+};
 
 pub const CHANNELS: usize = 1;
 pub const PARAMS: usize = 16;
@@ -45,8 +47,9 @@ const CAPTURE_COLOR: Color = Color::Rose;
 
 const CV_JACK_OUT: usize = 0;
 const CV_JACK_IN: usize = 1;
-/// Perform hold: step one palette index toward the fader every N ms (audible glide).
-const PERFORM_GLIDE_MS: u64 = 40;
+/// Perform hold: step palette index toward the fader (audible glide).
+/// Shorter interval + distance stride = fluid scrub without waiting forever.
+const PERFORM_GLIDE_MS: u64 = 18;
 
 const CAPTURE_NAMES: &[&str] = &["16 bars", "8 bars", "4 bars", "2 bars", "1 bar"];
 /// Bars for each Capture length enum index.
@@ -853,7 +856,7 @@ fn build_clip_from_ring(
     (n as u8, out_deg, out_on, out_dur)
 }
 
-#[embassy_executor::task(pool_size = 16 / CHANNELS)]
+#[embassy_executor::task(pool_size = 4)]
 pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMutex, bool>) {
     let param_store = ParamStore::<Params>::new(
         app.app_id,
@@ -901,6 +904,8 @@ pub async fn run(
     params: &ParamStore<Params>,
     storage: &ManagedStorage<Storage>,
 ) {
+    app.wait_while_perf_muted().await;
+
     let (
         midi_out_cfg,
         midi_chan,
@@ -1420,10 +1425,13 @@ pub async fn run(
                         play_degree(&mut sounding, deg, oct, true).await;
                     } else if sounding_perform_idx != Some(target) && now >= next_glide_ms {
                         let cur = sounding_perform_idx.unwrap_or(target);
+                        let dist = cur.abs_diff(target);
+                        // Catch up faster on big fader jumps; still walk intermediates.
+                        let stride = dist.div_ceil(4).clamp(1, 4);
                         let next = if cur < target {
-                            cur.saturating_add(1)
+                            (cur + stride).min(target)
                         } else {
-                            cur.saturating_sub(1)
+                            cur.saturating_sub(stride).max(target)
                         };
                         let (deg, oct) = apply_perform_index(next as usize, &pdeg, &poct, count);
                         sounding_perform_idx = Some(next);
@@ -1861,19 +1869,14 @@ pub async fn run(
                     }
                 }
                 LatchLayer::Alt => {
-                    // Live fader preview so colors track both directions across full travel.
+                    // Live fader preview — soft blend across genres (Capture as tail slot).
                     let picks = if glob_clip_len.get() > 0 {
                         NUM_GENRES + 1
                     } else {
                         NUM_GENRES
                     };
                     let fader_now = fader.get_value();
-                    let g = value_to_index(fader_now, picks);
-                    let color = if g == CAPTURE_SLOT {
-                        CAPTURE_COLOR
-                    } else {
-                        GENRE_COLORS[g.min(NUM_GENRES - 1)]
-                    };
+                    let color = genre_fader_color(fader_now, picks, CAPTURE_COLOR);
                     let led = split_unsigned_value(fader_now);
                     leds.set(0, Led::Top, color, Brightness::Custom(led[0]));
                     leds.set(0, Led::Bottom, color, Brightness::Custom(led[1]));

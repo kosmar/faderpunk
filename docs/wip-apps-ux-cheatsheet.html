@@ -88,7 +88,7 @@
 <body>
 
 <h1>Faderpunk WIP Apps — UX Cheatsheet</h1>
-<p class="sub">Synced to <code>test/playground</code> (CV Jack In/Out) · 26 Jul 2026 · A4 print</p>
+<p class="sub">Synced to <code>test/playground</code> (IDs 29–38) · 3 Aug 2026 · A4 print</p>
 
 <div class="legend">
   <div><strong>Main</strong> — Fader alone</div>
@@ -100,8 +100,8 @@
 </div>
 
 <div class="jack-note">
-  <strong>Jack CV Out / CV In</strong> (Heat Pump, Grooves, Golden Gate, Arp de Lévy, Chord Vamp; Super LFO is 2-ch with CV on Ch0):
-  <strong>CV Out</strong> = app drives the jack · <strong>CV In</strong> = jack modulates a <strong>CV Dest</strong> (attenuated by <strong>CV Att</strong> 0–100%).
+  <strong>Jack CV Out / CV In</strong> (Heat Pump, Grooves, Golden Gate, Arp de Lévy, Chord Vamp, Echolot, Loop de Cay modes; Super LFO is 2-ch with CV on Ch0):
+  <strong>CV Out</strong> = app drives the jack · <strong>CV In</strong> = jack modulates a <strong>CV Dest</strong> (attenuated by <strong>CV Att</strong> 0–100% where present).
   Device-cycle Dest: Heat Pump &amp; Super LFO via <strong>Shift+Short</strong> (Grooves: Configurator only).
   Golden Gate + Jack=CV In → MIDI-first (no CV/gate outs).
 </div>
@@ -395,6 +395,11 @@
         <ul>
           <li>Blue · Cyan · Yellow · Red</li>
         </ul>
+        <h3>LEDs</h3>
+        <ul>
+          <li><strong>Button / Top</strong> — latch hue + level: Main = Color/Evolve · Alt = Orange/Texture · Third = Violet/α; mute = off</li>
+          <li><strong>Bottom</strong> — Pitch height in Color while gated (note activity)</li>
+        </ul>
       </div>
       <div>
         <h3>Params</h3>
@@ -469,8 +474,133 @@
   </div>
 </section>
 
+<!-- HOLD SAM -->
+<section class="app">
+  <div class="app-head">
+    <span class="id">ID 36</span>
+    <h2>Hold Sam <span class="tag ready">ready</span></h2>
+    <span class="desc">Clocked sample-and-hold — Note or CC</span>
+  </div>
+  <div class="app-body">
+    <div class="cols">
+      <div>
+        <h3>Faders</h3>
+        <ul>
+          <li><strong>Main</strong> — Gate % (Note) or CC amount (CC mode)</li>
+          <li><strong>Alt</strong> — Clock division</li>
+          <li><strong>Third</strong> — Velocity / sensitivity</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Buttons</h3>
+        <ul>
+          <li><strong>Short</strong> — Play / trigger held sample</li>
+          <li><strong>Shift+Short</strong> — Manual sample (capture now)</li>
+          <li><strong>Long</strong> (no fader move) — Soft mute (fade; no hard note-off)</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Params / LEDs</h3>
+        <ul>
+          <li>Mode Note / CC, MIDI CH/CC, Color, Range, V/Oct</li>
+          <li>Layer meters: IR→UV spectrum on Main/Alt/Third fader</li>
+          <li>White flash on each sample; mute = red button</li>
+        </ul>
+      </div>
+    </div>
+    <div class="manual">
+      <p><strong>Manual.</strong> Clocked sample-and-hold. Capture on division or Shift+Short; Main shapes gate length or CC depth. Long soft-mutes so notes can ring out. Third sets how strongly velocity follows the sample.</p>
+    </div>
+  </div>
+</section>
+
+<!-- HARMONICA -->
+<section class="app">
+  <div class="app-head">
+    <span class="id">ID 37</span>
+    <h2>Harmonica <span class="tag ready">ready</span></h2>
+    <span class="desc">Monophonic root in → chord MIDI out</span>
+  </div>
+  <div class="app-body">
+    <div class="cols">
+      <div>
+        <h3>Faders</h3>
+        <ul>
+          <li><strong>Main</strong> — Chord type</li>
+          <li><strong>Alt</strong> — Spread / voicing width</li>
+          <li><strong>Third</strong> — Velocity</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Buttons</h3>
+        <ul>
+          <li><strong>Short</strong> (no fader move) — Mute / unmute all voices</li>
+          <li><strong>Alt+Short</strong> — Cycle harmony octave (−1 / 0 / +1)</li>
+          <li><strong>Alt+Long</strong> — Step voicing preset</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Params</h3>
+        <ul>
+          <li>I/O: MIDI / CV root; MIDI In/Out CH</li>
+          <li>CV Gate: Sustain · ms · clock divisions</li>
+          <li>Strum (ms), Color, Range, V/Oct</li>
+          <li>Near-0V CV = rest; unpatched stays silent until stable pitch</li>
+          <li>LEDs: IR→UV spectrum per layer; mute = red; preset flash on Alt+Long</li>
+        </ul>
+      </div>
+    </div>
+    <div class="manual">
+      <p><strong>Manual.</strong> One root (last MIDI note or pitch CV) picks the chord root; fader picks chord type; up to four MIDI voices (MIDI→CV follows highest). Not a polyphonic keyboard. Mute is a short tap; use Third (button+fader) for velocity so mute and vel don’t collide. Alt+Long walks voicing presets.</p>
+    </div>
+  </div>
+</section>
+
+<!-- LOOP DE CAY -->
+<section class="app">
+  <div class="app-head">
+    <span class="id">ID 38</span>
+    <h2>Loop de Cay <span class="tag ready">ready</span></h2>
+    <span class="desc">Additive overdub loop with level decay</span>
+  </div>
+  <div class="app-body">
+    <div class="cols">
+      <div>
+        <h3>Faders</h3>
+        <ul>
+          <li><strong>Main</strong> — Pitch (span from Base Note); spectrum LED meter</li>
+          <li><strong>Alt</strong> (Shift+Fader) — Decay: bottom = immortal, top ≈ 4 loops to silence (violet→red)</li>
+          <li><strong>Third</strong> (muted + hold button + fader) — Loop length 1–8 bars (amber→cyan)</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Buttons</h3>
+        <ul>
+          <li><strong>Hold</strong> (gate modes) — Note on; release = off (long notes OK)</li>
+          <li><strong>Shift+Short</strong> — Arm / disarm record (button blinks when armed; default armed)</li>
+          <li><strong>Shift+Long</strong> — Mute (red LED; decay pauses)</li>
+          <li><strong>Short while muted</strong> — Unmute</li>
+          <li><strong>Shift+Long while muted</strong> — Erase buffer (white flash)</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Params / LEDs</h3>
+        <ul>
+          <li>Mode: Pitch→MIDI · Gate→MIDI · MIDI→MIDI · MIDI→CV · Fader→Both</li>
+          <li>MIDI CH / In / Out, Base Note, Span (semitones across fader)</li>
+          <li>Color, Range, V/Oct</li>
+          <li>Playback hit flash on Top; layer meters on Top/Bottom/Button</li>
+        </ul>
+      </div>
+    </div>
+    <div class="manual">
+      <p><strong>Manual.</strong> Clocked overdub loop: play while armed to capture; layers decay each loop wrap by Alt amount (0 = freeze forever; max ≈ 4 wraps). Hold the button for long notes — mute is Shift+Long only. Length is Third while muted (not Alt). Velocity uses a squared curve so fades are audible on MIDI. Quantized to 16ths.</p>
+    </div>
+  </div>
+</section>
+
 <footer>
-  Source: <code>test/playground</code> app sources + Configurator Manual tab · pool_size on feat branches is 16/CHANNELS (playground uses 4).
+  Source: <code>test/playground</code> app sources · pool_size often 4 on heavy WIP apps (playground).
 </footer>
 
 </body>

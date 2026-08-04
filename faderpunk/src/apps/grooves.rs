@@ -17,7 +17,9 @@ use libfp::{
 use crate::app::{
     App, AppParams, AppStorage, ClockEvent, Led, ManagedStorage, ParamStore, SceneEvent,
 };
-use crate::apps::genre_palette::{genre_fader_center, GENRE_COLORS, GENRE_NAMES, NUM_GENRES};
+use crate::apps::genre_palette::{
+    genre_fader_center, genre_fader_color, GENRE_NAMES, NUM_GENRES,
+};
 
 pub const CHANNELS: usize = 1;
 pub const PARAMS: usize = 15;
@@ -485,6 +487,8 @@ pub async fn run(
     params: &ParamStore<Params>,
     storage: &ManagedStorage<Storage>,
 ) {
+    app.wait_while_perf_muted().await;
+
     let (
         midi_out,
         note_kick,
@@ -776,8 +780,7 @@ pub async fn run(
                         }
                         LatchLayer::Alt => {
                             let fader_now = faders.get_value();
-                            let g = value_to_index(fader_now, NUM_GENRES).min(NUM_GENRES - 1);
-                            let color = GENRE_COLORS[g];
+                            let color = genre_fader_color(fader_now, NUM_GENRES, Color::White);
                             let led = split_unsigned_value(fader_now);
                             leds.set(0, Led::Top, color, Brightness::Custom(led[0]));
                             leds.set(0, Led::Bottom, color, Brightness::Custom(led[1]));

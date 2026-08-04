@@ -22,7 +22,7 @@ use libfp::{
     ext::FromValue,
     latch::LatchLayer,
     quantizer::Pitch,
-    utils::{split_unsigned_value, value_to_index},
+    utils::{value_to_index},
     AppIcon, Brightness, Color, Config, MidiChannel, MidiIn, MidiNote, MidiOut, Note, Param, Range,
     Value, VoltPerOct, APP_MAX_PARAMS,
 };
@@ -31,6 +31,7 @@ use crate::app::{
     App, AppParams, AppStorage, Global, Led, ManagedStorage, MidiOutput, OutJack, ParamStore,
     Quantizer, SceneEvent,
 };
+use crate::apps::led_spectrum::{paint_fader_meters, spectrum_color};
 
 pub const CHANNELS: usize = 1;
 pub const PARAMS: usize = 11;
@@ -526,7 +527,7 @@ async fn handle_midi_note_off(
     }
 }
 
-#[embassy_executor::task(pool_size = 16 / CHANNELS)]
+#[embassy_executor::task(pool_size = 4)]
 pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMutex, bool>) {
     let param_store = ParamStore::<Params>::new(
         app.app_id,
@@ -569,6 +570,8 @@ pub async fn run(
     params: &ParamStore<Params>,
     storage: &ManagedStorage<Storage>,
 ) {
+    app.wait_while_perf_muted().await;
+
     let (
         io_mode,
         range,
@@ -673,7 +676,7 @@ pub async fn run(
     };
 
     if muted {
-        leds.unset(0, Led::Button);
+        leds.set(0, Led::Button, Color::Red, Brightness::Low);
     } else {
         leds.set(0, Led::Button, led_color, LED_BRIGHTNESS);
     }
@@ -1060,66 +1063,67 @@ pub async fn run(
             let flash = preset_flash.get();
             if flash > 0 {
                 preset_flash.set(flash - 1);
-                // Preset readout: top ramps across the list, bottom shows strum.
+                // Preset readout: IR→UV by preset index; bottom = strum amount.
                 let idx = preset_glob.get().min(NUM_PRESETS as u8 - 1) as u32;
-                let level = ((idx * 255) / (NUM_PRESETS as u32 - 1)) as u8;
-                let strum_level = ((strum_glob.get().min(STRUM_MAX_MS) as u32 * 255) / STRUM_MAX_MS as u32) as u8;
-                leds.set(0, Led::Top, Color::Red, Brightness::Custom(level.max(16)));
-                leds.set(0, Led::Bottom, Color::Red, Brightness::Custom(strum_level));
+                let faderish = ((idx * 4095) / (NUM_PRESETS as u32 - 1).max(1)) as u16;
+                let strum_f = ((strum_glob.get().min(STRUM_MAX_MS) as u32 * 4095)
+                    / STRUM_MAX_MS as u32) as u16;
+                leds.set(0, Led::Top, spectrum_color(faderish), Brightness::High);
+                leds.set(
+                    0,
+                    Led::Bottom,
+                    spectrum_color(strum_f.max(256)),
+                    Brightness::Custom((strum_f / 16).max(24) as u8),
+                );
             }
             if flash == 0 {
-                match latch_layer {
-                LatchLayer::Main => {
-                    let chord_type = value_to_index(chord_glob.get(), NUM_CHORD_TYPES);
-                    let level = ((chord_type as u32 * 255) / (NUM_CHORD_TYPES as u32 - 1)) as u8;
-                    leds.set(0, Led::Top, led_color, Brightness::Custom(level));
-                    let oct = octave_glob.get();
-                    let oct_bri = match oct {
-                        0 => 40,
-                        2 => 255,
-                        _ => 120,
-                    };
-                    leds.set(0, Led::Bottom, led_color, Brightness::Custom(oct_bri));
-                }
-                LatchLayer::Alt => {
-                    let bri = (spread_glob.get() / 16) as u8;
-                    leds.set(0, Led::Top, Color::Red, Brightness::Custom(bri));
-                    leds.unset(0, Led::Bottom);
-                }
-                LatchLayer::Third => {
-                    let bri = (vel_glob.get() / 16) as u8;
-                    leds.set(0, Led::Top, Color::Red, Brightness::Custom(bri));
-                    leds.set(0, Led::Bottom, Color::Red, Brightness::Custom(bri));
-                }
-                }
+                let (fader_val, color) = match latch_layer {
+                    LatchLayer::Main => {
+                        let v = chord_glob.get();
+                        (v, spectrum_color(v))
+                    }
+                    LatchLayer::Alt => {
+                        let v = spread_glob.get();
+                        (v, spectrum_color(v))
+                    }
+                    LatchLayer::Third => {
+                        let v = vel_glob.get();
+                        (v, spectrum_color(v))
+                    }
+                };
 
-                if let Some(&top) = sounding.iter().max() {
-                    let led = split_unsigned_value((top as u16).saturating_mul(32));
+                if muted_glob.get() {
+                    leds.set(0, Led::Button, Color::Red, Brightness::Low);
+                    leds.unset(0, Led::Top);
+                    leds.unset(0, Led::Bottom);
+                } else {
+                    let duck = button_duck.get();
+                    let btn = if duck > 0 {
+                        40u8
+                    } else if sounding.iter().any(|&n| n > 0) {
+                        200u8
+                    } else {
+                        (fader_val / 16).max(36) as u8
+                    };
+                    paint_fader_meters(&leds, color, fader_val, btn);
+                    // Pitch cue on Top when Main + sounding (override meter briefly).
                     if latch_layer == LatchLayer::Main {
-                        leds.set(
-                            0,
-                            Led::Top,
-                            led_color,
-                            Brightness::Custom(led[0].saturating_mul(2)),
-                        );
+                        if let Some(&top) = sounding.iter().max() {
+                            let pitch_f = (u16::from(top).saturating_mul(32)).min(4095);
+                            leds.set(
+                                0,
+                                Led::Top,
+                                spectrum_color(pitch_f),
+                                Brightness::Custom((pitch_f / 16).max(20) as u8),
+                            );
+                        }
                     }
                 }
             }
 
-            // Mid→Low duck on harmony triggers (yields to mute).
             let duck = button_duck.get();
             if duck > 0 {
                 button_duck.set(duck.saturating_sub(1));
-            }
-            if muted_glob.get() {
-                leds.unset(0, Led::Button);
-            } else {
-                let bright = if duck > 0 {
-                    Brightness::Low
-                } else {
-                    LED_BRIGHTNESS
-                };
-                leds.set(0, Led::Button, led_color, bright);
             }
         }
     };
@@ -1160,7 +1164,7 @@ pub async fn run(
                         storage.modify_and_save(|s| s.muted = muted);
                         revoice_flag.set(true);
                         if muted {
-                            leds.unset(0, Led::Button);
+                            leds.set(0, Led::Button, Color::Red, Brightness::Low);
                         } else {
                             leds.set(0, Led::Button, led_color, LED_BRIGHTNESS);
                         }
@@ -1218,7 +1222,7 @@ pub async fn run(
                     );
                     revoice_flag.set(true);
                     if muted {
-                        leds.unset(0, Led::Button);
+                        leds.set(0, Led::Button, Color::Red, Brightness::Low);
                     } else {
                         leds.set(0, Led::Button, led_color, LED_BRIGHTNESS);
                     }
