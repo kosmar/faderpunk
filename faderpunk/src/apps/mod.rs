@@ -1,7 +1,6 @@
 mod genre_palette;
 mod led_spectrum;
 
-
 register_apps!(
     1 => control,
     2 => lfo,
@@ -40,4 +39,6 @@ register_apps!(
     36 => hold_sam,
     37 => harmonica,
     38 => loop_de_cay,
+    39 => control_issues,
+    40 => venn,
 );

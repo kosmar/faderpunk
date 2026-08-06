@@ -4,6 +4,7 @@
 
 ### Features
 
+- add Venn dual-Euclidean boolean-logic app
 - add Bernoulli Gate app (#573)
 - move configurator protocol from WebUSB to MIDI SysEx (#590)
 

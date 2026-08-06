@@ -47,6 +47,10 @@ const FADER_MOVE_THRESH: u16 = 48;
 const GATE_THRESH: u16 = 406;
 const DEFAULT_GATE_TICKS: u16 = 12;
 const ARM_BLINK_MS: u64 = 400;
+/// Playback/capture hit: keep button lit this many PPQN ticks (sharp, short).
+const CAPTURE_FLASH_TICKS: u64 = 2;
+/// Remaining brightness % during capture dim (80% dim).
+const CAPTURE_DIM_REMAIN_PCT: u16 = 20;
 
 pub static CONFIG: Config<PARAMS> = Config::new(
     "Loop de Cay",
@@ -305,7 +309,7 @@ impl LoopBuf {
                 e.vel = nv;
                 let pitch_offset = e.note as i32 - target as i32;
                 if pitch_offset != 0 {
-                    let dist = pitch_offset.unsigned_abs() as u32;
+                    let dist = pitch_offset.unsigned_abs();
                     // Always move ≥1 semitone toward target when decay > 0.
                     let pull = ((dist * pitch_loss) / 4095).max(1) as i32;
                     let new_offset = if pitch_offset > 0 {
@@ -654,7 +658,7 @@ pub async fn run(
                                 if e.start == pos {
                                     alloc_voice(&midi, &voices, e.note, e.vel, e.gen, e, window)
                                         .await;
-                                    flash_until.set(tick.wrapping_add(2));
+                                    flash_until.set(tick.wrapping_add(CAPTURE_FLASH_TICKS));
                                 }
                             }
 
@@ -743,8 +747,18 @@ pub async fn run(
                                     } else {
                                         Brightness::Low
                                     };
-                                    leds.set(0, Led::Button, led_color, bright);
-                                    if flash_until.get() > tick {
+                                    let capturing = flash_until.get() > tick;
+                                    let button_bright = if capturing {
+                                        Brightness::Custom(
+                                            ((u8::from(bright) as u16 * CAPTURE_DIM_REMAIN_PCT)
+                                                / 100)
+                                                .max(1) as u8,
+                                        )
+                                    } else {
+                                        bright
+                                    };
+                                    leds.set(0, Led::Button, led_color, button_bright);
+                                    if capturing {
                                         leds.set(0, Led::Top, Color::White, Brightness::High);
                                     }
                                 }
@@ -889,6 +903,7 @@ pub async fn run(
                     &armed,
                     &live_note,
                     &rec_open,
+                    &flash_until,
                     ticks,
                     note,
                     4095,
@@ -976,6 +991,7 @@ pub async fn run(
                             &armed,
                             &live_note,
                             &rec_open,
+                            &flash_until,
                             ticks,
                             note,
                             4095,
@@ -1034,6 +1050,7 @@ pub async fn run(
                                     &armed,
                                     &live_note,
                                     &rec_open,
+                                    &flash_until,
                                     ticks,
                                     n,
                                     v12.max(KILL_FLOOR + 1),
@@ -1258,6 +1275,7 @@ async fn start_note(
     armed: &Global<bool>,
     live_note: &Global<Option<u8>>,
     rec_open: &Global<bool>,
+    flash_until: &Global<u64>,
     ticks: fn() -> u64,
     note: u8,
     vel: u16,
@@ -1292,6 +1310,7 @@ async fn start_note(
         b.add_or_refresh(qpos, u16::MAX, note, vel, window);
         buf.set(b);
         rec_open.set(true);
+        flash_until.set(tick.wrapping_add(CAPTURE_FLASH_TICKS));
     }
 }
 

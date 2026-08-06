@@ -40,6 +40,15 @@ impl FromValue for i32 {
     }
 }
 
+impl FromValue for f32 {
+    fn from_value(value: Value) -> Self {
+        match value {
+            Value::f32(v) => v,
+            _ => Self::default(),
+        }
+    }
+}
+
 impl FromValue for usize {
     fn from_value(value: Value) -> Self {
         match value {

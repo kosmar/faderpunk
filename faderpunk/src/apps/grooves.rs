@@ -15,11 +15,12 @@ use libfp::{
 };
 
 use crate::app::{
-    App, AppParams, AppStorage, ClockEvent, Led, ManagedStorage, ParamStore, SceneEvent,
+    App, AppParams, AppStorage, ClockEvent, Led, Leds, ManagedStorage, ParamStore, SceneEvent,
 };
 use crate::apps::genre_palette::{
-    genre_fader_center, genre_fader_color, GENRE_NAMES, NUM_GENRES,
+    genre_fader_center, GENRE_COLORS, GENRE_NAMES, NUM_GENRES,
 };
+use crate::apps::led_spectrum::blend_colors;
 
 pub const CHANNELS: usize = 1;
 pub const PARAMS: usize = 15;
@@ -27,6 +28,12 @@ pub const PARAMS: usize = 15;
 const LED_BRIGHTNESS: Brightness = Brightness::Mid;
 /// Reverse-swing LED feedback (white↔off), same as Heat Pump / Golden Gate.
 const REVERSE_FADE_MS: u16 = 500;
+/// Brief button dip on each groove hit (voice-weighted, not clock).
+const HIT_FLASH_MS: u16 = 18;
+/// Remaining brightness % while hit-dipping (dim by 50 / 30 / 10).
+const HIT_REMAIN_KICK: u8 = 50;
+const HIT_REMAIN_SNARE: u8 = 70;
+const HIT_REMAIN_HATS: u8 = 90;
 
 /// 24 PPQN → one 16th note.
 const SIXTEENTH: u32 = 6;
@@ -567,6 +574,10 @@ pub async fn run(
     let glob_reverse_fade = app.make_global(0u16);
     let glob_reverse_fade_up = app.make_global(false);
     let glob_jack_flash = app.make_global(0u16);
+    let glob_hit_flash = app.make_global(0u16);
+    let glob_hit_remain = app.make_global(HIT_REMAIN_KICK);
+    // Bar step for Main button lightness (LED paints off-clock too).
+    let glob_bar_step = app.make_global(0u32);
 
     // Clear any hanging notes from a prior respawn.
     midi_kick.send_note_off(note_kick).await;
@@ -629,6 +640,7 @@ pub async fn run(
                     // Absolute 16th slot since origin (not wrapped) for the fire-once guard.
                     let slot = pos / SIXTEENTH;
                     let step = (pos / SIXTEENTH) % STEPS_PER_BAR;
+                    glob_bar_step.set(step);
                     let phase = pos % SIXTEENTH;
                     let swing_val = if cv_jack == CV_JACK_IN && cv_dest == DEST_SWING {
                         mod_u16(glob_swing.get(), glob_cv_val.get())
@@ -662,7 +674,6 @@ pub async fn run(
                                 jack.set_value(pulse_idle(range));
                             }
                             gate_off_at = None;
-                            leds.set(0, Led::Bottom, led_color, Brightness::Off);
                         }
                     }
 
@@ -762,37 +773,14 @@ pub async fn run(
                                     jack.set_value(level);
                                 }
                                 gate_off_at = Some(clkn.wrapping_add(gate_len));
-                                leds.set(0, Led::Bottom, led_color, Brightness::High);
+                                // Pattern feedback: voice-weighted button dip.
+                                glob_hit_remain.set(hit_remain_pct(do_kick, do_snare, do_hats));
+                                glob_hit_flash.set(HIT_FLASH_MS);
                             }
                         }
                     }
 
-                    // Top LED: bar progress by default; genre while Shift held;
-                    // swing amount while Button held.
-                    match glob_latch_layer.get() {
-                        LatchLayer::Main => {
-                            leds.set(
-                                0,
-                                Led::Top,
-                                led_color,
-                                Brightness::Custom(((step * 255) / STEPS_PER_BAR) as u8),
-                            );
-                        }
-                        LatchLayer::Alt => {
-                            let fader_now = faders.get_value();
-                            let color = genre_fader_color(fader_now, NUM_GENRES, Color::White);
-                            let led = split_unsigned_value(fader_now);
-                            leds.set(0, Led::Top, color, Brightness::Custom(led[0]));
-                            leds.set(0, Led::Bottom, color, Brightness::Custom(led[1]));
-                            if glob_reverse_fade.get() == 0 && glob_jack_flash.get() == 0 {
-                                leds.set(0, Led::Button, color, Brightness::High);
-                            }
-                        }
-                        LatchLayer::Third => {
-                            let s = glob_swing.get();
-                            leds.set(0, Led::Top, Color::Red, Brightness::Custom((s / 16) as u8));
-                        }
-                    }
+                    // Button / genre LEDs paint in the 1 ms loop (not clock-bound).
                 }
                 _ => {}
             }
@@ -832,7 +820,7 @@ pub async fn run(
                         midi_snare.send_note_off(note_snare).await;
                         midi_hats.send_note_off(note_hats).await;
                     } else {
-                        leds.set(0, Led::Button, led_color, LED_BRIGHTNESS);
+                        // 1 ms LED paint restores genre / swing hue.
                     }
                 }
             }
@@ -922,9 +910,8 @@ pub async fn run(
                     glob_genre_fader.set(genre_fader_center(g, NUM_GENRES));
                     if muted {
                         leds.unset(0, Led::Button);
-                    } else {
-                        leds.set(0, Led::Button, led_color, LED_BRIGHTNESS);
                     }
+                    // Else: 1 ms LED paint restores genre / swing hue.
                 }
                 SceneEvent::SaveScene(scene) => storage.save_to_scene(scene).await,
             }
@@ -958,6 +945,12 @@ pub async fn run(
             };
             glob_latch_layer.set(latch_active_layer);
 
+            // Pattern hit flash countdown (1 ms ticks).
+            let hit_left = glob_hit_flash.get();
+            if hit_left > 0 {
+                glob_hit_flash.set(hit_left.saturating_sub(1));
+            }
+
             // Reverse fade overrides button LED
             let fade_left = glob_reverse_fade.get();
             if fade_left > 0 {
@@ -969,28 +962,92 @@ pub async fn run(
                 };
                 leds.set(0, Led::Button, Color::White, Brightness::Custom(bright));
                 glob_reverse_fade.set(fade_left.saturating_sub(1));
-                if fade_left == 1 {
-                    // Don't leave the LED stuck white when muted.
-                    if glob_muted.get() {
-                        leds.unset(0, Led::Button);
-                    } else {
-                        leds.set(0, Led::Button, led_color, LED_BRIGHTNESS);
+                // When fade ends, fall through next tick to layer paint (genre hue).
+            } else if glob_jack_flash.get() > 0 {
+                // Color already set by Shift+Long; just count down.
+                glob_jack_flash.set(glob_jack_flash.get().saturating_sub(1));
+            } else {
+                // Button LED: Main = committed genre hue sat half→full (density);
+                // Third = swing white→app→red; Alt = committed genre (not live
+                // fader — live preview lied before latch pickup).
+                // Hit dip overlays briefly (kick −50% / snare −30% / hats −10%).
+                match latch_active_layer {
+                    LatchLayer::Main => {
+                        leds.unset(0, Led::Top);
+                        leds.unset(0, Led::Bottom);
+                        if !glob_muted.get() {
+                            let dens = if cv_jack == CV_JACK_IN && cv_dest == DEST_DENSITY
+                            {
+                                mod_u16(glob_density.get(), glob_cv_val.get())
+                            } else {
+                                glob_density.get()
+                            };
+                            let g = glob_genre.get().min(NUM_GENRES - 1);
+                            let color = density_button_color(dens, GENRE_COLORS[g]);
+                            let step = glob_bar_step.get();
+                            let bright = 160 + ((step * 95) / STEPS_PER_BAR) as u8;
+                            if glob_hit_flash.get() > 0 {
+                                paint_hit_dip(
+                                    &leds,
+                                    color,
+                                    bright,
+                                    glob_hit_remain.get(),
+                                );
+                            } else {
+                                leds.set(
+                                    0,
+                                    Led::Button,
+                                    color,
+                                    Brightness::Custom(bright),
+                                );
+                            }
+                        }
                     }
-                }
-            }
-
-            // Jack-mode flash counts down independently of the reverse fade so it
-            // can't stall behind it; the restore is skipped while a fade is
-            // still animating (the fade's own end handler restores the LED).
-            let flash_left = glob_jack_flash.get();
-            if flash_left > 0 {
-                let left = flash_left.saturating_sub(1);
-                glob_jack_flash.set(left);
-                if left == 0 && glob_reverse_fade.get() == 0 {
-                    if glob_muted.get() {
-                        leds.unset(0, Led::Button);
-                    } else {
-                        leds.set(0, Led::Button, led_color, LED_BRIGHTNESS);
+                    LatchLayer::Alt => {
+                        // Meters track physical fader; hue tracks latched genre only.
+                        let fader_now = faders.get_value();
+                        let g = value_to_index(glob_genre_fader.get(), NUM_GENRES);
+                        let color = GENRE_COLORS[g.min(NUM_GENRES - 1)];
+                        let led = split_unsigned_value(fader_now);
+                        leds.set(0, Led::Top, color, Brightness::Custom(led[0]));
+                        leds.set(0, Led::Bottom, color, Brightness::Custom(led[1]));
+                        if glob_hit_flash.get() > 0 {
+                            paint_hit_dip(
+                                &leds,
+                                color,
+                                255,
+                                glob_hit_remain.get(),
+                            );
+                        } else {
+                            leds.set(0, Led::Button, color, Brightness::High);
+                        }
+                    }
+                    LatchLayer::Third => {
+                        leds.unset(0, Led::Top);
+                        leds.unset(0, Led::Bottom);
+                        if !glob_muted.get() {
+                            let s = if cv_jack == CV_JACK_IN && cv_dest == DEST_SWING {
+                                mod_u16(glob_swing.get(), glob_cv_val.get())
+                            } else {
+                                glob_swing.get()
+                            };
+                            let color = swing_button_color(s, led_color);
+                            if glob_hit_flash.get() > 0 {
+                                paint_hit_dip(
+                                    &leds,
+                                    color,
+                                    255,
+                                    glob_hit_remain.get(),
+                                );
+                            } else {
+                                leds.set(
+                                    0,
+                                    Led::Button,
+                                    color,
+                                    Brightness::High,
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -1002,4 +1059,43 @@ pub async fn run(
         long_press,
     )
     .await;
+}
+
+/// Main density: genre hue from ~half sat → full sat (never to black/white-out).
+fn density_button_color(density: u16, genre: Color) -> Color {
+    let half = blend_colors(Color::White, genre, 2047);
+    blend_colors(half, genre, density.min(4095))
+}
+
+/// Third swing on the button: White → app color (center) → Red.
+fn swing_button_color(swing: u16, app: Color) -> Color {
+    let s = swing.min(4095);
+    if s <= 2047 {
+        blend_colors(Color::White, app, s.saturating_mul(2))
+    } else {
+        blend_colors(app, Color::Red, (s - 2047).saturating_mul(2).min(4095))
+    }
+}
+
+/// Remaining brightness %: kick −50%, snare −30%, hats −10% (strongest wins).
+fn hit_remain_pct(kick: bool, snare: bool, hats: bool) -> u8 {
+    if kick {
+        HIT_REMAIN_KICK
+    } else if snare {
+        HIT_REMAIN_SNARE
+    } else if hats {
+        HIT_REMAIN_HATS
+    } else {
+        HIT_REMAIN_KICK
+    }
+}
+
+fn paint_hit_dip<const N: usize>(
+    leds: &Leds<N>,
+    color: Color,
+    base_bright: u8,
+    remain_pct: u8,
+) {
+    let bright = ((base_bright as u16 * remain_pct as u16) / 100).min(255) as u8;
+    leds.set(0, Led::Button, color, Brightness::Custom(bright.max(1)));
 }

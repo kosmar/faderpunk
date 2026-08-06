@@ -154,6 +154,131 @@ pub fn attenuverter(input: u16, modulation: u16) -> u16 {
     result.clamp(0.0, 4095.0) as u16
 }
 
+/// Smoothstep S-curve on a 12-bit value (`0..=4095`).
+///
+/// Endpoints are exact: `0 → 0`, `4095 → 4095`.
+pub fn s_curve_12bit(value: u16) -> u16 {
+    let x = value.min(4095) as u64;
+    // smoothstep: y = 3x² - 2x³ with x normalized to 0..=1, then scaled back.
+    // y = (3·x²·4095 - 2·x³) / 4095²
+    let x2 = x * x;
+    let num = 3 * x2 * 4095 - 2 * x2 * x;
+    let den = 4095u64 * 4095;
+    ((num + den / 2) / den).min(4095) as u16
+}
+
+/// Full-wave rectify a 12-bit bipolar value around mid-scale (`2047`).
+pub fn rectify_12bit(value: u16) -> u16 {
+    value.abs_diff(2047).saturating_add(2047).min(4095)
+}
+
+/// Wavefold an integer sample into `0..=4095` by repeated reflection.
+pub fn fold_12bit(mut value: i32) -> u16 {
+    // Reflect until inside the legal range. Guard against pathological inputs.
+    for _ in 0..64 {
+        if (0..=4095).contains(&value) {
+            return value as u16;
+        }
+        if value < 0 {
+            value = -value;
+        } else {
+            value = 8190 - value; // 2*4095 - value
+        }
+    }
+    value.clamp(0, 4095) as u16
+}
+
+/// Quantize a 12-bit value onto `steps` evenly spaced levels.
+///
+/// `steps <= 1` leaves the value unchanged (Off). `steps == 2` yields only
+/// `0` and `4095`. Levels include both endpoints.
+pub fn quantize_steps_12bit(value: u16, steps: u16) -> u16 {
+    let value = value.min(4095);
+    if steps <= 1 {
+        return value;
+    }
+    let steps = steps as u32;
+    let max_idx = steps - 1;
+    let idx = (value as u32 * max_idx + 2047) / 4095;
+    ((idx * 4095) / max_idx) as u16
+}
+
+/// Snap an attenuverter/offset fader to exact mid-scale inside a deadband.
+pub fn bipolar_deadband(value: u16, deadband: u16) -> u16 {
+    if value.abs_diff(2047) <= deadband {
+        2047
+    } else {
+        value
+    }
+}
+
+/// Schmitt-trigger gate detector with independent high/low thresholds.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SchmittTrigger {
+    high: bool,
+}
+
+impl SchmittTrigger {
+    pub const fn new() -> Self {
+        Self { high: false }
+    }
+
+    pub fn is_high(self) -> bool {
+        self.high
+    }
+
+    /// Update from a 12-bit sample.
+    ///
+    /// Rising edge when `input >= threshold`. Falling edge when
+    /// `input <= threshold.saturating_sub(hysteresis)`.
+    pub fn update(&mut self, input: u16, threshold: u16, hysteresis: u16) -> bool {
+        let low = threshold.saturating_sub(hysteresis);
+        if input >= threshold {
+            self.high = true;
+        } else if input <= low {
+            self.high = false;
+        }
+        self.high
+    }
+}
+
+/// Convert a 0..=10000 ms full-scale slew time to a 1 ms-tick Q8 step.
+///
+/// `0` means bypass (instant).
+fn slew_ms_to_step_fp(ms: u32) -> Option<u32> {
+    let ms = ms.min(10_000);
+    if ms == 0 {
+        return None;
+    }
+    // Full-scale travel in `ms` ticks: step = 4095 / ms in Q8.
+    Some(((4095u32 << 8) + ms / 2) / ms)
+}
+
+/// Linear slew controlled by absolute full-scale times in milliseconds.
+///
+/// Intended for a 1 ms processing loop. `rise_ms` / `fall_ms` of `0` bypass
+/// that direction (instant). `10_000` reaches full scale in about 10 s.
+pub fn slew_lin_ms(prev: SlewState, input: u16, rise_ms: u32, fall_ms: u32) -> SlewState {
+    let prev = prev.0;
+    let input_fp = (input as u32) << 8;
+
+    SlewState(if input_fp > prev {
+        match slew_ms_to_step_fp(rise_ms) {
+            None => input_fp,
+            Some(step) if prev + step < input_fp => prev + step,
+            Some(_) => input_fp,
+        }
+    } else if input_fp < prev {
+        match slew_ms_to_step_fp(fall_ms) {
+            None => input_fp,
+            Some(step) if prev.saturating_sub(step) > input_fp => prev - step,
+            Some(_) => input_fp,
+        }
+    } else {
+        input_fp
+    })
+}
+
 /// Opaque state for [`slew_lin`] and [`slew_exp`].
 ///
 /// Stores a Q8 fixed-point value internally. Use [`SlewState::value`] to read
@@ -534,5 +659,99 @@ mod tests {
     #[test]
     fn no_jump_on_normal_movement() {
         assert!(simulate_max_step(&[0, 1000, 2000, 3000], 100, 1) < 20);
+    }
+
+    #[test]
+    fn s_curve_endpoints_and_mid() {
+        assert_eq!(s_curve_12bit(0), 0);
+        assert_eq!(s_curve_12bit(4095), 4095);
+        // Smoothstep(0.5) = 0.5 → mid-scale
+        assert_eq!(s_curve_12bit(2048), 2048);
+        // Below mid, S-curve stays below the linear value (concave-up start).
+        assert!(s_curve_12bit(1024) < 1024);
+        // Above mid, S-curve stays above the linear value.
+        assert!(s_curve_12bit(3072) > 3072);
+    }
+
+    #[test]
+    fn rectify_12bit_folds_around_mid() {
+        assert_eq!(rectify_12bit(2047), 2047);
+        assert_eq!(rectify_12bit(0), 4094);
+        assert_eq!(rectify_12bit(4095), 4095); // abs_diff(4095,2047)=2048 → 4095
+        assert_eq!(rectify_12bit(1047), 3047);
+    }
+
+    #[test]
+    fn fold_12bit_reflects_overflows() {
+        assert_eq!(fold_12bit(2047), 2047);
+        assert_eq!(fold_12bit(0), 0);
+        assert_eq!(fold_12bit(4095), 4095);
+        assert_eq!(fold_12bit(4096), 4094); // 8190 - 4096
+        assert_eq!(fold_12bit(-1), 1);
+        assert_eq!(fold_12bit(8190), 0);
+        assert_eq!(fold_12bit(9000), fold_12bit(8190 - 9000));
+    }
+
+    #[test]
+    fn quantize_steps_off_and_endpoints() {
+        assert_eq!(quantize_steps_12bit(1234, 0), 1234);
+        assert_eq!(quantize_steps_12bit(1234, 1), 1234);
+        assert_eq!(quantize_steps_12bit(0, 2), 0);
+        assert_eq!(quantize_steps_12bit(4095, 2), 4095);
+        assert_eq!(quantize_steps_12bit(0, 8), 0);
+        assert_eq!(quantize_steps_12bit(4095, 8), 4095);
+        assert_eq!(quantize_steps_12bit(4095, 128), 4095);
+        // 3 steps → 0, 2047/2048-ish, 4095
+        let mid = quantize_steps_12bit(2047, 3);
+        assert!(mid.abs_diff(2047) <= 1);
+    }
+
+    #[test]
+    fn schmitt_trigger_hysteresis() {
+        let mut st = SchmittTrigger::new();
+        assert!(!st.update(2000, 2048, 40));
+        assert!(st.update(2048, 2048, 40));
+        // Inside the hysteresis band: stay high
+        assert!(st.update(2020, 2048, 40));
+        // Cross low threshold 2008
+        assert!(!st.update(2008, 2048, 40));
+        assert!(!st.update(2030, 2048, 40));
+    }
+
+    #[test]
+    fn bipolar_deadband_snaps_center() {
+        assert_eq!(bipolar_deadband(2047, 32), 2047);
+        assert_eq!(bipolar_deadband(2040, 32), 2047);
+        assert_eq!(bipolar_deadband(2079, 32), 2047);
+        assert_eq!(bipolar_deadband(2080, 32), 2080);
+        assert_eq!(bipolar_deadband(0, 32), 0);
+        assert_eq!(bipolar_deadband(4095, 32), 4095);
+    }
+
+    #[test]
+    fn slew_lin_ms_bypasses_at_zero() {
+        let state = slew_lin_ms(SlewState::new(), 4095, 0, 0);
+        assert_eq!(state.value(), 4095);
+    }
+
+    #[test]
+    fn slew_lin_ms_ten_seconds_reaches_full_scale() {
+        let mut state = SlewState::new();
+        let mut prev = 0u16;
+        for _ in 0..10_000 {
+            state = slew_lin_ms(state, 4095, 10_000, 10_000);
+            let val = state.value();
+            assert!(val >= prev);
+            assert!(val <= 4095);
+            prev = val;
+        }
+        assert_eq!(prev, 4095);
+    }
+
+    #[test]
+    fn slew_lin_ms_rise_only_falls_instantly() {
+        let mut state = SlewState::from(4095);
+        state = slew_lin_ms(state, 0, 10_000, 0);
+        assert_eq!(state.value(), 0);
     }
 }
