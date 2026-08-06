@@ -1,5 +1,7 @@
 mod genre_palette;
 mod led_spectrum;
+mod led_fx;
+mod groove;
 
 register_apps!(
     1 => control,

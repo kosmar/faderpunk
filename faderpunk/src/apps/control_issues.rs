@@ -4,7 +4,9 @@
 //!
 //! Layers: Main = attenuverter, Alt (Shift) = offset, Third (button+fader) = slew.
 //! Button click (no fader move) = mute; Shift+Button = momentary bypass.
-//! Button LED (only): brightness tracks the active layer value in app/layer color;
+//! Fader Top/Bottom: layer meters (Main = out, Alt = bipolar offset red,
+//! Third = slew cyan). Button: fixed Mid brightness, saturation tracks Out
+//! (pale = quiet, full color = hot); High+full sat on bypass; off when muted;
 //! brief black blink on clock downbeat while Main out > Min.
 
 use embassy_futures::{
@@ -18,18 +20,21 @@ use libfp::{
     latch::LatchLayer,
     utils::{
         attenuverter, bipolar_deadband, fold_12bit, midi_gate, quantize_steps_12bit,
-        s_curve_12bit, scale_bits_7_12, slew_lin_ms, SchmittTrigger, SlewState,
+        s_curve_12bit, scale_bits_7_12, slew_lin_ms, split_signed_value, split_unsigned_value,
+        SchmittTrigger, SlewState,
     },
     AppIcon, Brightness, Color, Config, Curve, MidiCc, MidiChannel, MidiOut, Param, Range, Value,
     APP_MAX_PARAMS,
 };
 use serde::{Deserialize, Serialize};
+use smart_leds::RGB8;
 
 use crate::app::{App, AppParams, AppStorage, Led, ManagedStorage, ParamStore, SceneEvent};
 
 pub const CHANNELS: usize = 1;
 pub const PARAMS: usize = 14;
 
+const BUTTON_BRIGHTNESS: Brightness = Brightness::Mid;
 const BYPASS_BRIGHTNESS: Brightness = Brightness::High;
 const ATT_DEADBAND: u16 = 32;
 const FADER_MOVE_THRESHOLD: u16 = 24;
@@ -194,7 +199,7 @@ impl Default for Storage {
 
 impl AppStorage for Storage {}
 
-#[embassy_executor::task(pool_size = 16 / CHANNELS)]
+#[embassy_executor::task(pool_size = 4)]
 pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMutex, bool>) {
     let param_store = ParamStore::<Params>::new(
         app.app_id,
@@ -240,6 +245,8 @@ pub async fn run(
     params: &ParamStore<Params>,
     storage: &ManagedStorage<Storage>,
 ) {
+    app.wait_while_perf_muted().await;
+
     let (
         input_mode,
         range,
@@ -299,13 +306,10 @@ pub async fn run(
     let slew_sync_glob = app.make_global(false);
     let blink_left_glob = app.make_global(0u16);
 
-    // Fader LEDs unused — all feedback is on the button.
-    leds.unset(0, Led::Top);
-    leds.unset(0, Led::Bottom);
     if muted_glob.get() {
         leds.unset(0, Led::Button);
     } else {
-        leds.set(0, Led::Button, led_color, button_bright_12(out_glob.get()));
+        leds.set(0, Led::Button, sat_color(led_color, 0), BUTTON_BRIGHTNESS);
     }
 
     let process_loop = async {
@@ -432,28 +436,53 @@ pub async fn run(
                 }
             }
 
-            // Button LED only — fader Top/Bottom stay off.
-            leds.unset(0, Led::Top);
-            leds.unset(0, Led::Bottom);
+            // Fader meters: Main = out, Alt = bipolar offset, Third = slew.
+            match layer {
+                LatchLayer::Main => {
+                    if range.is_bipolar() {
+                        let led = split_unsigned_value(windowed);
+                        leds.set(0, Led::Top, led_color, Brightness::Custom(led[0]));
+                        leds.set(0, Led::Bottom, led_color, Brightness::Custom(led[1]));
+                    } else {
+                        leds.set(
+                            0,
+                            Led::Top,
+                            led_color,
+                            Brightness::Custom((windowed / 16) as u8),
+                        );
+                        leds.unset(0, Led::Bottom);
+                    }
+                }
+                LatchLayer::Alt => {
+                    let off = offset as i32 - 2047;
+                    let led = split_signed_value(off);
+                    leds.set(0, Led::Top, Color::Red, Brightness::Custom(led[0]));
+                    leds.set(0, Led::Bottom, Color::Red, Brightness::Custom(led[1]));
+                }
+                LatchLayer::Third => {
+                    leds.set(
+                        0,
+                        Led::Top,
+                        Color::Cyan,
+                        Brightness::Custom((slew_fader / 16) as u8),
+                    );
+                    leds.unset(0, Led::Bottom);
+                }
+            }
 
+            // Button: fixed Mid brightness; saturation tracks Out level.
             if !blink_glob.get() {
                 if muted {
                     leds.unset(0, Led::Button);
                 } else if bypassed {
                     leds.set(0, Led::Button, led_color, BYPASS_BRIGHTNESS);
                 } else {
-                    match layer {
-                        LatchLayer::Main => {
-                            leds.set(0, Led::Button, led_color, button_bright_12(windowed));
-                        }
-                        LatchLayer::Alt => {
-                            let off_abs = (offset as i32 - 2047).unsigned_abs() as u16;
-                            leds.set(0, Led::Button, Color::Red, button_bright_12(off_abs * 2));
-                        }
-                        LatchLayer::Third => {
-                            leds.set(0, Led::Button, Color::Cyan, button_bright_12(slew_fader));
-                        }
-                    }
+                    leds.set(
+                        0,
+                        Led::Button,
+                        sat_color(led_color, windowed),
+                        BUTTON_BRIGHTNESS,
+                    );
                 }
             }
 
@@ -468,7 +497,12 @@ pub async fn run(
                     } else if bypass_glob.get() {
                         leds.set(0, Led::Button, led_color, BYPASS_BRIGHTNESS);
                     } else {
-                        leds.set(0, Led::Button, led_color, button_bright_12(out_glob.get()));
+                        leds.set(
+                            0,
+                            Led::Button,
+                            sat_color(led_color, out_glob.get()),
+                            BUTTON_BRIGHTNESS,
+                        );
                     }
                 }
             }
@@ -528,7 +562,12 @@ pub async fn run(
                     if muted {
                         leds.unset(0, Led::Button);
                     } else {
-                        leds.set(0, Led::Button, led_color, button_bright_12(out_glob.get()));
+                        leds.set(
+                            0,
+                            Led::Button,
+                            sat_color(led_color, out_glob.get()),
+                            BUTTON_BRIGHTNESS,
+                        );
                     }
                 }
                 SceneEvent::SaveScene(scene) => storage.save_to_scene(scene).await,
@@ -539,8 +578,15 @@ pub async fn run(
     join3(process_loop, button_gestures, scene_handler).await;
 }
 
-fn button_bright_12(value: u16) -> Brightness {
-    Brightness::Custom((value.min(4095) / 16) as u8)
+/// Mix `base` toward white by inverse saturation. `level` 0 = pale, 4095 = full.
+fn sat_color(base: Color, level: u16) -> Color {
+    let rgb: RGB8 = base.into();
+    let t = u32::from(level.min(4095));
+    let blend = |c: u8| -> u8 {
+        let c = u32::from(c);
+        ((255 * (4095 - t) + c * t) / 4095) as u8
+    };
+    Color::Custom(blend(rgb.r), blend(rgb.g), blend(rgb.b))
 }
 
 fn apply_transfer(value: i32, transfer: usize) -> u16 {

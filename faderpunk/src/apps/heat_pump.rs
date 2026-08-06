@@ -23,6 +23,14 @@ pub const CHANNELS: usize = 1;
 pub const PARAMS: usize = 9;
 
 const MIN_RELEASE_MS: f32 = 10.0;
+/// Hold at the ducked floor as a fraction of the measured division period.
+/// 1/8 leaves room for a musical recovery before the next hit.
+const HOLD_PERIOD_NUM: u32 = 1;
+const HOLD_PERIOD_DEN: u32 = 8;
+/// Inferred division period clamp (ms) — seeds hold length across BPM/div.
+const PERIOD_MS_MIN: u32 = 40;
+const PERIOD_MS_MAX: u32 = 8000;
+const PERIOD_MS_DEFAULT: u32 = 500;
 /// Tick spacing at 24 PPQN (whole-note / N), slow → fast.
 const DIVISION_TICKS: [u32; 10] = [96, 48, 36, 24, 18, 16, 12, 8, 6, 3];
 /// Invert gesture LED feedback length (white↔off fade).
@@ -64,7 +72,7 @@ const DIVISION_COLORS: [Color; 10] = [
 
 pub static CONFIG: Config<PARAMS> = Config::new(
     "Heat Pump",
-    "Clock-synced sidechain ducking envelope",
+    "Clock-synced sidechain ducking: hold + log release",
     Color::Pink,
     AppIcon::AdEnv,
 )
@@ -281,7 +289,7 @@ fn division_to_fader(d: usize) -> u16 {
     ((d * 4095) / (n as u32 - 1)) as u16
 }
 
-#[embassy_executor::task(pool_size = 4)]
+#[embassy_executor::task(pool_size = 16 / CHANNELS)]
 pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMutex, bool>) {
     let param_store = ParamStore::<Params>::new(
         app.app_id,
@@ -392,13 +400,23 @@ pub async fn run(
 
     let main_loop = async {
         let mut last_midi_val: u16 = u16::MAX;
+        let mut midi_pace: u8 = 0;
         let mut button_duck_left: u16 = 0;
         let mut last_button_slot: u8 = 0xff;
         let mut ms_in_slot: u16 = 0;
         let mut last_blink_division: usize = usize::MAX;
         let mut prev_gate_high = false;
+        // Sidechain envelope: hold at floor, then log-shaped recovery to idle.
+        let mut duck_from: f32 = idle_level(false);
+        let mut hold_left: u32 = 0;
+        let mut release_elapsed: u32 = 0;
+        let mut recovering = false;
+        let mut ms_since_trig: u32 = 0;
+        let mut period_ms: u32 = PERIOD_MS_DEFAULT;
+        let mut last_invert = storage.query(|s| s.invert);
         loop {
             app.delay_millis(1).await;
+            ms_since_trig = ms_since_trig.saturating_add(1);
 
             // Main = fader, Alt = Shift+fader (depth), Third = button+fader (division).
             let latch_active_layer = if buttons.is_shift_pressed() && !buttons.is_button_pressed(0)
@@ -413,6 +431,11 @@ pub async fn run(
 
             let invert = glob_invert.get();
             let idle = idle_level(invert);
+            if invert != last_invert {
+                last_invert = invert;
+                recovering = false;
+                hold_left = 0;
+            }
             let muted = glob_muted.get();
 
             let mut eff_depth = glob_depth.get();
@@ -451,26 +474,47 @@ pub async fn run(
                 if glob_trigger.get() {
                     glob_trigger.set(false);
                 }
+                recovering = false;
+                hold_left = 0;
             } else if glob_trigger.get() {
                 glob_trigger.set(false);
-                level = if invert {
+                if ms_since_trig >= PERIOD_MS_MIN {
+                    period_ms = ms_since_trig.min(PERIOD_MS_MAX);
+                }
+                ms_since_trig = 0;
+                duck_from = if invert {
                     eff_depth as f32
                 } else {
                     4095u16.saturating_sub(eff_depth) as f32
                 };
-            }
-
-            if !muted {
-                // Fader up = faster recovery: invert the fader before the curve.
-                let release_ms = Curve::Exponential.at(4095u16.saturating_sub(eff_release))
-                    as f32
-                    + MIN_RELEASE_MS;
-                let step = 4095.0 / release_ms;
-                if level < idle {
-                    level = (level + step).min(idle);
-                } else if level > idle {
-                    level = (level - step).max(idle);
+                level = duck_from;
+                // Cap hold at half the period so release still has room to breathe.
+                hold_left = (period_ms * HOLD_PERIOD_NUM / HOLD_PERIOD_DEN)
+                    .clamp(1, (period_ms / 2).max(1));
+                release_elapsed = 0;
+                recovering = true;
+            } else if recovering {
+                if hold_left > 0 {
+                    hold_left -= 1;
+                    level = duck_from;
+                } else {
+                    // Fader up = faster recovery: invert the fader before the time curve.
+                    let release_ms = Curve::Exponential.at(4095u16.saturating_sub(eff_release))
+                        as f32
+                        + MIN_RELEASE_MS;
+                    release_elapsed = release_elapsed.saturating_add(1);
+                    let t = (release_elapsed as f32 / release_ms).min(1.0);
+                    // Log shape: leave the duck quickly, soft-land on idle (classic pump).
+                    let shaped =
+                        Curve::Logarithmic.at((t * 4095.0) as u16) as f32 / 4095.0;
+                    level = duck_from + (idle - duck_from) * shaped;
+                    if t >= 1.0 {
+                        level = idle;
+                        recovering = false;
+                    }
                 }
+            } else {
+                level = idle;
             }
             glob_level.set(level);
 
@@ -481,10 +525,14 @@ pub async fn run(
             }
 
             if midi_out.is_some() {
-                let gate_val = midi_gate(effective_out, nrpn);
-                if gate_val != last_midi_val {
-                    midi.send_cc(midi_cc, effective_out).await;
-                    last_midi_val = gate_val;
+                midi_pace = midi_pace.wrapping_add(1);
+                if midi_pace >= 10 {
+                    midi_pace = 0;
+                    let gate_val = midi_gate(effective_out, nrpn);
+                    if gate_val != last_midi_val {
+                        midi.send_cc(midi_cc, effective_out).await;
+                        last_midi_val = gate_val;
+                    }
                 }
             }
 
@@ -656,24 +704,17 @@ pub async fn run(
             if buttons.is_shift_pressed() {
                 long_press_fired.set(false);
                 buttons.wait_for_up(0).await;
-                if !long_press_fired.get() {
-                    if jack_mode == JACK_IN {
-                        // Shift + short (CV In): cycle destination + flash dest color.
-                        let next = storage.modify_and_save(|s| {
-                            s.dest = (s.dest + 1) % DEST_COUNT;
-                            s.dest
-                        });
-                        glob_dest.set(next);
-                        leds.set_mode(0, Led::Button, LedMode::Flash(dest_color(next), Some(3)));
-                        glob_btn_flash.set(BUTTON_FLASH_MS);
-                    } else {
-                        // Shift + short (CV Out): cycle division (1/1 = user color).
-                        let next = (glob_division.get() + 1) % DIVISION_TICKS.len();
-                        glob_division.set(next);
-                        storage.modify_and_save(|s| {
-                            s.division = next;
-                        });
-                    }
+                // Division is only via Third (button+fader). Shift+short cycles
+                // CV Dest when Jack=CV In; unused for CV Out.
+                if !long_press_fired.get() && jack_mode == JACK_IN {
+                    // Shift + short (CV In): cycle destination + flash dest color.
+                    let next = storage.modify_and_save(|s| {
+                        s.dest = (s.dest + 1) % DEST_COUNT;
+                        s.dest
+                    });
+                    glob_dest.set(next);
+                    leds.set_mode(0, Led::Button, LedMode::Flash(dest_color(next), Some(3)));
+                    glob_btn_flash.set(BUTTON_FLASH_MS);
                 }
             } else {
                 long_press_fired.set(false);

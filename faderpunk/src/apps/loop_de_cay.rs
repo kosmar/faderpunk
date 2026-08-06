@@ -2,16 +2,16 @@
 //!
 //! Gestures:
 //! - Press/hold = gate/play (Pitch→MIDI / Fader→Both); release ends the note.
-//! - Shift+Short = arm/disarm recording (button blinks when armed).
+//! - Shift+Short = cycle loop length 1→8 bars.
 //! - Shift+Long = mute (decay pauses); again while muted = erase buffer.
-//! - Short while muted = unmute.
-//! - Shift alone + fader = decay; muted + hold button + fader = loop bars.
+//! - Short while muted = unmute (re-arms recording).
+//! - Shift+Fader = decay.
 //!
 //! Pitch (live + decay) snaps to the global quantizer key/tonic (nearest degree).
 //! Mode via Config.
 
 use embassy_futures::{
-    join::join5,
+    join::{join, join5},
     select::{select, select3, Either},
 };
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, signal::Signal};
@@ -47,10 +47,12 @@ const FADER_MOVE_THRESH: u16 = 48;
 const GATE_THRESH: u16 = 406;
 const DEFAULT_GATE_TICKS: u16 = 12;
 const ARM_BLINK_MS: u64 = 400;
-/// Playback/capture hit: keep button lit this many PPQN ticks (sharp, short).
+/// Playback/capture hit: keep button dim this many PPQN ticks (sharp, short).
 const CAPTURE_FLASH_TICKS: u64 = 2;
 /// Remaining brightness % during capture dim (80% dim).
 const CAPTURE_DIM_REMAIN_PCT: u16 = 20;
+/// Hold length for Shift+Long mute/erase (matches hardware LONG_PRESS).
+const SHIFT_LONG_MS: u64 = 500;
 
 pub static CONFIG: Config<PARAMS> = Config::new(
     "Loop de Cay",
@@ -385,6 +387,11 @@ fn bars_from_fader(v: u16) -> u8 {
     ((v as u32 * (MAX_BARS as u32 - 1)) / 4095) as u8 + 1
 }
 
+fn fader_from_bars(bars: u8) -> u16 {
+    let b = bars.clamp(1, MAX_BARS) as u32 - 1;
+    ((b * 4095) / (MAX_BARS as u32 - 1)) as u16
+}
+
 fn quantize_16th(pos: u16) -> u16 {
     let q = TICKS_PER_16TH as u16;
     (pos / q) * q
@@ -600,12 +607,12 @@ pub async fn run(
     let main_glob = app.make_global(storage.query(|s| s.main_saved));
     let muted = app.make_global(storage.query(|s| s.muted));
     let armed = app.make_global(storage.query(|s| s.armed));
-    let long_press_fired = app.make_global(false);
     let fader_moved_while_held = app.make_global(false);
     let button_down_fader = app.make_global(0u16);
     let glob_latch_layer = app.make_global(LatchLayer::Main);
     let flash_until = app.make_global(0u64);
     let erase_flash = app.make_global(false);
+    let bars_flash = app.make_global(false);
     let live_note = app.make_global(None::<u8>);
     let rec_open = app.make_global(false);
     let voices = app.make_global([(0u8, 0u16, 0u32); POLY]);
@@ -623,16 +630,32 @@ pub async fn run(
 
     let clock_task = async {
         let mut prev_pos: Option<u16> = None;
-        let mut blink_on = true;
-        let mut last_blink = Instant::now();
 
         loop {
             match clock.wait_for_event(ClockDivision::_1).await {
-                ClockEvent::Reset | ClockEvent::Stop => {
+                ClockEvent::Stop => {
                     all_notes_off(&midi, &voices, &live_note, out_jack.as_ref()).await;
                     prev_pos = None;
                 }
-                ClockEvent::Start => {}
+                ClockEvent::Reset => {
+                    all_notes_off(&midi, &voices, &live_note, out_jack.as_ref()).await;
+                    let mut b = buf.get();
+                    if b.origin != u64::MAX {
+                        b.origin = ticks();
+                        buf.set(b);
+                    }
+                    prev_pos = None;
+                }
+                ClockEvent::Start => {
+                    // Tick counter restarts at 0 — re-anchor origin or play_pos
+                    // saturates to 0 forever and the loop never advances.
+                    let mut b = buf.get();
+                    if b.origin != u64::MAX {
+                        b.origin = ticks();
+                        buf.set(b);
+                    }
+                    prev_pos = None;
+                }
                 ClockEvent::Tick => {
                     let tick = ticks();
                     let bars = bars_glob.get();
@@ -687,84 +710,6 @@ pub async fn run(
                     } else {
                         prev_pos = None;
                     }
-
-                    if last_blink.elapsed().as_millis() >= ARM_BLINK_MS {
-                        blink_on = !blink_on;
-                        last_blink = Instant::now();
-                    }
-
-                    if erase_flash.get() {
-                        leds.set(0, Led::Button, Color::White, Brightness::High);
-                        erase_flash.set(false);
-                    } else {
-                        match glob_latch_layer.get() {
-                            LatchLayer::Alt => {
-                                let v = decay_glob.get();
-                                paint_fader_meters(
-                                    &leds,
-                                    decay_fader_color(v),
-                                    v,
-                                    (v / 16) as u8,
-                                );
-                            }
-                            LatchLayer::Third => {
-                                let v = storage.query(|s| s.bars_saved);
-                                let bars = bars_glob.get();
-                                paint_fader_meters(
-                                    &leds,
-                                    bars_fader_color(bars, v),
-                                    v,
-                                    (bars as u16 * 28).min(255) as u8,
-                                );
-                            }
-                            LatchLayer::Main => {
-                                if muted.get() {
-                                    leds.set(0, Led::Button, Color::Red, Brightness::Low);
-                                    leds.unset(0, Led::Top);
-                                    leds.unset(0, Led::Bottom);
-                                } else {
-                                    let main = main_glob.get();
-                                    let pitch_c = pitch_fader_color(main);
-                                    let meter = split_unsigned_value(main);
-                                    leds.set(
-                                        0,
-                                        Led::Top,
-                                        pitch_c,
-                                        Brightness::Custom(meter[0].max(8)),
-                                    );
-                                    leds.set(
-                                        0,
-                                        Led::Bottom,
-                                        pitch_c,
-                                        Brightness::Custom(meter[1].max(8)),
-                                    );
-                                    let bright = if armed.get() {
-                                        if blink_on {
-                                            Brightness::High
-                                        } else {
-                                            Brightness::Mid
-                                        }
-                                    } else {
-                                        Brightness::Low
-                                    };
-                                    let capturing = flash_until.get() > tick;
-                                    let button_bright = if capturing {
-                                        Brightness::Custom(
-                                            ((u8::from(bright) as u16 * CAPTURE_DIM_REMAIN_PCT)
-                                                / 100)
-                                                .max(1) as u8,
-                                        )
-                                    } else {
-                                        bright
-                                    };
-                                    leds.set(0, Led::Button, led_color, button_bright);
-                                    if capturing {
-                                        leds.set(0, Led::Top, Color::White, Brightness::High);
-                                    }
-                                }
-                            }
-                        }
-                    }
                 }
             }
         }
@@ -772,7 +717,6 @@ pub async fn run(
 
     let fader_task = async {
         let mut latch = app.make_latch(faders.get_value());
-        let mut last_bars = bars_glob.get();
         loop {
             faders.wait_for_change().await;
             let layer = glob_latch_layer.get();
@@ -788,12 +732,13 @@ pub async fn run(
             let target = match layer {
                 LatchLayer::Main => storage.query(|s| s.main_saved),
                 LatchLayer::Alt => storage.query(|s| s.decay_saved),
-                LatchLayer::Third => storage.query(|s| s.bars_saved),
+                // Length is Shift+Short cycle — Third unused.
+                LatchLayer::Third => storage.query(|s| s.decay_saved),
             };
 
             if let Some(new_value) = latch.update(val, layer, target) {
                 match layer {
-                    LatchLayer::Alt => {
+                    LatchLayer::Alt | LatchLayer::Third => {
                         decay_glob.set(new_value);
                         storage.modify_and_save(|s| s.decay_saved = new_value);
                         paint_fader_meters(
@@ -801,21 +746,6 @@ pub async fn run(
                             decay_fader_color(new_value),
                             new_value,
                             (new_value / 16) as u8,
-                        );
-                    }
-                    LatchLayer::Third => {
-                        let new_bars = bars_from_fader(new_value);
-                        let mut b = buf.get();
-                        b.set_window_bars(last_bars, new_bars);
-                        buf.set(b);
-                        bars_glob.set(new_bars);
-                        last_bars = new_bars;
-                        storage.modify_and_save(|s| s.bars_saved = new_value);
-                        paint_fader_meters(
-                            &leds,
-                            bars_fader_color(new_bars, new_value),
-                            new_value,
-                            (new_bars as u16 * 28).min(255) as u8,
                         );
                     }
                     LatchLayer::Main => {
@@ -835,20 +765,23 @@ pub async fn run(
         loop {
             // Use down-event shift flag — polling after await misses Shift often.
             let shift = buttons.wait_for_down(0).await;
-            long_press_fired.set(false);
             fader_moved_while_held.set(false);
             button_down_fader.set(faders.get_value());
 
             if shift {
-                match select(buttons.wait_for_up(0), buttons.wait_for_any_long_press()).await {
+                // Shift+Short = cycle bars; Shift+Long = mute, or erase if muted.
+                match select(buttons.wait_for_up(0), app.delay_millis(SHIFT_LONG_MS)).await {
                     Either::First(_) => {
-                        if !long_press_fired.get() {
-                            let a = armed.toggle();
-                            storage.modify_and_save(|s| s.armed = a);
-                        }
+                        let old = bars_glob.get();
+                        let new_bars = if old >= MAX_BARS { 1 } else { old + 1 };
+                        let mut b = buf.get();
+                        b.set_window_bars(old, new_bars);
+                        buf.set(b);
+                        bars_glob.set(new_bars);
+                        storage.modify_and_save(|s| s.bars_saved = fader_from_bars(new_bars));
+                        bars_flash.set(true);
                     }
                     Either::Second(_) => {
-                        long_press_fired.set(true);
                         if muted.get() {
                             let mut b = buf.get();
                             b.clear();
@@ -867,19 +800,20 @@ pub async fn run(
             }
 
             if muted.get() {
-                match select(buttons.wait_for_up(0), buttons.wait_for_any_long_press()).await {
+                // Short = unmute (and re-arm so a prior Long doesn't leave us silent).
+                // Long while muted = ignore (length is Shift+Short).
+                match select(buttons.wait_for_up(0), app.delay_millis(SHIFT_LONG_MS)).await {
                     Either::First(_) => {
-                        if !long_press_fired.get() {
+                        if !fader_moved_while_held.get() {
                             muted.set(false);
-                            storage.modify_and_save(|s| s.muted = false);
+                            armed.set(true);
+                            storage.modify_and_save(|s| {
+                                s.muted = false;
+                                s.armed = true;
+                            });
                         }
                     }
                     Either::Second(_) => {
-                        long_press_fired.set(true);
-                        if !fader_moved_while_held.get() {
-                            muted.set(false);
-                            storage.modify_and_save(|s| s.muted = false);
-                        }
                         buttons.wait_for_up(0).await;
                     }
                 }
@@ -916,9 +850,9 @@ pub async fn run(
                 .await;
             }
 
-            match select(buttons.wait_for_up(0), buttons.wait_for_any_long_press()).await {
+            match select(buttons.wait_for_up(0), app.delay_millis(SHIFT_LONG_MS)).await {
                 Either::First(_) => {
-                    if !long_press_fired.get() && uses_button_gate {
+                    if uses_button_gate {
                         note_off(
                             &midi,
                             &buf,
@@ -933,7 +867,6 @@ pub async fn run(
                     }
                 }
                 Either::Second(_) => {
-                    long_press_fired.set(true);
                     if uses_button_gate {
                         buttons.wait_for_up(0).await;
                         note_off(
@@ -949,6 +882,8 @@ pub async fn run(
                         .await;
                         continue;
                     }
+                    // Non-gate modes: Long (no fader move) = mute.
+                    // Mute is Shift+Long in gate modes — button is the note gate.
                     if !fader_moved_while_held.get() {
                         if let Some(n) = live_note.get() {
                             midi.send_note_off(MidiNote::from(n)).await;
@@ -1090,42 +1025,100 @@ pub async fn run(
     };
 
     let layer_task = async {
-        let mut last_layer = LatchLayer::Main;
+        // LEDs live here (1 ms), not on clock ticks — mute/arm/erase must
+        // show even when the internal/external clock is stopped.
+        let mut blink_on = true;
+        let mut last_blink = Instant::now();
+        let mut erase_hold_ms = 0u16;
+        let mut bars_hold_ms = 0u16;
         loop {
             app.delay_millis(1).await;
-            // When the button is the play/gate key, keep Main so fader = pitch.
-            // Third (bars) only while muted, or in modes where button isn't gate.
+            // Shift alone = Alt (decay). Length is Shift+Short — no Third latch.
             let layer = if buttons.is_shift_pressed() && !buttons.is_button_pressed(0) {
                 LatchLayer::Alt
-            } else if !buttons.is_shift_pressed()
-                && buttons.is_button_pressed(0)
-                && (muted.get() || !uses_button_gate)
-            {
-                LatchLayer::Third
             } else {
                 LatchLayer::Main
             };
             glob_latch_layer.set(layer);
-            // Entering Alt/Third: show meters even before the fader moves.
-            if layer != last_layer {
-                match layer {
-                    LatchLayer::Alt => {
-                        let v = decay_glob.get();
-                        paint_fader_meters(&leds, decay_fader_color(v), v, (v / 16) as u8);
-                    }
-                    LatchLayer::Third => {
-                        let v = storage.query(|s| s.bars_saved);
-                        let bars = bars_glob.get();
-                        paint_fader_meters(
-                            &leds,
-                            bars_fader_color(bars, v),
-                            v,
-                            (bars as u16 * 28).min(255) as u8,
-                        );
-                    }
-                    LatchLayer::Main => {}
+
+            if last_blink.elapsed().as_millis() >= ARM_BLINK_MS {
+                blink_on = !blink_on;
+                last_blink = Instant::now();
+            }
+
+            if erase_flash.get() {
+                erase_flash.set(false);
+                erase_hold_ms = 120;
+            }
+            if bars_flash.get() {
+                bars_flash.set(false);
+                bars_hold_ms = 220;
+            }
+            if erase_hold_ms > 0 {
+                erase_hold_ms = erase_hold_ms.saturating_sub(1);
+                leds.set(0, Led::Button, Color::White, Brightness::High);
+                continue;
+            }
+            if bars_hold_ms > 0 {
+                bars_hold_ms = bars_hold_ms.saturating_sub(1);
+                let bars = bars_glob.get();
+                let v = fader_from_bars(bars);
+                // Solid meters + button strobe so length is obvious without a loop.
+                paint_fader_meters(
+                    &leds,
+                    bars_fader_color(bars, v),
+                    v,
+                    255,
+                );
+                if (bars_hold_ms / 40).is_multiple_of(2) {
+                    leds.set(0, Led::Button, bars_fader_color(bars, v), Brightness::High);
+                } else {
+                    leds.unset(0, Led::Button);
                 }
-                last_layer = layer;
+                continue;
+            }
+
+            match layer {
+                LatchLayer::Alt | LatchLayer::Third => {
+                    let v = decay_glob.get();
+                    paint_fader_meters(&leds, decay_fader_color(v), v, (v / 16) as u8);
+                }
+                LatchLayer::Main => {
+                    if muted.get() {
+                        leds.set(0, Led::Button, Color::Red, Brightness::Low);
+                        leds.unset(0, Led::Top);
+                        leds.unset(0, Led::Bottom);
+                    } else {
+                        let main = main_glob.get();
+                        let pitch_c = pitch_fader_color(main);
+                        let meter = split_unsigned_value(main);
+                        leds.set(0, Led::Top, pitch_c, Brightness::Custom(meter[0].max(8)));
+                        leds.set(0, Led::Bottom, pitch_c, Brightness::Custom(meter[1].max(8)));
+                        let bright = if armed.get() {
+                            if blink_on {
+                                Brightness::High
+                            } else {
+                                Brightness::Mid
+                            }
+                        } else {
+                            Brightness::Low
+                        };
+                        let tick = ticks();
+                        let capturing = flash_until.get() > tick;
+                        let button_bright = if capturing {
+                            Brightness::Custom(
+                                ((u8::from(bright) as u16 * CAPTURE_DIM_REMAIN_PCT) / 100).max(1)
+                                    as u8,
+                            )
+                        } else {
+                            bright
+                        };
+                        leds.set(0, Led::Button, led_color, button_bright);
+                        if capturing {
+                            leds.set(0, Led::Top, Color::White, Brightness::High);
+                        }
+                    }
+                }
             }
         }
     };
@@ -1152,7 +1145,7 @@ pub async fn run(
         clock_task,
         fader_task,
         controls,
-        select(input_task, layer_task),
+        join(input_task, layer_task),
         scene_task,
     )
     .await;
@@ -1302,11 +1295,12 @@ async fn start_note(
     if armed.get() {
         let tick = ticks();
         let bars = bars_glob.get();
-        let window = LoopBuf::window_ticks(bars);
+        let window = LoopBuf::window_ticks(bars).max(1);
         let mut b = buf.get();
         b.ensure_origin(tick);
-        let pos = b.play_pos(tick, bars).unwrap_or(0);
-        let qpos = quantize_16th(pos) % window.max(1);
+        // Don't use play_pos here — it returns None while extent==0 (first hit).
+        let pos = ((tick.saturating_sub(b.origin)) % window as u64) as u16;
+        let qpos = quantize_16th(pos) % window;
         b.add_or_refresh(qpos, u16::MAX, note, vel, window);
         buf.set(b);
         rec_open.set(true);
@@ -1357,10 +1351,14 @@ async fn end_specific(
     if armed.get() && rec_open.get() {
         let tick = ticks();
         let bars = bars_glob.get();
-        let window = LoopBuf::window_ticks(bars);
+        let window = LoopBuf::window_ticks(bars).max(1);
         let mut b = buf.get();
-        let pos = b.play_pos(tick, bars).unwrap_or(0);
-        let qpos = quantize_16th(pos) % window.max(1);
+        let pos = if b.origin == u64::MAX {
+            0
+        } else {
+            ((tick.saturating_sub(b.origin)) % window as u64) as u16
+        };
+        let qpos = quantize_16th(pos) % window;
         b.finalize_open(note, qpos, window);
         for e in b.events.iter_mut() {
             if e.used && e.note == note && e.dur == u16::MAX {

@@ -371,6 +371,7 @@ pub async fn run(
 ) {
     app.wait_while_perf_muted().await;
 
+
     let (range, midi_out, midi_chan, midi_cc, led_color, nrpn, mix_mode, osc_b, p_dest, p_rate_mod) =
         params.query(|p| {
             (
@@ -698,7 +699,7 @@ pub async fn run(
             if midi_out.is_some() {
                 let gate_val = midi_gate(effective_val, nrpn);
                 if gate_val != last_val {
-                    midi.send_cc(midi_cc, effective_val).await;
+                    midi.try_send_cc(midi_cc, effective_val);
                     last_val = gate_val;
                 }
             }

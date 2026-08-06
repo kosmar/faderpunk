@@ -5,7 +5,7 @@
 
 use embassy_futures::{
     join::join5,
-    select::{select, select3},
+    select::{select, select3, Either},
 };
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, signal::Signal};
 use heapless::Vec;
@@ -24,6 +24,22 @@ pub const CHANNELS: usize = 2;
 pub const PARAMS: usize = 9;
 
 const LED_BRIGHTNESS: Brightness = Brightness::Mid;
+/// Button hit soft-dip duration (1 ms ticks). Short so dense hits still blink
+/// (long hold-offs stay stuck at 62% and look like no pulse).
+const BUTTON_HIT_FLASH_MS: u16 = 40;
+/// Hit remain light: dim 38% → keep 62% (no black flash).
+const BUTTON_HIT_REMAIN_PCT: u8 = 62;
+/// Hold off Main button paint so LedMode::Flash (logic cycle) can finish.
+const BUTTON_FLASH_MS: u16 = 550;
+/// eInv gesture LED feedback (white↔off), same as Heat Pump invert.
+const EINVERT_FADE_MS: u16 = 500;
+/// Floor / span for pulse-density brightness on buttons (Main).
+const BTN_BRIGHT_FLOOR: u8 = 90;
+const BTN_BRIGHT_SPAN: u8 = 165;
+/// Floor for Alt rotation / Third length Top+Button meters (rot=0 still visible).
+const LAYER_LED_FLOOR: u8 = 40;
+/// Ignore tiny fader noise when deciding Btn2 tap-mute vs Third scrub.
+const FADER_MOVE_THRESH: u16 = 64;
 const RESOLUTION: [u32; 12] = [384, 192, 96, 48, 24, 16, 12, 8, 6, 4, 3, 2];
 
 /// Boolean combine modes for the two Euclidean layers.
@@ -99,6 +115,33 @@ fn length_band_color(len: u8) -> Color {
     } else {
         Color::Blue
     }
+}
+
+/// Button base brightness from fill density (pulses/length) — denser = brighter.
+fn button_density_bright(pulses: u8, len: u8) -> u8 {
+    let len = len.max(1) as u16;
+    let fill = (pulses as u16 * 255) / len;
+    BTN_BRIGHT_FLOOR + ((fill * BTN_BRIGHT_SPAN as u16) / 255) as u8
+}
+
+fn hit_dip_bright(base: u8) -> u8 {
+    ((base as u16 * BUTTON_HIT_REMAIN_PCT as u16) / 100).min(255) as u8
+}
+
+/// Rotation meter: 0..=len-1 → floor..=255.
+fn rot_meter_bright(rot: u8, len: u8) -> u8 {
+    let len = len.max(1) as u16;
+    let span = (255u16 - LAYER_LED_FLOOR as u16).max(1);
+    let t = ((rot as u16 * span) / len).min(span);
+    (LAYER_LED_FLOOR as u16 + t) as u8
+}
+
+/// Length meter: 2..=32 → floor..=255.
+fn len_meter_bright(len: u8) -> u8 {
+    let len = len.clamp(2, 32) as u16;
+    let span = (255u16 - LAYER_LED_FLOOR as u16).max(1);
+    let t = (((len - 2) * span) / 30).min(span);
+    (LAYER_LED_FLOOR as u16 + t) as u8
 }
 
 pub static CONFIG: Config<PARAMS> = Config::new(
@@ -217,9 +260,9 @@ impl AppParams for Params {
 ///   F1 Main=pulses_b  Alt=rot_b  Third=len_b
 ///
 /// Buttons:
-///   Btn1 tap = mute
-///   Shift+Btn0 = cycle Logic OR→AND→XOR→Accnt
-///   Shift+Btn1 = toggle eInv (post-logic shadow)
+///   Btn0/Btn1 hold = Third (lengths); Btn1 tap (no fader move) = mute
+///   Shift+Btn1 = cycle Logic OR→AND→XOR→Accnt
+///   Shift+Btn2 = toggle eInv (post-logic shadow); white↔none LED fade
 ///
 /// Outputs:
 ///   Jack0 = logic result, Jack1 = coupled companion (see Logic table)
@@ -297,6 +340,8 @@ pub async fn run(
     params: &ParamStore<Params>,
     storage: &ManagedStorage<Storage>,
 ) {
+    app.wait_while_perf_muted().await;
+
     let mut clock = app.use_clock();
     let ticks = clock.get_ticker();
     let die = app.use_die();
@@ -338,6 +383,15 @@ pub async fn run(
     let pulses_b_glob = app.make_global(3u8);
     let rot_a_glob = app.make_global(0u8);
     let rot_b_glob = app.make_global(0u8);
+    // Main button pulse flashes (1 ms countdown while Flash plays).
+    let glob_btn_a_flash = app.make_global(0u16);
+    let glob_btn_b_flash = app.make_global(0u16);
+    let glob_btn_flash = app.make_global(0u16);
+    // Remaining ms of eInv LED fade; 0 = inactive.
+    let glob_einv_fade = app.make_global(0u16);
+    // true = none→white, false = white→none.
+    let glob_einv_fade_up = app.make_global(false);
+    let glob_fader_moved = app.make_global(false);
 
     let div = div_from_param(division);
 
@@ -386,8 +440,6 @@ pub async fn run(
     let fut_pulse = async {
         let mut note_on_a = false;
         let mut note_on_b = false;
-        let mut layer_a_on = false;
-        let mut layer_b_on = false;
 
         loop {
             match clock.wait_for_event(ClockDivision::_1).await {
@@ -396,8 +448,6 @@ pub async fn run(
                     midi.send_note_off(note_b).await;
                     note_on_a = false;
                     note_on_b = false;
-                    layer_a_on = false;
-                    layer_b_on = false;
                     jack[0].set_low().await;
                     jack[1].set_low().await;
                     leds.unset(0, Led::Top);
@@ -424,8 +474,6 @@ pub async fn run(
                         // euclidean_at(num_steps=length, num_beats=pulses, …)
                         let a = euclidean_at(len_a, pulses_a, rot_a, step);
                         let b = euclidean_at(len_b, pulses_b, rot_b, step);
-                        layer_a_on = a;
-                        layer_b_on = b;
 
                         let (mut out0, mut out1) = match logic {
                             Logic::Or => (a || b, a && b),
@@ -464,7 +512,13 @@ pub async fn run(
                             }
                         }
 
-                        // Main-layer pulse flashes
+                        // Layer hits: soft dim on buttons (62% remain); Top/Bottom keep Flash.
+                        if a {
+                            glob_btn_a_flash.set(BUTTON_HIT_FLASH_MS);
+                        }
+                        if b && !muted {
+                            glob_btn_b_flash.set(BUTTON_HIT_FLASH_MS);
+                        }
                         if latch == LatchLayer::Main {
                             if a {
                                 leds.set_mode(0, Led::Top, LedMode::Flash(color_a, Some(1)));
@@ -519,44 +573,7 @@ pub async fn run(
                             jack[1].set_low().await;
                         }
                     }
-
-                    // Continuous LED feedback for Alt / Third (non-flash)
-                    match latch {
-                        LatchLayer::Alt => {
-                            leds.set(
-                                0,
-                                Led::Top,
-                                color_a,
-                                Brightness::Custom((rot_a_glob.get() as u16 * 255 / len_a.max(1) as u16) as u8),
-                            );
-                            leds.set(
-                                1,
-                                Led::Top,
-                                color_b,
-                                Brightness::Custom((rot_b_glob.get() as u16 * 255 / len_b.max(1) as u16) as u8),
-                            );
-                        }
-                        LatchLayer::Third => {
-                            leds.set(
-                                0,
-                                Led::Top,
-                                Color::White,
-                                Brightness::Custom((len_a as u16 * 255 / 32) as u8),
-                            );
-                            leds.set(
-                                1,
-                                Led::Top,
-                                Color::White,
-                                Brightness::Custom((len_b as u16 * 255 / 32) as u8),
-                            );
-                            leds.set(0, Led::Bottom, length_band_color(len_a), Brightness::Mid);
-                            leds.set(1, Led::Bottom, length_band_color(len_b), Brightness::Mid);
-                        }
-                        LatchLayer::Main => {
-                            // Keep button LEDs in sync; pulse flashes handled above
-                            let _ = (layer_a_on, layer_b_on);
-                        }
-                    }
+                    // Alt/Third fader meters paint in the 1 ms loop (not clock-bound).
                 }
                 _ => {}
             }
@@ -575,36 +592,54 @@ pub async fn run(
                         s.logic = next as u8;
                     });
                     leds.set_mode(0, Led::Button, LedMode::Flash(next.color(), Some(2)));
-                    leds.set(0, Led::Button, next.color(), LED_BRIGHTNESS);
+                    glob_btn_flash.set(BUTTON_FLASH_MS);
                 } else if chan == 1 {
-                    // Toggle eInv
+                    // Toggle eInv — white↔none fade like Heat Pump invert.
                     let einv = !glob_einv.get();
                     glob_einv.set(einv);
                     storage.modify_and_save(|s| {
                         s.einv = einv;
                     });
-                    leds.set_mode(1, Led::Button, LedMode::Flash(Color::White, Some(2)));
-                    if !glob_muted.get() {
+                    // Invert on → white→none; invert off → none→white.
+                    glob_btn_b_flash.set(0);
+                    glob_einv_fade_up.set(!einv);
+                    glob_einv_fade.set(EINVERT_FADE_MS);
+                }
+            } else if chan == 1 {
+                // Btn2: hold+fader = Third (length); tap (no fader move) = mute.
+                // Mute must not fire on down — that made hold look like a dead/black button.
+                glob_fader_moved.set(false);
+                let start0 = faders.get_value_at(0);
+                let start1 = faders.get_value_at(1);
+                loop {
+                    match select(buttons.wait_for_up(1), faders.wait_for_any_change()).await {
+                        Either::First(_) => break,
+                        Either::Second(_) => {
+                            if faders.get_value_at(0).abs_diff(start0) > FADER_MOVE_THRESH
+                                || faders.get_value_at(1).abs_diff(start1) > FADER_MOVE_THRESH
+                            {
+                                glob_fader_moved.set(true);
+                            }
+                        }
+                    }
+                }
+                if !glob_fader_moved.get() {
+                    let muted = glob_muted.toggle();
+                    storage.modify_and_save(|s| {
+                        s.muted = muted;
+                    });
+                    if muted {
+                        jack[0].set_low().await;
+                        jack[1].set_low().await;
+                        midi.send_note_off(note_a).await;
+                        midi.send_note_off(note_b).await;
+                        leds.unset(1, Led::Button);
+                    } else {
                         leds.set(1, Led::Button, color_b, LED_BRIGHTNESS);
                     }
                 }
-            } else if chan == 1 {
-                // Mute
-                let muted = glob_muted.toggle();
-                storage.modify_and_save(|s| {
-                    s.muted = muted;
-                });
-                if muted {
-                    jack[0].set_low().await;
-                    jack[1].set_low().await;
-                    midi.send_note_off(note_a).await;
-                    midi.send_note_off(note_b).await;
-                    leds.unset(1, Led::Button);
-                } else {
-                    leds.set(1, Led::Button, color_b, LED_BRIGHTNESS);
-                }
             }
-            // Btn0 tap reserved (hold = Third layer via shift task)
+            // Btn0/Btn1 hold = Third layer via shift task (length A/B)
         }
     };
 
@@ -724,32 +759,179 @@ pub async fn run(
     };
 
     let fut_shift = async {
+        let mut prev_latch = LatchLayer::Main;
         loop {
             app.delay_millis(1).await;
 
-            // Euclid pattern: shift XOR btn0 (both → Main fallthrough)
-            let latch_active = if buttons.is_shift_pressed() && !buttons.is_button_pressed(0) {
+            // Third = hold Btn1 or Btn2 (length); Alt = Shift without channel button.
+            let latch_active = if buttons.is_shift_pressed()
+                && !buttons.is_button_pressed(0)
+                && !buttons.is_button_pressed(1)
+            {
                 LatchLayer::Alt
-            } else if !buttons.is_shift_pressed() && buttons.is_button_pressed(0) {
+            } else if !buttons.is_shift_pressed()
+                && (buttons.is_button_pressed(0) || buttons.is_button_pressed(1))
+            {
                 LatchLayer::Third
             } else {
                 LatchLayer::Main
             };
             glob_latch_layer.set(latch_active);
 
-            // Keep button LEDs consistent outside of flash moments
-            if latch_active == LatchLayer::Main {
-                leds.set(
-                    0,
-                    Led::Button,
-                    Logic::from_u8(glob_logic.get()).color(),
-                    LED_BRIGHTNESS,
-                );
-                if glob_muted.get() {
-                    leds.unset(1, Led::Button);
-                } else {
-                    leds.set(1, Led::Button, color_b, LED_BRIGHTNESS);
+            // Leaving meters: Main clears all; Alt clears Bottom (Third bands).
+            if prev_latch != latch_active {
+                match latch_active {
+                    LatchLayer::Main => {
+                        leds.unset(0, Led::Top);
+                        leds.unset(1, Led::Top);
+                        leds.unset(0, Led::Bottom);
+                        leds.unset(1, Led::Bottom);
+                    }
+                    LatchLayer::Alt => {
+                        leds.unset(0, Led::Bottom);
+                        leds.unset(1, Led::Bottom);
+                    }
+                    LatchLayer::Third => {}
                 }
+            }
+            prev_latch = latch_active;
+
+            // Button LED paint: density base; soft hit dip; skip while logic Flash plays.
+            let flash_left = glob_btn_flash.get();
+            if flash_left > 0 {
+                glob_btn_flash.set(flash_left.saturating_sub(1));
+            }
+            // Decrement after sampling so this frame still paints the dip.
+            let hit_a = glob_btn_a_flash.get();
+            let hit_b = glob_btn_b_flash.get();
+            if hit_a > 0 {
+                glob_btn_a_flash.set(hit_a.saturating_sub(1));
+            }
+            if hit_b > 0 {
+                glob_btn_b_flash.set(hit_b.saturating_sub(1));
+            }
+
+            // eInv feedback (white↔off) on Btn2 — mirrors Heat Pump invert.
+            let einv_fade = glob_einv_fade.get();
+            if einv_fade > 0 {
+                let elapsed = EINVERT_FADE_MS.saturating_sub(einv_fade);
+                let bright = if glob_einv_fade_up.get() {
+                    ((elapsed as u32 * 255) / EINVERT_FADE_MS as u32) as u8
+                } else {
+                    (((EINVERT_FADE_MS - elapsed) as u32 * 255) / EINVERT_FADE_MS as u32) as u8
+                };
+                leds.set(1, Led::Button, Color::White, Brightness::Custom(bright));
+                let next = einv_fade.saturating_sub(1);
+                glob_einv_fade.set(next);
+                if next == 0 {
+                    if glob_muted.get() {
+                        leds.unset(1, Led::Button);
+                    } else {
+                        let len_b = len_b_glob.get().max(1);
+                        let base_b = button_density_bright(pulses_b_glob.get(), len_b);
+                        leds.set(1, Led::Button, color_b, Brightness::Custom(base_b));
+                    }
+                }
+            }
+
+            let len_a = len_a_glob.get().max(1);
+            let len_b = len_b_glob.get().max(1);
+            let muted = glob_muted.get();
+
+            match latch_active {
+                // Hit dips always paint on Main (even during logic Flash hold-off on the other path).
+                LatchLayer::Main => {
+                    if flash_left > 0 {
+                        // Logic Flash owns Btn1; still allow Btn2 hit dips.
+                        if muted {
+                            if einv_fade == 0 {
+                                leds.unset(1, Led::Button);
+                            }
+                        } else if einv_fade == 0 {
+                            let base_b = button_density_bright(pulses_b_glob.get(), len_b);
+                            let bright_b = if hit_b > 0 {
+                                hit_dip_bright(base_b)
+                            } else {
+                                base_b
+                            };
+                            leds.set(1, Led::Button, color_b, Brightness::Custom(bright_b));
+                        }
+                    } else {
+                        let base_a = button_density_bright(pulses_a_glob.get(), len_a);
+                        let base_b = button_density_bright(pulses_b_glob.get(), len_b);
+                        let bright_a = if hit_a > 0 {
+                            hit_dip_bright(base_a)
+                        } else {
+                            base_a
+                        };
+                        leds.set(
+                            0,
+                            Led::Button,
+                            Logic::from_u8(glob_logic.get()).color(),
+                            Brightness::Custom(bright_a),
+                        );
+                        if muted {
+                            if einv_fade == 0 {
+                                leds.unset(1, Led::Button);
+                            }
+                        } else if einv_fade == 0 {
+                            let bright_b = if hit_b > 0 {
+                                hit_dip_bright(base_b)
+                            } else {
+                                base_b
+                            };
+                            leds.set(1, Led::Button, color_b, Brightness::Custom(bright_b));
+                        }
+                    }
+                }
+                LatchLayer::Alt if flash_left == 0 => {
+                    // Rotation meters: Top + buttons, layer hues, floor so rot=0 stays lit.
+                    let ba = rot_meter_bright(rot_a_glob.get(), len_a);
+                    let bb = rot_meter_bright(rot_b_glob.get(), len_b);
+                    leds.set(0, Led::Top, color_a, Brightness::Custom(ba));
+                    leds.set(1, Led::Top, color_b, Brightness::Custom(bb));
+                    leds.set(
+                        0,
+                        Led::Button,
+                        Logic::from_u8(glob_logic.get()).color(),
+                        Brightness::Custom(ba),
+                    );
+                    if muted {
+                        if einv_fade == 0 {
+                            leds.unset(1, Led::Button);
+                        }
+                    } else if einv_fade == 0 {
+                        leds.set(1, Led::Button, color_b, Brightness::Custom(bb));
+                    }
+                }
+                LatchLayer::Third if flash_left == 0 => {
+                    // Length meters: white Top ∝ len, Bottom band, buttons track band+len.
+                    let ba = len_meter_bright(len_a);
+                    let bb = len_meter_bright(len_b);
+                    leds.set(0, Led::Top, Color::White, Brightness::Custom(ba));
+                    leds.set(1, Led::Top, Color::White, Brightness::Custom(bb));
+                    leds.set(0, Led::Bottom, length_band_color(len_a), Brightness::Mid);
+                    leds.set(1, Led::Bottom, length_band_color(len_b), Brightness::Mid);
+                    leds.set(
+                        0,
+                        Led::Button,
+                        length_band_color(len_a),
+                        Brightness::Custom(ba),
+                    );
+                    if muted {
+                        if einv_fade == 0 {
+                            leds.unset(1, Led::Button);
+                        }
+                    } else if einv_fade == 0 {
+                        leds.set(
+                            1,
+                            Led::Button,
+                            length_band_color(len_b),
+                            Brightness::Custom(bb),
+                        );
+                    }
+                }
+                _ => {}
             }
         }
     };

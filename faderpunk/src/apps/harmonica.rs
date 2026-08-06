@@ -230,8 +230,10 @@ const PRESETS: [(usize, u8, u16); NUM_PRESETS] = [
     (3, 1, 120), // Cascade
 ];
 const NUM_PRESETS: usize = 12;
-/// Frames (~1 ms) the LEDs show the preset index after stepping.
-const PRESET_FLASH_MS: u16 = 500;
+/// Single solid flash after a preset step (~1 ms frames).
+const PRESET_FLASH_MS: u16 = 220;
+/// Hold length for Alt+long preset step (matches hardware LONG_PRESS).
+const ALT_LONG_MS: u64 = 500;
 
 /// Center of a spread bucket, so the stored value survives `value_to_index`.
 fn spread_value(step: usize) -> u16 {
@@ -527,7 +529,7 @@ async fn handle_midi_note_off(
     }
 }
 
-#[embassy_executor::task(pool_size = 4)]
+#[embassy_executor::task(pool_size = 16 / CHANNELS)]
 pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMutex, bool>) {
     let param_store = ParamStore::<Params>::new(
         app.app_id,
@@ -571,6 +573,7 @@ pub async fn run(
     storage: &ManagedStorage<Storage>,
 ) {
     app.wait_while_perf_muted().await;
+
 
     let (
         io_mode,
@@ -649,8 +652,6 @@ pub async fn run(
     let strum_glob = app.make_global(strum_ms);
     let preset_glob = app.make_global(preset_idx);
     let preset_flash = app.make_global(0u16);
-    // Alt+long stepped a preset — the release must not also cycle the octave.
-    let alt_long_fired = app.make_global(false);
 
     // Restore the stepped preset so spread/octave/strum survive a power cycle.
     if let Some(&(spread_step, oct, strum)) = PRESETS.get(preset_idx as usize) {
@@ -1063,20 +1064,15 @@ pub async fn run(
             let flash = preset_flash.get();
             if flash > 0 {
                 preset_flash.set(flash - 1);
-                // Preset readout: IR→UV by preset index; bottom = strum amount.
+                // One solid blink: IR→UV by preset index on all three LEDs.
+                // Map idx so preset 0 is still a bright red (not off-scale).
                 let idx = preset_glob.get().min(NUM_PRESETS as u8 - 1) as u32;
                 let faderish = ((idx * 4095) / (NUM_PRESETS as u32 - 1).max(1)) as u16;
-                let strum_f = ((strum_glob.get().min(STRUM_MAX_MS) as u32 * 4095)
-                    / STRUM_MAX_MS as u32) as u16;
-                leds.set(0, Led::Top, spectrum_color(faderish), Brightness::High);
-                leds.set(
-                    0,
-                    Led::Bottom,
-                    spectrum_color(strum_f.max(256)),
-                    Brightness::Custom((strum_f / 16).max(24) as u8),
-                );
-            }
-            if flash == 0 {
+                let color = spectrum_color(faderish);
+                leds.set(0, Led::Top, color, Brightness::High);
+                leds.set(0, Led::Bottom, color, Brightness::High);
+                leds.set(0, Led::Button, color, Brightness::High);
+            } else {
                 let (fader_val, color) = match latch_layer {
                     LatchLayer::Main => {
                         let v = chord_glob.get();
@@ -1135,20 +1131,28 @@ pub async fn run(
         loop {
             let shift = buttons.wait_for_down(0).await;
             if shift {
-                // Alt gestures resolve on release: a long hold steps the
-                // voicing preset, a short tap cycles the harmony octave.
-                alt_long_fired.set(false);
-                buttons.wait_for_up(0).await;
-                if !alt_long_fired.get() {
-                    // Alt+tap: cycle harmony octave −1 → 0 → +1
-                    let next = match octave_glob.get() {
-                        0 => 1,
-                        1 => 2,
-                        _ => 0,
-                    };
-                    octave_glob.set(next);
-                    storage.modify_and_save(|s| s.octave_idx = next);
-                    revoice_flag.set(true);
+                // Alt+tap → harmony octave; Alt+hold 500ms → next voicing preset.
+                // Detected here with a timer so we don't depend on a second
+                // long-press subscriber still seeing Shift held.
+                match select(buttons.wait_for_up(0), app.delay_millis(ALT_LONG_MS)).await {
+                    Either::First(_) => {
+                        let next = match octave_glob.get() {
+                            0 => 1,
+                            1 => 2,
+                            _ => 0,
+                        };
+                        octave_glob.set(next);
+                        storage.modify_and_save(|s| s.octave_idx = next);
+                        revoice_flag.set(true);
+                    }
+                    Either::Second(_) => {
+                        let next = match preset_glob.get() as usize {
+                            i if i + 1 < NUM_PRESETS => i + 1,
+                            _ => 0,
+                        };
+                        apply_preset(next);
+                        buttons.wait_for_up(0).await;
+                    }
                 }
             } else {
                 long_press_fired.set(false);
@@ -1176,19 +1180,11 @@ pub async fn run(
 
     let long_press_handler = async {
         loop {
+            // Non-Alt only — panic runs on release if the fader wasn't moved
+            // (so Button+Fader velocity edits never wipe notes mid-hold).
+            // Alt+long is handled in button_handler above.
             let (_, shift) = buttons.wait_for_any_long_press().await;
-            if shift {
-                // Alt+long: step to the next voicing preset. Fires on the hold
-                // itself so holding longer never overshoots.
-                let next = match preset_glob.get() as usize {
-                    i if i + 1 < NUM_PRESETS => i + 1,
-                    _ => 0,
-                };
-                alt_long_fired.set(true);
-                apply_preset(next);
-            } else {
-                // Mark only — panic runs on release if the fader wasn't moved
-                // (so Button+Fader velocity edits never wipe notes mid-hold).
+            if !shift {
                 long_press_fired.set(true);
             }
         }

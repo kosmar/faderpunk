@@ -361,7 +361,7 @@ fn mode_color(mode: u8, led_color: Color) -> Color {
     }
 }
 
-#[embassy_executor::task(pool_size = 4)]
+#[embassy_executor::task(pool_size = 16 / CHANNELS)]
 pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMutex, bool>) {
     let param_store = ParamStore::<Params>::new(
         app.app_id,
@@ -406,6 +406,7 @@ pub async fn run(
     storage: &ManagedStorage<Storage>,
 ) {
     app.wait_while_perf_muted().await;
+
 
     let (midi_out, midi_chan, note, cc, gatel, param_speed, led_color, cv_jack, range, cv_dest, cv_att, param_mode) =
         params.query(|p| {
