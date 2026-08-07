@@ -88,7 +88,7 @@
 <body>
 
 <h1>Faderpunk WIP Apps — UX Cheatsheet</h1>
-<p class="sub">Synced to <code>test/playground</code> (IDs 29–40) · 6 Aug 2026 · A4 print</p>
+<p class="sub">Synced to <code>test/playground</code> (IDs 29–40) · 7 Aug 2026 · A4 print</p>
 
 <div class="legend">
   <div><strong>Main</strong> — Fader alone</div>
@@ -574,17 +574,17 @@
         <h3>Faders</h3>
         <ul>
           <li><strong>Main</strong> — Pitch (span from Base Note); spectrum LED meter</li>
-          <li><strong>Alt</strong> (Shift+Fader) — Decay: bottom = immortal, top ≈ 4 loops to silence (violet→red)</li>
-          <li><strong>Third</strong> (muted + hold button + fader) — Loop length 1–8 bars (amber→cyan)</li>
+          <li><strong>Alt</strong> (Shift+Fader) — Decay strength: bottom = immortal, top ≈ 4 wraps (violet→red)</li>
+          <li><strong>Third</strong> (Btn+Fader; gate modes while muted) — Decay mode zones (IR→UV): Random Rose · Pitch Up Orange · Pitch Down Yellow · Vel+Root Lime · Pitch Root Cyan · Velocity Blue · Gate Violet</li>
         </ul>
       </div>
       <div>
         <h3>Buttons</h3>
         <ul>
           <li><strong>Hold</strong> (gate modes) — Note on; release = off (long notes OK)</li>
-          <li><strong>Shift+Short</strong> — Arm / disarm record (button blinks when armed; default armed)</li>
+          <li><strong>Shift+Short</strong> — Cycle loop length 1→2→…→8 bars (amber→cyan flash)</li>
           <li><strong>Shift+Long</strong> — Mute (red LED; decay pauses)</li>
-          <li><strong>Short while muted</strong> — Unmute</li>
+          <li><strong>Short while muted</strong> — Unmute (re-arms)</li>
           <li><strong>Shift+Long while muted</strong> — Erase buffer (white flash)</li>
         </ul>
       </div>
@@ -592,6 +592,7 @@
         <h3>Params / LEDs</h3>
         <ul>
           <li>Mode: Pitch→MIDI · Gate→MIDI · MIDI→MIDI · MIDI→CV · Fader→Both</li>
+          <li>Decay Mode: Random · Pitch Up · Pitch Down · Vel+Root (default) · Pitch Root · Velocity · Gate</li>
           <li>MIDI CH / In / Out, Base Note, Span (semitones across fader)</li>
           <li>Color, Range, V/Oct</li>
           <li>Capture/playback hit: sharp button 80% dim (~2 PPQN) + Top white; layer meters on Top/Bottom/Button</li>
@@ -599,7 +600,7 @@
       </div>
     </div>
     <div class="manual">
-      <p><strong>Manual.</strong> Clocked overdub loop: play while armed to capture; layers decay each loop wrap by Alt amount (0 = freeze forever; max ≈ 4 wraps). Hold the button for long notes — mute is Shift+Long only. Length is Third while muted (not Alt). Velocity uses a squared curve so fades are audible on MIDI. Quantized to 16ths.</p>
+      <p><strong>Manual.</strong> Clocked overdub loop: play while armed to capture; each wrap applies Alt strength through the selected Decay Mode (0 = freeze forever). Pitch modes stay on the global scale. Random jitters scale pitch and only lowers velocity. Gate shortens duration toward a 16th floor. Hold the button for long notes — mute is Shift+Long. Length is Shift+Short (1–8 bars), not Alt/Third. Third picks Decay Mode (Configurator sync). Quantized to 16ths.</p>
     </div>
   </div>
 </section>
@@ -673,7 +674,7 @@
       <div>
         <h3>Params / LEDs</h3>
         <ul>
-          <li>Division, GATE %, Prob %, Vel %, MIDI CH / Notes / Out, Color</li>
+          <li>Division, GATE %, Prob %, Vel %, MIDI CH / Note A / Interval B / Out, Color</li>
           <li>Color = Layer A; Btn2 / Top B = fixed complement (Cyan↔Pink, Blue↔Orange, Green↔Violet, Rose↔Yellow, …)</li>
           <li>Main Btn: logic hue / complement · density bright · soft hit dip (−38% → 62%)</li>
           <li>Alt: Top+Btn ∝ rotation (floor); Bottom = step-0 sync · Third: white Top ∝ length, Bottom/Btn = length band (live 1 ms)</li>

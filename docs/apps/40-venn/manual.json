@@ -12,7 +12,7 @@
   "params": [
     "MIDI Channel",
     "MIDI Note A",
-    "MIDI Note B",
+    "Interval B",
     "MIDI Out",
     "Division",
     "GATE %",
@@ -62,7 +62,7 @@
         {
           "heading": "Params / LEDs",
           "items": [
-            "Division, GATE %, Prob %, Vel %, MIDI CH / Notes / Out, Color",
+            "Division, GATE %, Prob %, Vel %, MIDI CH / Note A / Interval B / Out, Color",
             "Color = Layer A; Btn2 / Top B = fixed complement (Cyan↔Pink, Blue↔Orange, Green↔Violet, Rose↔Yellow, …)",
             "Main Btn: logic hue / complement · density bright · soft hit dip (−38% → 62%)",
             "Alt: Top+Btn ∝ rotation (floor); Bottom = step-0 sync · Third: white Top ∝ length, Bottom/Btn = length band (live 1 ms)",
@@ -90,7 +90,7 @@
     },
     {
       "jackTitle": "Coupled out",
-      "jackDescription": "Secondary gate tied to logic mode (overlap / Δ / accent)",
+      "jackDescription": "Secondary gate + MIDI Note A+Interval B (overlap / Δ / accent)",
       "faderTitle": "Pulses B",
       "faderDescription": "Number of pulses in Euclidean layer B",
       "faderPlusShiftTitle": "Rotation B",

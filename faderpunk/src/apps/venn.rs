@@ -23,6 +23,11 @@ use crate::tasks::leds::LedMode;
 pub const CHANNELS: usize = 2;
 pub const PARAMS: usize = 9;
 
+/// Interval B select labels (index == semitone offset from Note A).
+const INTERVAL_B_VARIANTS: &[&str] = &[
+    "Unison", "m2", "M2", "m3", "M3", "P4", "TT", "P5", "m6", "M6", "m7", "M7", "Octave",
+];
+
 const LED_BRIGHTNESS: Brightness = Brightness::Mid;
 /// Button hit soft-dip duration (1 ms ticks). Short so dense hits still blink
 /// (long hold-offs stay stuck at 62% and look like no pulse).
@@ -156,8 +161,9 @@ pub static CONFIG: Config<PARAMS> = Config::new(
 .add_param(Param::MidiNote {
     name: "MIDI Note A",
 })
-.add_param(Param::MidiNote {
-    name: "MIDI Note B",
+.add_param(Param::Enum {
+    name: "Interval B",
+    variants: INTERVAL_B_VARIANTS,
 })
 .add_param(Param::MidiOut)
 .add_param(Param::i32 {
@@ -197,7 +203,8 @@ pub static CONFIG: Config<PARAMS> = Config::new(
 pub struct Params {
     midi_channel: MidiChannel,
     note_a: MidiNote,
-    note_b: MidiNote,
+    /// Index into `INTERVAL_B_VARIANTS` (0 = Unison … 12 = Octave).
+    interval_b: usize,
     midi_out: MidiOut,
     division: i32,
     gatel: i32,
@@ -211,7 +218,8 @@ impl Default for Params {
         Self {
             midi_channel: MidiChannel::default(),
             note_a: MidiNote::from(32),
-            note_b: MidiNote::from(33),
+            // m2 — matches the old absolute Note B default (A+1).
+            interval_b: 1,
             midi_out: MidiOut::default(),
             division: 5, // RESOLUTION[4] = 24 → 16ths at 24 PPQN
             gatel: 50,
@@ -230,7 +238,7 @@ impl AppParams for Params {
         Some(Self {
             midi_channel: MidiChannel::from_value(values[0]),
             note_a: MidiNote::from_value(values[1]),
-            note_b: MidiNote::from_value(values[2]),
+            interval_b: usize::from_value(values[2]).min(INTERVAL_B_VARIANTS.len() - 1),
             midi_out: MidiOut::from_value(values[3]),
             division: i32::from_value(values[4]),
             gatel: i32::from_value(values[5]),
@@ -244,7 +252,7 @@ impl AppParams for Params {
         let mut vec = Vec::new();
         vec.push(self.midi_channel.into()).unwrap();
         vec.push(self.note_a.into()).unwrap();
-        vec.push(self.note_b.into()).unwrap();
+        vec.push(self.interval_b.into()).unwrap();
         vec.push(self.midi_out.into()).unwrap();
         vec.push(self.division.into()).unwrap();
         vec.push(self.gatel.into()).unwrap();
@@ -349,13 +357,13 @@ pub async fn run(
     let buttons = app.use_buttons();
     let leds = app.use_leds();
 
-    let (midi_out, midi_chan, note_a, note_b, division, gatel, prob, vel, color_a) =
+    let (midi_out, midi_chan, note_a, interval_b, division, gatel, prob, vel, color_a) =
         params.query(|p| {
             (
                 p.midi_out,
                 p.midi_channel,
                 p.note_a,
-                p.note_b,
+                p.interval_b,
                 p.division,
                 p.gatel,
                 p.prob,
@@ -363,6 +371,8 @@ pub async fn run(
                 p.color,
             )
         });
+    // Index == semitones; saturating add keeps MIDI in 0..=127.
+    let note_b = note_a + MidiNote::from(interval_b.min(12) as u8);
     let color_b = complement_color(color_a);
 
     let midi = app.use_midi_output(midi_out, midi_chan, false);
