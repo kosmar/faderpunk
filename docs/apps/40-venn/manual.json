@@ -1,0 +1,106 @@
+{
+  "id": 40,
+  "slug": "venn",
+  "name": "Venn",
+  "status": "wip",
+  "tag": "ready",
+  "description": "Dual Euclidean layers + boolean logic (OR/AND/XOR/Accnt)",
+  "color": "Cyan",
+  "icon": "Euclid",
+  "channels_count": 2,
+  "cv_jack": true,
+  "params": [
+    "MIDI Channel",
+    "MIDI Note A",
+    "MIDI Note B",
+    "MIDI Out",
+    "Division",
+    "GATE %",
+    "Prob %",
+    "Vel %",
+    "Color"
+  ],
+  "storage": [
+    "Pulses A",
+    "Pulses B",
+    "Rotation A",
+    "Rotation B",
+    "Length A",
+    "Length B",
+    "Logic",
+    "Invert",
+    "Muted"
+  ],
+  "columns": [
+    {
+      "sections": [
+        {
+          "heading": "Faders",
+          "items": [
+            "<strong>Main</strong> — F0 pulses A · F1 pulses B",
+            "<strong>Alt</strong> (Shift) — F0 rotation A · F1 rotation B",
+            "<strong>Third</strong> (Btn1 or Btn2 hold) — F0 length A · F1 length B (2–32)"
+          ]
+        }
+      ]
+    },
+    {
+      "sections": [
+        {
+          "heading": "Buttons",
+          "items": [
+            "<strong>Btn1 or Btn2 hold</strong> — Third (length A/B on F0/F1)",
+            "<strong>Btn2 tap</strong> (no fader move) — Mute both outs",
+            "<strong>Shift+Btn1</strong> — Cycle Logic OR → AND → XOR → Accnt",
+            "<strong>Shift+Btn2</strong> — Toggle post-logic invert (shadow); white↔none fade like Heat Pump"
+          ]
+        }
+      ]
+    },
+    {
+      "sections": [
+        {
+          "heading": "Params / LEDs",
+          "items": [
+            "Division, GATE %, Prob %, Vel %, MIDI CH / Notes / Out, Color",
+            "Color = Layer A; Btn2 / Top B = fixed complement (Cyan↔Pink, Blue↔Orange, Green↔Violet, Rose↔Yellow, …)",
+            "Main Btn: logic hue / complement · density bright · soft hit dip (−38% → 62%)",
+            "Alt: Top+Btn ∝ rotation (floor); Bottom = step-0 sync · Third: white Top ∝ length, Bottom/Btn = length band (live 1 ms)",
+            "Top flashes = layer hits (Main) · Bottom flashes = logic outs (Main)",
+            "Jack0 = logic result · Jack1 coupled (OR→∩, AND→△, XOR→∩, Accnt→accent)"
+          ]
+        }
+      ]
+    }
+  ],
+  "channels": [
+    {
+      "jackTitle": "Logic out",
+      "jackDescription": "Gate + MIDI Note A for the primary boolean result",
+      "faderTitle": "Pulses A",
+      "faderDescription": "Number of pulses in Euclidean layer A",
+      "faderPlusShiftTitle": "Rotation A",
+      "faderPlusShiftDescription": "Rotate layer A pattern",
+      "faderPlusFnTitle": "Length A",
+      "faderPlusFnDescription": "Cycle length for layer A (2–32)",
+      "fnTitle": "Third / Logic",
+      "fnDescription": "Hold for length; Shift+tap cycles OR→AND→XOR→Accnt",
+      "ledTop": "Layer A hits / rotation / length",
+      "ledBottom": "Logic outs / step sync / length band"
+    },
+    {
+      "jackTitle": "Coupled out",
+      "jackDescription": "Secondary gate tied to logic mode (overlap / Δ / accent)",
+      "faderTitle": "Pulses B",
+      "faderDescription": "Number of pulses in Euclidean layer B",
+      "faderPlusShiftTitle": "Rotation B",
+      "faderPlusShiftDescription": "Rotate layer B pattern",
+      "faderPlusFnTitle": "Length B",
+      "faderPlusFnDescription": "Cycle length for layer B (2–32)",
+      "fnTitle": "Mute / Invert",
+      "fnDescription": "Tap mute both; Shift+tap toggles post-logic invert",
+      "ledTop": "Layer B complement color",
+      "ledBottom": "Coupled with logic meters"
+    }
+  ]
+}
