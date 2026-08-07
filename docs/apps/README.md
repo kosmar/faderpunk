@@ -38,8 +38,11 @@ Other WIP apps still live as HTML under `docs/cheatsheet/legacy/` until migrated
 python3 scripts/assemble-cheatsheet.py          # → docs/wip-apps-ux-cheatsheet.html
 python3 scripts/assemble-cheatsheet.py --pdf    # also regenerate PDF (Chrome)
 python3 scripts/validate-app-docs.py            # fragment / CONFIG checks
-python3 scripts/export-scopepunk-ux.py          # → faderpunk-tools/scopepunk/public/app-ux.json
+python3 scripts/export-scopepunk-ux.py          # → faderpunk-tools/scopepunk/public/app-ux.json (all)
+python3 scripts/export-scopepunk-ux.py --scope wip|stock
 ```
+
+Sources (merge priority): `docs/apps/*/manual.json` → `docs/cheatsheet/legacy/*.html` → Configurator `ManualTab.tsx` (read-only; stock channels).
 
 ## Future Configurator manuals
 
