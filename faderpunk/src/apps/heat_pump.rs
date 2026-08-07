@@ -43,6 +43,8 @@ const BUTTON_DUCK_MIN_MS: u16 = 4;
 const BUTTON_FLASH_MS: u16 = 850;
 /// Ignore tiny fader noise while deciding mute vs button+fader (Third).
 const FADER_MOVE_THRESH: u16 = 64;
+/// No clock tick advance for this long → idle LEDs (app color, no metronome).
+const CLOCK_STALL_MS: u16 = 100;
 
 const JACK_OUT: usize = 0;
 const JACK_IN: usize = 1;
@@ -396,6 +398,13 @@ pub async fn run(
 
     if muted {
         leds.unset(0, Led::Button);
+        leds.unset(0, Led::Top);
+        leds.unset(0, Led::Bottom);
+    } else {
+        // Idle presence until the first clock tick (otherwise strip looks empty).
+        leds.set(0, Led::Button, led_color, Brightness::Mid);
+        leds.set(0, Led::Top, led_color, Brightness::Mid);
+        leds.unset(0, Led::Bottom);
     }
 
     let main_loop = async {
@@ -414,9 +423,20 @@ pub async fn run(
         let mut ms_since_trig: u32 = 0;
         let mut period_ms: u32 = PERIOD_MS_DEFAULT;
         let mut last_invert = storage.query(|s| s.invert);
+        let mut last_seen_ticks: u32 = ticks() as u32;
+        let mut stall_ms: u16 = CLOCK_STALL_MS; // start idle until ticks move
         loop {
             app.delay_millis(1).await;
             ms_since_trig = ms_since_trig.saturating_add(1);
+
+            let now_ticks = ticks() as u32;
+            if now_ticks != last_seen_ticks {
+                last_seen_ticks = now_ticks;
+                stall_ms = 0;
+            } else {
+                stall_ms = stall_ms.saturating_add(1);
+            }
+            let clock_alive = stall_ms < CLOCK_STALL_MS;
 
             // Main = fader, Alt = Shift+fader (depth), Third = button+fader (division).
             let latch_active_layer = if buttons.is_shift_pressed() && !buttons.is_button_pressed(0)
@@ -571,6 +591,12 @@ pub async fn run(
                         dest_color(glob_dest.get()),
                         Brightness::Mid,
                     );
+                } else if !clock_alive {
+                    // No clock: solid app color (not division metronome).
+                    button_duck_left = 0;
+                    last_button_slot = 0xff;
+                    ms_in_slot = 0;
+                    leds.set(0, Led::Button, led_color, Brightness::Mid);
                 } else {
                     if division != last_blink_division {
                         last_blink_division = division;
@@ -578,7 +604,7 @@ pub async fn run(
                         button_duck_left = 0;
                         ms_in_slot = 0;
                     }
-                    let phase = (ticks() as u32) % div_ticks;
+                    let phase = now_ticks % div_ticks;
                     let slot = (phase * 4 / div_ticks) as u8;
                     if slot != last_button_slot {
                         if last_button_slot != 0xff {
@@ -602,6 +628,9 @@ pub async fn run(
 
             if muted {
                 leds.unset(0, Led::Top);
+                leds.unset(0, Led::Bottom);
+            } else if !clock_alive && latch_active_layer == LatchLayer::Main {
+                leds.set(0, Led::Top, led_color, Brightness::Mid);
                 leds.unset(0, Led::Bottom);
             } else {
                 match latch_active_layer {

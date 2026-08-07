@@ -33,6 +33,8 @@ const REVERSE_FADE_MS: u16 = 500;
 const BUTTON_DUCK_MS: u16 = 25;
 /// Ignore tiny ADC noise when deciding "button+fader scrub" vs long-press mute.
 const FADER_MOVE_THRESH: u16 = 64;
+/// No clock tick advance for this long → idle LEDs (genre color on Top).
+const CLOCK_STALL_MS: u16 = 100;
 
 /// 16 sixteenths per 4/4 bar.
 const STEPS_PER_BAR: u32 = 16;
@@ -694,13 +696,14 @@ pub async fn run(
 
     if muted {
         leds.unset(0, Led::Button);
+        leds.unset(0, Led::Top);
+        leds.unset(0, Led::Bottom);
     } else {
-        leds.set(
-            0,
-            Led::Button,
-            spectrum_color(glob_genre_fader.get()),
-            LED_BRIGHTNESS,
-        );
+        let color = spectrum_color(glob_genre_fader.get());
+        leds.set(0, Led::Button, color, LED_BRIGHTNESS);
+        // Idle presence until the first clock tick (Top was otherwise empty).
+        leds.set(0, Led::Top, color, LED_BRIGHTNESS);
+        leds.unset(0, Led::Bottom);
     }
 
     let fut_clock = async {
@@ -738,8 +741,19 @@ pub async fn run(
                     origin_set = false;
                     last_fired_slot = u32::MAX;
                     glob_reset.set(false);
-                    leds.unset(0, Led::Top);
-                    leds.unset(0, Led::Bottom);
+                    if glob_muted.get() {
+                        leds.unset(0, Led::Top);
+                        leds.unset(0, Led::Bottom);
+                    } else {
+                        // Keep genre color visible while clock is stopped.
+                        leds.set(
+                            0,
+                            Led::Top,
+                            spectrum_color(glob_genre_fader.get()),
+                            LED_BRIGHTNESS,
+                        );
+                        leds.unset(0, Led::Bottom);
+                    }
                 }
                 ClockEvent::Tick => {
                     let clkn = ticks() as u32;
@@ -1186,8 +1200,20 @@ pub async fn run(
 
     let shift = async {
         let mut prev_gate_high = false;
+        let mut last_seen_ticks: u32 = ticks() as u32;
+        let mut stall_ms: u16 = CLOCK_STALL_MS; // start idle until ticks move
         loop {
             app.delay_millis(1).await;
+
+            let now_ticks = ticks() as u32;
+            if now_ticks != last_seen_ticks {
+                last_seen_ticks = now_ticks;
+                stall_ms = 0;
+            } else {
+                stall_ms = stall_ms.saturating_add(1);
+            }
+            let clock_alive = stall_ms < CLOCK_STALL_MS;
+
             if let Some(ref input) = in_jack {
                 let in_val = attenuate_bipolar(input.get_value(), cv_att);
                 glob_cv_val.set(in_val);
@@ -1221,6 +1247,7 @@ pub async fn run(
             glob_latch_layer.set(latch_active_layer);
 
             // Live Alt/Third LED previews at 1 ms (not clock-gated).
+            // Main + idle: keep genre color on Top so the strip isn't dark.
             match latch_active_layer {
                 LatchLayer::Alt => {
                     let fader_now = faders.get_value();
@@ -1236,7 +1263,17 @@ pub async fn run(
                     let s = glob_feel.get();
                     leds.set(0, Led::Top, Color::Red, Brightness::Custom((s / 16) as u8));
                 }
-                LatchLayer::Main => {}
+                LatchLayer::Main => {
+                    if !clock_alive && !glob_muted.get() {
+                        leds.set(
+                            0,
+                            Led::Top,
+                            spectrum_color(glob_genre_fader.get()),
+                            LED_BRIGHTNESS,
+                        );
+                        leds.unset(0, Led::Bottom);
+                    }
+                }
             }
 
             // Reverse fade overrides button LED
