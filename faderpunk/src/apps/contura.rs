@@ -500,14 +500,19 @@ pub async fn run(
         leds.set(0, Led::Button, set_color(scale_init), LED_BRIGHTNESS);
     }
 
+    // Clock → flags only; voice owns MIDI/CV (never await MIDI in clock path).
+    let pending_fire = app.make_global(false);
+    let pending_note = app.make_global(0u8);
+    let pending_note_off = app.make_global(false);
+    let pending_silence = app.make_global(false);
+    let glob_gate_on = app.make_global(false);
+
     let fut_clock = async {
-        let mut note_on: Option<u8> = None;
         let mut pool: Vec<u8, POOL_CAP> = Vec::new();
         let mut phrase_step: u8 = 0;
         let mut remain: u8 = 0;
         let mut rising = true;
         let mut gated = false;
-
         let rebuild = |pool: &mut Vec<u8, POOL_CAP>, scale_set: u8, octaves: u8| -> usize {
             let mask = active_mask(follow_scale, scale_set as usize);
             let tonic = active_tonic(follow_tonic, base_note);
@@ -516,19 +521,21 @@ pub async fn run(
             pool.len()
         };
 
-        let _ = rebuild(&mut pool, glob_scale.get(), glob_octaves.get());
-        let mut idx = pool.len() / 3;
+        let mut last_scale = glob_scale.get();
+        let mut last_oct = glob_octaves.get();
+        let plen0 = rebuild(&mut pool, last_scale, last_oct);
+        let mut idx = plen0 / 3;
 
         loop {
             match clock.wait_for_event(ClockDivision::_1).await {
                 ClockEvent::Reset | ClockEvent::Stop => {
-                    if let Some(n) = note_on.take() {
-                        midi.send_note_off(MidiNote::from(n)).await;
-                    }
-                    gated = false;
                     remain = 0;
                     phrase_step = 0;
-                    cv.set_value(0);
+                    gated = false;
+                    pending_fire.set(false);
+                    pending_note_off.set(false);
+                    pending_silence.set(true);
+                    glob_gate_on.set(false);
                     leds.unset(0, Led::Top);
                     leds.unset(0, Led::Bottom);
                 }
@@ -547,21 +554,25 @@ pub async fn run(
                     let phrase_f = glob_phrase.get();
                     let express = glob_express.get();
 
-                    let plen = rebuild(&mut pool, scale_set, octaves);
-                    let phrase_len = phrase_from_fader(phrase_f);
+                    if scale_set != last_scale || octaves != last_oct {
+                        let plen = rebuild(&mut pool, scale_set, octaves);
+                        last_scale = scale_set;
+                        last_oct = octaves;
+                        idx = idx.min(plen.saturating_sub(1));
+                    }
+                    let plen = pool.len().max(1);
+                    let phrase_len = phrase_from_fader(phrase_f).max(1);
                     let density = density_from_fader(phrase_f);
                     let max_step = max_step_from_fader(interval, plen);
                     idx = idx.min(plen.saturating_sub(1));
 
                     if muted {
-                        if let Some(n) = note_on.take() {
-                            midi.send_note_off(MidiNote::from(n)).await;
+                        if gated {
+                            pending_note_off.set(true);
+                            gated = false;
                         }
-                        gated = false;
                         remain = 0;
-                        cv.set_value(0);
-                        leds.unset(0, Led::Top);
-                        leds.unset(0, Led::Bottom);
+                        glob_gate_on.set(false);
                         continue;
                     }
 
@@ -571,54 +582,40 @@ pub async fn run(
                         rising = false;
                     }
 
-                    if remain == 0 {
-                        if die.roll() > density {
-                            remain = 1;
-                            if let Some(n) = note_on.take() {
-                                midi.send_note_off(MidiNote::from(n)).await;
-                            }
-                            gated = false;
-                            leds.unset(0, Led::Top);
-                        } else {
-                            let steps_left = phrase_len.saturating_sub(phrase_step).max(1);
-                            if phrase_step == 0 || steps_left <= 2 {
-                                if die.roll() < 2800 {
-                                    idx = idx.saturating_sub(max_step.min(idx));
-                                }
-                            } else {
-                                idx = pick_next_index(&die, idx, plen, max_step, express, rising);
-                            }
-
-                            remain = pick_duration(&die, express, steps_left);
-                            let note = pool[idx];
-                            if let Some(old) = note_on.take() {
-                                if old != note {
-                                    midi.send_note_off(MidiNote::from(old)).await;
-                                }
-                            }
-                            let pitch = note_to_pitch(note);
-                            cv.set_value(pitch.as_counts(range, vpo));
-                            midi.send_note_on(MidiNote::from(note), 3200).await;
-                            note_on = Some(note);
-                            gated = true;
-                            glob_button_duck.set(BUTTON_DUCK_MS);
-                            leds.set(0, Led::Top, led_color, Brightness::High);
-                            let bright = Brightness::Custom((note as u16 * 2).min(255) as u8);
-                            leds.set(0, Led::Bottom, led_color, bright);
-                        }
-                    } else if gated {
-                        leds.set(0, Led::Top, led_color, Brightness::Mid);
-                    }
-
+                    // Hold path: count down first so a new note's duration is not
+                    // consumed on the same step it starts.
                     if remain > 0 {
                         remain -= 1;
                         if remain == 0 && gated {
-                            if let Some(n) = note_on.take() {
-                                midi.send_note_off(MidiNote::from(n)).await;
-                            }
+                            pending_note_off.set(true);
                             gated = false;
-                            leds.unset(0, Led::Top);
+                            glob_gate_on.set(false);
                         }
+                    } else if die.roll() > density {
+                        // Rest for one division step.
+                        if gated {
+                            pending_note_off.set(true);
+                            gated = false;
+                            glob_gate_on.set(false);
+                        }
+                        remain = 1;
+                    } else {
+                        let steps_left = phrase_len.saturating_sub(phrase_step).max(1);
+                        if phrase_step == 0 || steps_left <= 2 {
+                            if die.roll() < 2800 {
+                                idx = idx.saturating_sub(max_step.min(idx));
+                            }
+                        } else {
+                            idx = pick_next_index(&die, idx, plen, max_step, express, rising);
+                        }
+
+                        remain = pick_duration(&die, express, steps_left).max(1);
+                        let note = pool[idx.min(plen - 1)];
+                        pending_note.set(note);
+                        pending_fire.set(true);
+                        gated = true;
+                        glob_gate_on.set(true);
+                        glob_button_duck.set(BUTTON_DUCK_MS);
                     }
 
                     phrase_step = phrase_step.wrapping_add(1);
@@ -626,6 +623,55 @@ pub async fn run(
                         phrase_step = 0;
                     }
                 }
+            }
+        }
+    };
+
+    let fut_voice = async {
+        let mut note_on: Option<u8> = None;
+        loop {
+            app.delay_millis(1).await;
+
+            if pending_silence.get() {
+                pending_silence.set(false);
+                pending_fire.set(false);
+                pending_note_off.set(false);
+                if let Some(n) = note_on.take() {
+                    midi.send_note_off(MidiNote::from(n)).await;
+                }
+                cv.set_value(0);
+                leds.unset(0, Led::Top);
+                leds.unset(0, Led::Bottom);
+                continue;
+            }
+
+            if pending_note_off.get() {
+                pending_note_off.set(false);
+                if let Some(n) = note_on.take() {
+                    midi.send_note_off(MidiNote::from(n)).await;
+                }
+                // Keep pitch CV; clear gate cue.
+                leds.unset(0, Led::Top);
+            }
+
+            if pending_fire.get() {
+                pending_fire.set(false);
+                if glob_muted.get() {
+                    continue;
+                }
+                let note = pending_note.get();
+                if let Some(old) = note_on {
+                    if old != note {
+                        midi.send_note_off(MidiNote::from(old)).await;
+                    }
+                }
+                let pitch = note_to_pitch(note);
+                cv.set_value(pitch.as_counts(range, vpo));
+                midi.send_note_on(MidiNote::from(note), 3200).await;
+                note_on = Some(note);
+                leds.set(0, Led::Top, led_color, Brightness::High);
+                let bright = Brightness::Custom(((note as u16).saturating_mul(2)).min(255) as u8);
+                leds.set(0, Led::Bottom, led_color, bright);
             }
         }
     };
@@ -758,6 +804,7 @@ pub async fn run(
                 }
             }
 
+            // Leave Top/Bottom to the voice engine on Main so note cues stay visible.
             match layer {
                 LatchLayer::Alt => {
                     leds.set(0, Led::Bottom, Color::White, Brightness::Low);
@@ -765,7 +812,11 @@ pub async fn run(
                 LatchLayer::Third => {
                     leds.set(0, Led::Bottom, set_color(glob_scale.get()), Brightness::Low);
                 }
-                LatchLayer::Main => {}
+                LatchLayer::Main => {
+                    if glob_gate_on.get() {
+                        leds.set(0, Led::Top, led_color, Brightness::Mid);
+                    }
+                }
             }
         }
     };
@@ -799,7 +850,7 @@ pub async fn run(
     };
 
     join5(
-        fut_clock,
+        join(fut_clock, fut_voice),
         fut_faders,
         join(fut_buttons, fut_long),
         fut_leds,
