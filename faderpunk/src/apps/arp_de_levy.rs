@@ -144,7 +144,7 @@ impl Default for Params {
             midi_channel: MidiChannel::default(),
             note: MidiNote::from(48),
             color: Color::Rose,
-            midi_out: MidiOut::default(),
+            midi_out: MidiOut([true, false, false]), // USB only — all-ports floods cable
             vpo: VoltPerOct::Standard,
             bypass: false,
             cv_jack: CV_JACK_OUT,
@@ -758,7 +758,7 @@ pub async fn run(
                 pending_fire.set(false);
                 pending_note_off.set(false);
                 if let Some(n) = note_on.take() {
-                    midi.send_note_off(n).await;
+                    midi.try_send_note_off(n);
                 }
                 if let Some(ref jack) = out_jack {
                     jack.set_value(0);
@@ -770,7 +770,7 @@ pub async fn run(
             if pending_note_off.get() {
                 pending_note_off.set(false);
                 if let Some(n) = note_on.take() {
-                    midi.send_note_off(n).await;
+                    midi.try_send_note_off(n);
                 }
                 // Gate / Velocity drop with the note; Pitch holds until next hit / silence.
                 if glob_cv_out.get() != OUT_PITCH {
@@ -1102,9 +1102,9 @@ async fn fire_note(
     };
 
     if let Some(prev) = note_on.take() {
-        midi.send_note_off(prev).await;
+        midi.try_send_note_off(prev);
     }
-    midi.send_note_on(n, velocity).await;
+    midi.try_send_note_on(n, velocity);
     *note_on = Some(n);
     // Bottom: pitch height within octave span while the gate is open.
     leds.set(0, Led::Bottom, led_color, bottom_bright);

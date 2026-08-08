@@ -476,6 +476,38 @@ impl MidiOutput {
         self.send_midi_msg(msg).await;
     }
 
+    /// Non-blocking NoteOn — drops if `APP_MIDI_CHANNEL` is full instead of
+    /// stalling Core 1 (dense melodic apps + busy playground).
+    pub fn try_send_note_on(&self, note_number: MidiNote, velocity: u16) {
+        if crate::tasks::midi::perf_local_muted_public() {
+            return;
+        }
+        let message = MidiMessage::NoteOn {
+            key: note_number.into(),
+            vel: scale_bits_12_7(velocity),
+        };
+        let event = LiveEvent::Midi {
+            channel: self.midi_channel,
+            message,
+        };
+        let msg = MidiMsg::new(event, self.midi_out, MidiEventSource::Local);
+        let _ = self.midi_sender.try_send((self.start_channel, msg));
+    }
+
+    /// Non-blocking NoteOff. Prefer this in high-rate voice engines.
+    pub fn try_send_note_off(&self, note_number: MidiNote) {
+        let message = MidiMessage::NoteOff {
+            key: note_number.into(),
+            vel: 0.into(),
+        };
+        let event = LiveEvent::Midi {
+            channel: self.midi_channel,
+            message,
+        };
+        let msg = MidiMsg::new(event, self.midi_out, MidiEventSource::Local);
+        let _ = self.midi_sender.try_send((self.start_channel, msg));
+    }
+
     /// Sends a MIDI Aftertouch message.
     /// velocity is normalized to a range of 0-4095
     #[allow(dead_code)]

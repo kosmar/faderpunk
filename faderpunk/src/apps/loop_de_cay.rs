@@ -5,10 +5,11 @@
 //! - Shift+Short = cycle loop length 1→8 bars.
 //! - Shift+Long = mute (decay pauses); again while muted = erase buffer.
 //! - Short while muted = unmute (re-arms recording).
-//! - Shift+Fader = decay.
+//! - Shift+Fader = decay strength.
+//! - Btn+Fader (Third; gate modes while muted) = decay mode.
 //!
 //! Pitch (live + decay) snaps to the global quantizer key/tonic (nearest degree).
-//! Mode via Config.
+//! I/O Mode and Decay Mode via Config.
 
 use embassy_futures::{
     join::{join, join5},
@@ -34,7 +35,7 @@ use crate::app::{
 };
 
 pub const CHANNELS: usize = 1;
-pub const PARAMS: usize = 9;
+pub const PARAMS: usize = 10;
 
 const TICKS_PER_16TH: u64 = 6;
 const TICKS_PER_BAR: u16 = 96;
@@ -53,6 +54,16 @@ const CAPTURE_FLASH_TICKS: u64 = 2;
 const CAPTURE_DIM_REMAIN_PCT: u16 = 20;
 /// Hold length for Shift+Long mute/erase (matches hardware LONG_PRESS).
 const SHIFT_LONG_MS: u64 = 500;
+
+const DECAY_MODE_COUNT: usize = 7;
+const DECAY_RANDOM: usize = 0;
+const DECAY_PITCH_UP: usize = 1;
+const DECAY_PITCH_DOWN: usize = 2;
+const DECAY_VEL_ROOT: usize = 3;
+const DECAY_PITCH_ROOT: usize = 4;
+const DECAY_VEL: usize = 5;
+const DECAY_GATE: usize = 6;
+const DECAY_DEFAULT: usize = DECAY_VEL_ROOT;
 
 pub static CONFIG: Config<PARAMS> = Config::new(
     "Loop de Cay",
@@ -100,7 +111,19 @@ pub static CONFIG: Config<PARAMS> = Config::new(
     name: "Range",
     variants: &[Range::_0_10V, Range::_Neg5_5V],
 })
-.add_param(Param::VoltPerOct);
+.add_param(Param::VoltPerOct)
+.add_param(Param::Enum {
+    name: "Decay Mode",
+    variants: &[
+        "Random",
+        "Pitch Up",
+        "Pitch Down",
+        "Vel + Root",
+        "Pitch Root",
+        "Velocity",
+        "Gate",
+    ],
+});
 
 pub struct Params {
     mode: usize,
@@ -112,11 +135,13 @@ pub struct Params {
     color: Color,
     range: Range,
     vpo: VoltPerOct,
+    decay_mode: usize,
 }
 
 impl AppParams for Params {
     fn from_values(values: &[Value]) -> Option<Self> {
-        if values.len() < PARAMS {
+        // Append-only: old 9-param saves still load; Decay Mode defaults.
+        if values.len() < 9 {
             return None;
         }
         Some(Self {
@@ -129,6 +154,10 @@ impl AppParams for Params {
             color: Color::from_value(values[6]),
             range: Range::from_value(values[7]),
             vpo: VoltPerOct::from_value(values[8]),
+            decay_mode: values
+                .get(9)
+                .map(|v| usize::from_value(*v).min(DECAY_MODE_COUNT - 1))
+                .unwrap_or(DECAY_DEFAULT),
         })
     }
 
@@ -143,6 +172,7 @@ impl AppParams for Params {
         vec.push(self.color.into()).unwrap();
         vec.push(self.range.into()).unwrap();
         vec.push(self.vpo.into()).unwrap();
+        vec.push(self.decay_mode.into()).unwrap();
         vec
     }
 }
@@ -288,40 +318,68 @@ impl LoopBuf {
         }
     }
 
-    fn decay_all(&mut self, decay_fader: u16, base_note: u8, key: Key, tonic: Note) {
+    fn decay_all(
+        &mut self,
+        decay_fader: u16,
+        mode: usize,
+        base_note: u8,
+        key: Key,
+        tonic: Note,
+        rng: &mut u32,
+    ) {
         if decay_fader == 0 {
             return;
         }
-        // Per wrap: level retains 60..100%. Pitch pulls toward the in-scale
-        // Base Note, then snaps to the nearest scale degree.
         let target = snap_to_scale(base_note, key, tonic);
         let loss = (decay_fader as u32 * 1638) / 4095;
         let retain = 4095u32.saturating_sub(loss).max(2457);
         // At least ~12.5% of remaining offset per wrap; scales up with decay.
         let pitch_loss = (decay_fader as u32 * 2048 / 4095).max(512).max(loss);
+        let steps = pitch_steps(decay_fader);
+
         for e in self.events.iter_mut() {
             if !e.used {
                 continue;
             }
-            let nv = ((e.vel as u32 * retain) / 4095) as u16;
-            if nv <= KILL_FLOOR {
-                e.used = false;
-                e.vel = 0;
-            } else {
-                e.vel = nv;
-                let pitch_offset = e.note as i32 - target as i32;
-                if pitch_offset != 0 {
-                    let dist = pitch_offset.unsigned_abs();
-                    // Always move ≥1 semitone toward target when decay > 0.
-                    let pull = ((dist * pitch_loss) / 4095).max(1) as i32;
-                    let new_offset = if pitch_offset > 0 {
-                        (pitch_offset - pull).max(0)
-                    } else {
-                        (pitch_offset + pull).min(0)
-                    };
-                    let chromatic = (target as i32 + new_offset).clamp(0, 127) as u8;
-                    e.note = snap_to_scale_toward(chromatic, key, tonic, Some(target));
+            match mode.min(DECAY_MODE_COUNT - 1) {
+                DECAY_VEL => {
+                    apply_velocity_decay(e, retain);
                 }
+                DECAY_PITCH_ROOT => {
+                    pull_pitch_to_root(e, target, pitch_loss, key, tonic);
+                }
+                DECAY_VEL_ROOT => {
+                    apply_velocity_decay(e, retain);
+                    if e.used {
+                        pull_pitch_to_root(e, target, pitch_loss, key, tonic);
+                    }
+                }
+                DECAY_PITCH_UP => {
+                    shift_pitch_steps(e, steps, true, key, tonic);
+                }
+                DECAY_PITCH_DOWN => {
+                    shift_pitch_steps(e, steps, false, key, tonic);
+                }
+                DECAY_GATE => {
+                    let min_dur = TICKS_PER_16TH as u16;
+                    if e.dur != u16::MAX {
+                        let nd = ((e.dur as u32 * retain) / 4095) as u16;
+                        e.dur = nd.max(min_dur).min(e.dur);
+                    }
+                }
+                DECAY_RANDOM => {
+                    // Random: scale pitch jitter + velocity only goes down.
+                    let max_steps = steps.max(1);
+                    let n = rand_below(rng, max_steps + 1);
+                    if n > 0 {
+                        let up = rand_below(rng, 2) == 1;
+                        shift_pitch_steps(e, n, up, key, tonic);
+                    }
+                    let actual_loss = rand_below(rng, loss + 1);
+                    let rnd_retain = 4095u32.saturating_sub(actual_loss).max(2457);
+                    apply_velocity_decay(e, rnd_retain);
+                }
+                _ => {}
             }
         }
         if self.events.iter().all(|e| !e.used) {
@@ -390,6 +448,115 @@ fn bars_from_fader(v: u16) -> u8 {
 fn fader_from_bars(bars: u8) -> u16 {
     let b = bars.clamp(1, MAX_BARS) as u32 - 1;
     ((b * 4095) / (MAX_BARS as u32 - 1)) as u16
+}
+
+fn decay_mode_from_fader(v: u16) -> usize {
+    ((v as u32 * DECAY_MODE_COUNT as u32) / 4096).min(DECAY_MODE_COUNT as u32 - 1) as usize
+}
+
+fn fader_from_decay_mode(mode: usize) -> u16 {
+    let i = mode.min(DECAY_MODE_COUNT - 1) as u32;
+    ((i * 2 + 1) * 4096 / (DECAY_MODE_COUNT as u32 * 2)) as u16
+}
+
+fn decay_mode_color(mode: usize) -> Color {
+    const COLORS: [Color; DECAY_MODE_COUNT] = [
+        Color::Rose,   // Random
+        Color::Orange, // Pitch Up
+        Color::Yellow, // Pitch Down
+        Color::Lime,   // Vel + Root
+        Color::Cyan,   // Pitch Root
+        Color::Blue,   // Velocity
+        Color::Violet, // Gate
+    ];
+    COLORS[mode.min(DECAY_MODE_COUNT - 1)]
+}
+
+fn pitch_steps(decay_fader: u16) -> u32 {
+    ((decay_fader as u32 * 4) / 4095).max(1)
+}
+
+fn xorshift32(state: &mut u32) -> u32 {
+    *state ^= *state << 13;
+    *state ^= *state >> 17;
+    *state ^= *state << 5;
+    *state
+}
+
+fn rand_below(state: &mut u32, max: u32) -> u32 {
+    if max == 0 {
+        return 0;
+    }
+    if *state == 0 {
+        *state = 0xA5A5_5A5A;
+    }
+    xorshift32(state) % max
+}
+
+fn apply_velocity_decay(e: &mut NoteEvent, retain: u32) {
+    let nv = ((e.vel as u32 * retain) / 4095) as u16;
+    if nv <= KILL_FLOOR {
+        e.used = false;
+        e.vel = 0;
+    } else {
+        e.vel = nv;
+    }
+}
+
+fn pull_pitch_to_root(e: &mut NoteEvent, target: u8, pitch_loss: u32, key: Key, tonic: Note) {
+    let pitch_offset = e.note as i32 - target as i32;
+    if pitch_offset == 0 {
+        return;
+    }
+    let dist = pitch_offset.unsigned_abs();
+    // Always move ≥1 semitone toward target when decay > 0.
+    let pull = ((dist * pitch_loss) / 4095).max(1) as i32;
+    let new_offset = if pitch_offset > 0 {
+        (pitch_offset - pull).max(0)
+    } else {
+        (pitch_offset + pull).min(0)
+    };
+    let chromatic = (target as i32 + new_offset).clamp(0, 127) as u8;
+    e.note = snap_to_scale_toward(chromatic, key, tonic, Some(target));
+}
+
+fn next_scale_degree(note: u8, up: bool, key: Key, tonic: Note) -> u8 {
+    if matches!(key, Key::Chromatic | Key::Off) {
+        return if up {
+            note.saturating_add(1).min(127)
+        } else {
+            note.saturating_sub(1)
+        };
+    }
+    for d in 1u8..=12 {
+        let candidate = if up {
+            if note > 127 - d {
+                return note;
+            }
+            note + d
+        } else {
+            match note.checked_sub(d) {
+                Some(n) => n,
+                None => return note,
+            }
+        };
+        if pc_in_scale(candidate % 12, key, tonic) {
+            return candidate;
+        }
+    }
+    note
+}
+
+fn shift_pitch_steps(e: &mut NoteEvent, steps: u32, up: bool, key: Key, tonic: Note) {
+    let mut n = e.note;
+    for _ in 0..steps {
+        let next = next_scale_degree(n, up, key, tonic);
+        if next == n {
+            break;
+        }
+        n = next;
+    }
+    e.note = snap_to_scale(n, key, tonic);
 }
 
 fn quantize_16th(pos: u16) -> u16 {
@@ -531,6 +698,7 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
             color: Color::Violet,
             range: Range::_0_10V,
             vpo: VoltPerOct::Standard,
+            decay_mode: DECAY_DEFAULT,
         },
     );
     let storage = ManagedStorage::<Storage>::new(app.app_id, app.layout_id);
@@ -559,7 +727,7 @@ pub async fn run(
 ) {
     app.wait_while_perf_muted().await;
 
-    let (mode, midi_chan, midi_in_src, midi_out_dst, base_note, span, _base_color, range, vpo) =
+    let (mode, midi_chan, midi_in_src, midi_out_dst, base_note, span, _base_color, range, vpo, decay_mode) =
         params.query(|p| {
             (
                 p.mode.min(4),
@@ -571,6 +739,7 @@ pub async fn run(
                 p.color,
                 p.range,
                 p.vpo,
+                p.decay_mode.min(DECAY_MODE_COUNT - 1),
             )
         });
 
@@ -604,6 +773,7 @@ pub async fn run(
     let buf = app.make_global(LoopBuf::default());
     let bars_glob = app.make_global(bars_from_fader(storage.query(|s| s.bars_saved)));
     let decay_glob = app.make_global(storage.query(|s| s.decay_saved));
+    let decay_mode_glob = app.make_global(decay_mode);
     let main_glob = app.make_global(storage.query(|s| s.main_saved));
     let muted = app.make_global(storage.query(|s| s.muted));
     let armed = app.make_global(storage.query(|s| s.armed));
@@ -616,6 +786,7 @@ pub async fn run(
     let live_note = app.make_global(None::<u8>);
     let rec_open = app.make_global(false);
     let voices = app.make_global([(0u8, 0u16, 0u32); POLY]);
+    let rng_glob = app.make_global((0x00C0_FFEEu32).wrapping_mul(ticks() as u32 | 1));
 
     if muted.get() {
         leds.set(0, Led::Button, Color::Red, Brightness::Low);
@@ -666,7 +837,16 @@ pub async fn run(
                         if let Some(pp) = prev_pos {
                             if pos < pp && !muted.get() {
                                 let (key, tonic) = quantizer.get_scale().await;
-                                b.decay_all(decay_glob.get(), note_u8(base_note), key, tonic);
+                                let mut rng = rng_glob.get();
+                                b.decay_all(
+                                    decay_glob.get(),
+                                    decay_mode_glob.get(),
+                                    note_u8(base_note),
+                                    key,
+                                    tonic,
+                                    &mut rng,
+                                );
+                                rng_glob.set(rng);
                                 buf.set(b);
                                 b = buf.get();
                             }
@@ -732,13 +912,12 @@ pub async fn run(
             let target = match layer {
                 LatchLayer::Main => storage.query(|s| s.main_saved),
                 LatchLayer::Alt => storage.query(|s| s.decay_saved),
-                // Length is Shift+Short cycle — Third unused.
-                LatchLayer::Third => storage.query(|s| s.decay_saved),
+                LatchLayer::Third => fader_from_decay_mode(decay_mode_glob.get()),
             };
 
             if let Some(new_value) = latch.update(val, layer, target) {
                 match layer {
-                    LatchLayer::Alt | LatchLayer::Third => {
+                    LatchLayer::Alt => {
                         decay_glob.set(new_value);
                         storage.modify_and_save(|s| s.decay_saved = new_value);
                         paint_fader_meters(
@@ -746,6 +925,20 @@ pub async fn run(
                             decay_fader_color(new_value),
                             new_value,
                             (new_value / 16) as u8,
+                        );
+                    }
+                    LatchLayer::Third => {
+                        let mode = decay_mode_from_fader(new_value);
+                        if mode != decay_mode_glob.get() {
+                            decay_mode_glob.set(mode);
+                            params.update(|p| p.decay_mode = mode).await;
+                        }
+                        let center = fader_from_decay_mode(mode);
+                        paint_fader_meters(
+                            &leds,
+                            decay_mode_color(mode),
+                            center,
+                            255,
                         );
                     }
                     LatchLayer::Main => {
@@ -1033,9 +1226,15 @@ pub async fn run(
         let mut bars_hold_ms = 0u16;
         loop {
             app.delay_millis(1).await;
-            // Shift alone = Alt (decay). Length is Shift+Short — no Third latch.
+            // Shift alone = Alt (strength). Btn (no shift) = Third (decay mode);
+            // in gate modes Third only while muted so hold-to-play stays pitch.
             let layer = if buttons.is_shift_pressed() && !buttons.is_button_pressed(0) {
                 LatchLayer::Alt
+            } else if !buttons.is_shift_pressed()
+                && buttons.is_button_pressed(0)
+                && (muted.get() || !uses_button_gate)
+            {
+                LatchLayer::Third
             } else {
                 LatchLayer::Main
             };
@@ -1079,9 +1278,14 @@ pub async fn run(
             }
 
             match layer {
-                LatchLayer::Alt | LatchLayer::Third => {
+                LatchLayer::Alt => {
                     let v = decay_glob.get();
                     paint_fader_meters(&leds, decay_fader_color(v), v, (v / 16) as u8);
+                }
+                LatchLayer::Third => {
+                    let mode = decay_mode_glob.get();
+                    let v = fader_from_decay_mode(mode);
+                    paint_fader_meters(&leds, decay_mode_color(mode), v, 255);
                 }
                 LatchLayer::Main => {
                     if muted.get() {

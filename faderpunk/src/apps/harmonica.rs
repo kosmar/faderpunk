@@ -416,7 +416,7 @@ async fn revoice(
     let harm_vel = harm_vel.max(VEL_FLOOR);
     for &n in old.iter() {
         if !new.contains(&n) {
-            midi.send_note_off(MidiNote::from(n)).await;
+            midi.try_send_note_off(MidiNote::from(n));
         }
     }
     // Voices dropped by a chord change must not arrive late.
@@ -435,7 +435,7 @@ async fn revoice(
         }
         let vel = if Some(n) == root { root_vel } else { harm_vel };
         if strum_ms == 0 {
-            midi.send_note_on(MidiNote::from(n), vel).await;
+            midi.try_send_note_on(MidiNote::from(n), vel);
         } else {
             // Voices are built root-first, so the queue strums upward.
             let _ = pending.push((n, slot.saturating_mul(strum_ms), vel));
@@ -451,7 +451,7 @@ async fn drain_strum(midi: &MidiOutput, pending: &mut StrumQueue) {
         if pending[i].1 == 0 {
             let (note, _, vel) = pending[i];
             let _ = pending.remove(i);
-            midi.send_note_on(MidiNote::from(note), vel).await;
+            midi.try_send_note_on(MidiNote::from(note), vel);
         } else {
             pending[i].1 -= 1;
             i += 1;
@@ -466,7 +466,7 @@ async fn all_notes_off(
 ) {
     pending.clear();
     for &n in sounding.iter() {
-        midi.send_note_off(MidiNote::from(n)).await;
+        midi.try_send_note_off(MidiNote::from(n));
     }
     sounding.clear();
 }
@@ -529,7 +529,7 @@ async fn handle_midi_note_off(
     }
 }
 
-#[embassy_executor::task(pool_size = 16 / CHANNELS)]
+#[embassy_executor::task(pool_size = 4)]
 pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMutex, bool>) {
     let param_store = ParamStore::<Params>::new(
         app.app_id,
@@ -540,7 +540,7 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
             color: Color::Orange,
             midi_in: MidiIn::default(),
             midi_in_ch: MidiChannel::default(),
-            midi_out: MidiOut::default(),
+            midi_out: MidiOut([true, false, false]), // USB only — all-ports floods cable
             midi_out_ch: MidiChannel::from(2),
             vpo: VoltPerOct::Standard,
             bypass: false,

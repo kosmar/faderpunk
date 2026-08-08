@@ -827,7 +827,7 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
             genre: 2,                 // House
             voice: 1,                 // Jamerson (historical index)
             midi_channel: MidiChannel::default(),
-            midi_out: MidiOut::default(),
+            midi_out: MidiOut([true, false, false]), // USB only — all-ports floods cable
             groove_max_pct: 80,
             gatel: 100,
             cv_jack: CV_JACK_OUT,
@@ -1179,7 +1179,7 @@ pub async fn run(
                 pending_note_off.set(false);
                 pending_note_on.set(false);
                 if let Some(n) = sounding.take() {
-                    midi.send_note_off(MidiNote::from(n)).await;
+                    midi.try_send_note_off(MidiNote::from(n));
                 }
                 continue;
             }
@@ -1187,7 +1187,7 @@ pub async fn run(
             if pending_note_off.get() {
                 pending_note_off.set(false);
                 if let Some(n) = sounding.take() {
-                    midi.send_note_off(MidiNote::from(n)).await;
+                    midi.try_send_note_off(MidiNote::from(n));
                 }
             }
 
@@ -1196,10 +1196,9 @@ pub async fn run(
                 if !glob_muted.get() {
                     let n = pending_note.get();
                     if let Some(prev) = sounding {
-                        midi.send_note_off(MidiNote::from(prev)).await;
+                        midi.try_send_note_off(MidiNote::from(prev));
                     }
-                    midi.send_note_on(MidiNote::from(n), pending_vel.get())
-                        .await;
+                    midi.try_send_note_on(MidiNote::from(n), pending_vel.get());
                     sounding = Some(n);
                 }
             }

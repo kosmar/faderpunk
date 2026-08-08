@@ -861,13 +861,13 @@ fn build_clip_from_ring(
     (n as u8, out_deg, out_on, out_dur)
 }
 
-#[embassy_executor::task(pool_size = 16 / CHANNELS)]
+#[embassy_executor::task(pool_size = 4)]
 pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMutex, bool>) {
     let param_store = ParamStore::<Params>::new(
         app.app_id,
         app.layout_id,
         Params {
-            midi_out: MidiOut::default(),
+            midi_out: MidiOut([true, false, false]), // USB only — all-ports floods cable
             midi_channel: MidiChannel::default(),
             root: MidiNote::from(48),
             scale: 5, // Aeolian
@@ -1359,7 +1359,7 @@ pub async fn run(
 
         let release_all = async |sounding: &mut Vec<u8, SOUNDING_CAP>| {
             for n in sounding.iter() {
-                midi.send_note_off(MidiNote::from(*n)).await;
+                midi.try_send_note_off(MidiNote::from(*n));
             }
             sounding.clear();
         };
@@ -1367,12 +1367,12 @@ pub async fn run(
         let play_degree =
             async |sounding: &mut Vec<u8, SOUNDING_CAP>, degree: u8, octave: u8, record: bool| {
                 for n in sounding.iter() {
-                    midi.send_note_off(MidiNote::from(*n)).await;
+                    midi.try_send_note_off(MidiNote::from(*n));
                 }
                 sounding.clear();
                 let notes = build_chord(root_midi, key, degree, voicing, octave);
                 for n in notes.iter() {
-                    midi.send_note_on(MidiNote::from(*n), vel12).await;
+                    midi.try_send_note_on(MidiNote::from(*n), vel12);
                     let _ = sounding.push(*n);
                 }
                 if record {
@@ -1389,8 +1389,8 @@ pub async fn run(
                 release_all(&mut sounding).await;
                 const ALL_SOUND_OFF: u8 = 120;
                 const ALL_NOTES_OFF: u8 = 123;
-                midi.send_cc(MidiCc::from(ALL_SOUND_OFF), 0).await;
-                midi.send_cc(MidiCc::from(ALL_NOTES_OFF), 0).await;
+                midi.try_send_cc(MidiCc::from(ALL_SOUND_OFF), 0);
+                midi.try_send_cc(MidiCc::from(ALL_NOTES_OFF), 0);
                 sounding.clear();
                 chord_held.set(false);
                 sounding_perform_idx = None;

@@ -1,7 +1,8 @@
 //! Venn — dual Euclidean layers combined with boolean logic (OR/AND/XOR/Accnt).
 //!
-//! Gate-only, no pitch. Inspired by OXI ONE MKII GEN page 2 (eLen2/ePul2/eRot2 + Logic).
-//! Distinct from Euclid (single layer + aux) and GenSeq (Turing + pitch CV).
+//! Gates + generative MIDI melody (step→pitch within Extent; Ch2 = line + Interval).
+//! Inspired by OXI ONE MKII GEN page 2 (eLen/ePul + Logic). Rotation is fixed at 0
+//! (live slots used for Extent / Interval). Distinct from Euclid and GenSeq.
 
 use embassy_futures::{
     join::join5,
@@ -18,15 +19,23 @@ use serde::{Deserialize, Serialize};
 use crate::app::{
     App, AppParams, AppStorage, ClockEvent, Led, ManagedStorage, ParamStore, SceneEvent,
 };
+use crate::apps::led_fx::hsv_to_rgb;
 use crate::tasks::leds::LedMode;
+use smart_leds::RGB8;
 
 pub const CHANNELS: usize = 2;
 pub const PARAMS: usize = 9;
 
-/// Interval B select labels (index == semitone offset from Note A).
+/// Interval B select labels (index == semitone offset). Kept as CONFIG param so
+/// FRAM/wire value order stays stable; live Interval is also on Alt F1.
 const INTERVAL_B_VARIANTS: &[&str] = &[
     "Unison", "m2", "M2", "m3", "M3", "P4", "TT", "P5", "m6", "M6", "m7", "M7", "Octave",
 ];
+
+/// Max melodic span above Note A (semitones) when Extent fader is full.
+const EXTENT_MAX_SEMIS: u8 = 24;
+/// Max Interval B above the melodic line (Unison…Octave).
+const INTERVAL_MAX_SEMIS: u8 = 12;
 
 const LED_BRIGHTNESS: Brightness = Brightness::Mid;
 /// Button hit soft-dip duration (1 ms ticks). Short so dense hits still blink
@@ -46,6 +55,11 @@ const LAYER_LED_FLOOR: u8 = 40;
 /// Ignore tiny fader noise when deciding Btn2 tap-mute vs Third scrub.
 const FADER_MOVE_THRESH: u16 = 64;
 const RESOLUTION: [u32; 12] = [384, 192, 96, 48, 24, 16, 12, 8, 6, 4, 3, 2];
+/// Labels for `RESOLUTION` (24 PPQN): index 0 = 1/1 … 11 = 1/192.
+const DIVISION_VARIANTS: &[&str] = &[
+    "1/1", "1/2", "1/4", "1/8", "1/16", "1/16T", "1/32", "1/32T", "1/64", "1/96", "1/128",
+    "1/192",
+];
 
 /// Boolean combine modes for the two Euclidean layers.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -81,7 +95,7 @@ impl Logic {
     }
 }
 
-/// Auto-complement for Layer B LEDs from the Config Color (Layer A).
+/// Auto-complement for Layer B LEDs / Third hue endpoint from a base color.
 fn complement_color(c: Color) -> Color {
     match c {
         Color::Blue | Color::SkyBlue | Color::LightBlue => Color::Orange,
@@ -97,6 +111,66 @@ fn complement_color(c: Color) -> Color {
     }
 }
 
+fn color_rgb(c: Color) -> RGB8 {
+    RGB8::from(c)
+}
+
+/// Approximate hue in degrees (0..360). White / near-grey → 0.
+fn color_hue(c: Color) -> u16 {
+    let RGB8 { r, g, b } = color_rgb(c);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    if max == 0 || max - min < 8 {
+        return 0;
+    }
+    let d = (max - min) as i32;
+    let (r, g, b, max) = (r as i32, g as i32, b as i32, max as i32);
+    let h = if max == r {
+        ((g - b) * 60) / d
+    } else if max == g {
+        120 + ((b - r) * 60) / d
+    } else {
+        240 + ((r - g) * 60) / d
+    };
+    ((h % 360) + 360) as u16 % 360
+}
+
+fn shortest_hue_lerp(from: u16, to: u16, t: u8) -> u16 {
+    let from = (from % 360) as i16;
+    let to = (to % 360) as i16;
+    let mut d = to - from;
+    if d > 180 {
+        d -= 360;
+    } else if d < -180 {
+        d += 360;
+    }
+    let h = from + (d * i16::from(t)) / 255;
+    (h.rem_euclid(360)) as u16
+}
+
+fn rgb_lerp(a: Color, b: Color, t: u8) -> Color {
+    let a = color_rgb(a);
+    let b = color_rgb(b);
+    let t = u16::from(t);
+    Color::Custom(
+        ((u16::from(a.r) * (255 - t) + u16::from(b.r) * t) / 255) as u8,
+        ((u16::from(a.g) * (255 - t) + u16::from(b.g) * t) / 255) as u8,
+        ((u16::from(a.b) * (255 - t) + u16::from(b.b) * t) / 255) as u8,
+    )
+}
+
+/// Length 2..=32 → shortest hue path from `from` toward its complement (`to`).
+/// White bases RGB-lerp (no meaningful hue).
+fn length_grad_color(len: u8, from: Color, to: Color) -> Color {
+    let t = ((((len.clamp(2, 32) - 2) as u16) * 255) / 30) as u8;
+    if matches!(from, Color::White) {
+        return rgb_lerp(from, to, t);
+    }
+    let h = shortest_hue_lerp(color_hue(from), color_hue(to), t);
+    let (r, g, b) = hsv_to_rgb(h);
+    Color::Custom(r, g, b)
+}
+
 fn length_from_fader(v: u16) -> u8 {
     // 2..=32 (Bjorklund table supports 2–32 steps)
     ((v as u32 * 31 / 4095) as u8).saturating_add(2).min(32)
@@ -107,19 +181,33 @@ fn pulses_from_fader(v: u16, len: u8) -> u8 {
     ((v as u32 * len as u32 / 4095) as u8).min(len)
 }
 
-fn rotation_from_fader(v: u16, len: u8) -> u8 {
-    let len = len.max(1);
-    ((v as u32 * (len.saturating_sub(1)) as u32 / 4095) as u8) % len
+fn extent_from_fader(v: u16) -> u8 {
+    ((v as u32 * EXTENT_MAX_SEMIS as u32) / 4095) as u8
 }
 
-fn length_band_color(len: u8) -> Color {
-    if len <= 8 {
-        Color::Red
-    } else if len <= 16 {
-        Color::Yellow
-    } else {
-        Color::Blue
+fn interval_from_fader(v: u16) -> u8 {
+    ((v as u32 * INTERVAL_MAX_SEMIS as u32) / 4095) as u8
+}
+
+/// Map clock step through length_a into 0..=extent semitones (monotone if extent=0).
+fn melody_semis(step: u32, len: u8, extent: u8) -> u8 {
+    if extent == 0 || len <= 1 {
+        return 0;
     }
+    let phase = step % len as u32;
+    ((phase * extent as u32) / (len as u32 - 1)) as u8
+}
+
+fn extent_meter_bright(extent: u8) -> u8 {
+    let span = (255u16 - LAYER_LED_FLOOR as u16).max(1);
+    let t = ((extent as u16 * span) / EXTENT_MAX_SEMIS as u16).min(span);
+    (LAYER_LED_FLOOR as u16 + t) as u8
+}
+
+fn interval_meter_bright(interval: u8) -> u8 {
+    let span = (255u16 - LAYER_LED_FLOOR as u16).max(1);
+    let t = ((interval as u16 * span) / INTERVAL_MAX_SEMIS as u16).min(span);
+    (LAYER_LED_FLOOR as u16 + t) as u8
 }
 
 /// Button base brightness from fill density (pulses/length) — denser = brighter.
@@ -133,14 +221,6 @@ fn hit_dip_bright(base: u8) -> u8 {
     ((base as u16 * BUTTON_HIT_REMAIN_PCT as u16) / 100).min(255) as u8
 }
 
-/// Rotation meter: 0..=len-1 → floor..=255.
-fn rot_meter_bright(rot: u8, len: u8) -> u8 {
-    let len = len.max(1) as u16;
-    let span = (255u16 - LAYER_LED_FLOOR as u16).max(1);
-    let t = ((rot as u16 * span) / len).min(span);
-    (LAYER_LED_FLOOR as u16 + t) as u8
-}
-
 /// Length meter: 2..=32 → floor..=255.
 fn len_meter_bright(len: u8) -> u8 {
     let len = len.clamp(2, 32) as u16;
@@ -151,7 +231,7 @@ fn len_meter_bright(len: u8) -> u8 {
 
 pub static CONFIG: Config<PARAMS> = Config::new(
     "Venn",
-    "Dual Euclidean layers with boolean logic (OR/AND/XOR/Accnt)",
+    "Dual Euclidean layers with generative melody (Extent / Interval)",
     Color::Cyan,
     AppIcon::Euclid,
 )
@@ -166,10 +246,9 @@ pub static CONFIG: Config<PARAMS> = Config::new(
     variants: INTERVAL_B_VARIANTS,
 })
 .add_param(Param::MidiOut)
-.add_param(Param::i32 {
+.add_param(Param::Enum {
     name: "Division",
-    min: 1,
-    max: 12,
+    variants: DIVISION_VARIANTS,
 })
 .add_param(Param::i32 {
     name: "GATE %",
@@ -182,7 +261,7 @@ pub static CONFIG: Config<PARAMS> = Config::new(
     max: 100,
 })
 .add_param(Param::i32 {
-    name: "Vel %",
+    name: "Humanize",
     min: 0,
     max: 100,
 })
@@ -204,9 +283,11 @@ pub struct Params {
     midi_channel: MidiChannel,
     note_a: MidiNote,
     /// Index into `INTERVAL_B_VARIANTS` (0 = Unison … 12 = Octave).
+    /// Seeds live Interval; Alt F1 overrides via storage.
     interval_b: usize,
     midi_out: MidiOut,
-    division: i32,
+    /// Index into `DIVISION_VARIANTS` / `RESOLUTION`.
+    division: usize,
     gatel: i32,
     prob: i32,
     vel: i32,
@@ -218,10 +299,9 @@ impl Default for Params {
         Self {
             midi_channel: MidiChannel::default(),
             note_a: MidiNote::from(32),
-            // m2 — matches the old absolute Note B default (A+1).
             interval_b: 1,
             midi_out: MidiOut::default(),
-            division: 5, // RESOLUTION[4] = 24 → 16ths at 24 PPQN
+            division: 4, // 1/16
             gatel: 50,
             prob: 100,
             vel: 0,
@@ -240,7 +320,11 @@ impl AppParams for Params {
             note_a: MidiNote::from_value(values[1]),
             interval_b: usize::from_value(values[2]).min(INTERVAL_B_VARIANTS.len() - 1),
             midi_out: MidiOut::from_value(values[3]),
-            division: i32::from_value(values[4]),
+            // Migrate legacy i32 Division 1..=12 → enum index 0..=11.
+            division: match values[4] {
+                Value::i32(n) => (n.clamp(1, 12) as usize).saturating_sub(1),
+                _ => usize::from_value(values[4]).min(DIVISION_VARIANTS.len() - 1),
+            },
             gatel: i32::from_value(values[5]),
             prob: i32::from_value(values[6]),
             vel: i32::from_value(values[7]),
@@ -264,8 +348,9 @@ impl AppParams for Params {
 }
 
 /// Fader layout:
-///   F0 Main=pulses_a  Alt=rot_a  Third=len_a
-///   F1 Main=pulses_b  Alt=rot_b  Third=len_b
+///   F0 Main=pulses_a  Alt=extent  Third=len_a
+///   F1 Main=pulses_b  Alt=interval  Third=len_b
+///   Rotation fixed at 0 (slots freed for melody Extent / Interval).
 ///
 /// Buttons:
 ///   Btn0/Btn1 hold = Third (lengths); Btn1 tap (no fader move) = mute
@@ -273,13 +358,16 @@ impl AppParams for Params {
 ///   Shift+Btn2 = toggle eInv (post-logic shadow); white↔none LED fade
 ///
 /// Outputs:
-///   Jack0 = logic result, Jack1 = coupled companion (see Logic table)
+///   Jack0 = logic result + melodic line (Note A + step→extent)
+///   Jack1 = coupled companion + line + Interval
 #[derive(Serialize, Deserialize)]
 pub struct Storage {
     pulses_a: u16,
     pulses_b: u16,
-    rot_a: u16,
-    rot_b: u16,
+    /// Was rot_a — fader 0..=4095 → 0..=24 semitone melodic span.
+    extent: u16,
+    /// Was rot_b — fader 0..=4095 → 0..=12 semitone interval above the line.
+    interval: u16,
     len_a: u16,
     len_b: u16,
     logic: u8,
@@ -290,11 +378,12 @@ pub struct Storage {
 impl Default for Storage {
     fn default() -> Self {
         Self {
-            // Mid-ish defaults: length 16, pulses ~7 / ~3, no rotation
+            // Mid-ish defaults: length 16, pulses ~7 / ~3
             pulses_a: 1792,
             pulses_b: 768,
-            rot_a: 0,
-            rot_b: 0,
+            // ~octave of melodic span; ~m2 interval (1/12 of fader)
+            extent: 2048,
+            interval: 341,
             len_a: 1840, // ~16
             len_b: 1840,
             logic: Logic::Or as u8,
@@ -328,9 +417,8 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
     select(app_loop, app.exit_handler(exit_signal)).await;
 }
 
-fn div_from_param(division: i32) -> u32 {
-    let idx = (division.clamp(1, 12) as usize) - 1;
-    RESOLUTION[idx]
+fn div_from_param(division: usize) -> u32 {
+    RESOLUTION[division.min(RESOLUTION.len() - 1)]
 }
 
 fn midi_velocity(base: u16, vel_pct: i32, die_roll: u16) -> u16 {
@@ -371,8 +459,6 @@ pub async fn run(
                 p.color,
             )
         });
-    // Index == semitones; saturating add keeps MIDI in 0..=127.
-    let note_b = note_a + MidiNote::from(interval_b.min(12) as u8);
     let color_b = complement_color(color_a);
 
     let midi = app.use_midi_output(midi_out, midi_chan, false);
@@ -391,8 +477,10 @@ pub async fn run(
     let len_b_glob = app.make_global(16u8);
     let pulses_a_glob = app.make_global(7u8);
     let pulses_b_glob = app.make_global(3u8);
-    let rot_a_glob = app.make_global(0u8);
-    let rot_b_glob = app.make_global(0u8);
+    let extent_glob = app.make_global(12u8);
+    let interval_glob = app.make_global(1u8);
+    let sounding_a_glob = app.make_global(note_a);
+    let sounding_b_glob = app.make_global(note_a + MidiNote::from(1));
     // Main button pulse flashes (1 ms countdown while Flash plays).
     let glob_btn_a_flash = app.make_global(0u16);
     let glob_btn_b_flash = app.make_global(0u16);
@@ -411,8 +499,8 @@ pub async fn run(
             (
                 s.pulses_a,
                 s.pulses_b,
-                s.rot_a,
-                s.rot_b,
+                s.extent,
+                s.interval,
                 s.len_a,
                 s.len_b,
                 s.logic,
@@ -420,19 +508,21 @@ pub async fn run(
                 s.muted,
             )
         });
-        let (pa, pb, ra, rb, la, lb, logic, einv, muted) = s;
+        let (pa, pb, ext, iv, la, lb, logic, einv, muted) = s;
         let len_a = length_from_fader(la);
         let len_b = length_from_fader(lb);
         len_a_glob.set(len_a);
         len_b_glob.set(len_b);
         pulses_a_glob.set(pulses_from_fader(pa, len_a));
         pulses_b_glob.set(pulses_from_fader(pb, len_b));
-        rot_a_glob.set(rotation_from_fader(ra, len_a));
-        rot_b_glob.set(rotation_from_fader(rb, len_b));
+        extent_glob.set(extent_from_fader(ext));
+        interval_glob.set(interval_from_fader(iv));
         glob_logic.set(Logic::from_u8(logic) as u8);
         glob_einv.set(einv);
         glob_muted.set(muted);
     }
+    // Host-facing Interval B (configurator / presets) wins on spawn & param reload.
+    interval_glob.set(interval_b.min(INTERVAL_MAX_SEMIS as usize) as u8);
 
     // Initial button LEDs
     leds.set(
@@ -444,18 +534,20 @@ pub async fn run(
     if glob_muted.get() {
         leds.unset(1, Led::Button);
     } else {
-        leds.set(1, Led::Button, color_b, LED_BRIGHTNESS);
+        leds.set(1, Led::Button, color_a, LED_BRIGHTNESS);
     }
 
     let fut_pulse = async {
         let mut note_on_a = false;
         let mut note_on_b = false;
+        let mut sounding_a = note_a;
+        let mut sounding_b = note_a + MidiNote::from(1);
 
         loop {
             match clock.wait_for_event(ClockDivision::_1).await {
                 ClockEvent::Reset | ClockEvent::Stop => {
-                    midi.send_note_off(note_a).await;
-                    midi.send_note_off(note_b).await;
+                    midi.send_note_off(sounding_a).await;
+                    midi.send_note_off(sounding_b).await;
                     note_on_a = false;
                     note_on_b = false;
                     jack[0].set_low().await;
@@ -476,14 +568,14 @@ pub async fn run(
                     let len_b = len_b_glob.get().max(2);
                     let pulses_a = pulses_a_glob.get().min(len_a);
                     let pulses_b = pulses_b_glob.get().min(len_b);
-                    let rot_a = rot_a_glob.get() % len_a;
-                    let rot_b = rot_b_glob.get() % len_b;
+                    let extent = extent_glob.get();
+                    let interval = interval_glob.get();
 
                     if clkn.is_multiple_of(div) {
                         let step = clkn / div;
-                        // euclidean_at(num_steps=length, num_beats=pulses, …)
-                        let a = euclidean_at(len_a, pulses_a, rot_a, step);
-                        let b = euclidean_at(len_b, pulses_b, rot_b, step);
+                        // Rotation fixed at 0 — Alt latches are Extent / Interval.
+                        let a = euclidean_at(len_a, pulses_a, 0, step);
+                        let b = euclidean_at(len_b, pulses_b, 0, step);
 
                         let (mut out0, mut out1) = match logic {
                             Logic::Or => (a || b, a && b),
@@ -507,16 +599,24 @@ pub async fn run(
                             }
                         }
 
+                        // Melodic line from Length-A phase; Ch2 = line + Interval.
+                        let line = note_a + MidiNote::from(melody_semis(step, len_a, extent));
+                        let line_b = line + MidiNote::from(interval);
+
                         if !muted {
                             if out0 {
                                 let vel_a = midi_velocity(4095, vel, die.roll());
-                                midi.send_note_on(note_a, vel_a).await;
+                                midi.send_note_on(line, vel_a).await;
+                                sounding_a = line;
+                                sounding_a_glob.set(line);
                                 jack[0].set_high().await;
                                 note_on_a = true;
                             }
                             if out1 {
                                 let vel_b = midi_velocity(4095, vel, die.roll());
-                                midi.send_note_on(note_b, vel_b).await;
+                                midi.send_note_on(line_b, vel_b).await;
+                                sounding_b = line_b;
+                                sounding_b_glob.set(line_b);
                                 jack[1].set_high().await;
                                 note_on_b = true;
                             }
@@ -551,34 +651,18 @@ pub async fn run(
                                 );
                             }
                         }
-
-                        // Alt: step-0 sync markers on Bottom
-                        if latch == LatchLayer::Alt {
-                            let on_a0 = step.is_multiple_of(len_a as u32);
-                            let on_b0 = step.is_multiple_of(len_b as u32);
-                            if on_a0 {
-                                leds.set(0, Led::Bottom, color_a, Brightness::High);
-                            } else {
-                                leds.unset(0, Led::Bottom);
-                            }
-                            if on_b0 {
-                                leds.set(1, Led::Bottom, color_b, Brightness::High);
-                            } else {
-                                leds.unset(1, Led::Bottom);
-                            }
-                        }
                     }
 
                     // Gate off
                     let gate_off = (div * gatel as u32 / 100).clamp(1, div.saturating_sub(1));
                     if clkn % div == gate_off {
                         if note_on_a {
-                            midi.send_note_off(note_a).await;
+                            midi.send_note_off(sounding_a).await;
                             note_on_a = false;
                             jack[0].set_low().await;
                         }
                         if note_on_b {
-                            midi.send_note_off(note_b).await;
+                            midi.send_note_off(sounding_b).await;
                             note_on_b = false;
                             jack[1].set_low().await;
                         }
@@ -641,11 +725,11 @@ pub async fn run(
                     if muted {
                         jack[0].set_low().await;
                         jack[1].set_low().await;
-                        midi.send_note_off(note_a).await;
-                        midi.send_note_off(note_b).await;
+                        midi.send_note_off(sounding_a_glob.get()).await;
+                        midi.send_note_off(sounding_b_glob.get()).await;
                         leds.unset(1, Led::Button);
                     } else {
-                        leds.set(1, Led::Button, color_b, LED_BRIGHTNESS);
+                        leds.set(1, Led::Button, color_a, LED_BRIGHTNESS);
                     }
                 }
             }
@@ -663,10 +747,10 @@ pub async fn run(
             let layer = glob_latch_layer.get();
             let target = match (chan, layer) {
                 (0, LatchLayer::Main) => storage.query(|s| s.pulses_a),
-                (0, LatchLayer::Alt) => storage.query(|s| s.rot_a),
+                (0, LatchLayer::Alt) => storage.query(|s| s.extent),
                 (0, LatchLayer::Third) => storage.query(|s| s.len_a),
                 (1, LatchLayer::Main) => storage.query(|s| s.pulses_b),
-                (1, LatchLayer::Alt) => storage.query(|s| s.rot_b),
+                (1, LatchLayer::Alt) => storage.query(|s| s.interval),
                 (1, LatchLayer::Third) => storage.query(|s| s.len_b),
                 _ => 0,
             };
@@ -680,18 +764,15 @@ pub async fn run(
                         storage.modify_and_save(|s| s.pulses_a = new_value);
                     }
                     (0, LatchLayer::Alt) => {
-                        let len = len_a_glob.get();
-                        rot_a_glob.set(rotation_from_fader(new_value, len));
-                        storage.modify_and_save(|s| s.rot_a = new_value);
+                        extent_glob.set(extent_from_fader(new_value));
+                        storage.modify_and_save(|s| s.extent = new_value);
                     }
                     (0, LatchLayer::Third) => {
                         let len = length_from_fader(new_value);
                         len_a_glob.set(len);
-                        // Re-clamp pulses/rot against new length
+                        // Re-clamp pulses against new length
                         let pa = storage.query(|s| s.pulses_a);
-                        let ra = storage.query(|s| s.rot_a);
                         pulses_a_glob.set(pulses_from_fader(pa, len));
-                        rot_a_glob.set(rotation_from_fader(ra, len));
                         storage.modify_and_save(|s| s.len_a = new_value);
                     }
                     (1, LatchLayer::Main) => {
@@ -700,17 +781,14 @@ pub async fn run(
                         storage.modify_and_save(|s| s.pulses_b = new_value);
                     }
                     (1, LatchLayer::Alt) => {
-                        let len = len_b_glob.get();
-                        rot_b_glob.set(rotation_from_fader(new_value, len));
-                        storage.modify_and_save(|s| s.rot_b = new_value);
+                        interval_glob.set(interval_from_fader(new_value));
+                        storage.modify_and_save(|s| s.interval = new_value);
                     }
                     (1, LatchLayer::Third) => {
                         let len = length_from_fader(new_value);
                         len_b_glob.set(len);
                         let pb = storage.query(|s| s.pulses_b);
-                        let rb = storage.query(|s| s.rot_b);
                         pulses_b_glob.set(pulses_from_fader(pb, len));
-                        rot_b_glob.set(rotation_from_fader(rb, len));
                         storage.modify_and_save(|s| s.len_b = new_value);
                     }
                     _ => {}
@@ -724,12 +802,12 @@ pub async fn run(
             match app.wait_for_scene_event().await {
                 SceneEvent::LoadScene(scene) => {
                     storage.load_from_scene(scene).await;
-                    let (pa, pb, ra, rb, la, lb, logic, einv, muted) = storage.query(|s| {
+                    let (pa, pb, ext, iv, la, lb, logic, einv, muted) = storage.query(|s| {
                         (
                             s.pulses_a,
                             s.pulses_b,
-                            s.rot_a,
-                            s.rot_b,
+                            s.extent,
+                            s.interval,
                             s.len_a,
                             s.len_b,
                             s.logic,
@@ -743,8 +821,8 @@ pub async fn run(
                     len_b_glob.set(len_b);
                     pulses_a_glob.set(pulses_from_fader(pa, len_a));
                     pulses_b_glob.set(pulses_from_fader(pb, len_b));
-                    rot_a_glob.set(rotation_from_fader(ra, len_a));
-                    rot_b_glob.set(rotation_from_fader(rb, len_b));
+                    extent_glob.set(extent_from_fader(ext));
+                    interval_glob.set(interval_from_fader(iv));
                     glob_logic.set(Logic::from_u8(logic) as u8);
                     glob_einv.set(einv);
                     glob_muted.set(muted);
@@ -758,7 +836,7 @@ pub async fn run(
                     if muted {
                         leds.unset(1, Led::Button);
                     } else {
-                        leds.set(1, Led::Button, color_b, LED_BRIGHTNESS);
+                        leds.set(1, Led::Button, color_a, LED_BRIGHTNESS);
                     }
                 }
                 SceneEvent::SaveScene(scene) => {
@@ -839,7 +917,7 @@ pub async fn run(
                     } else {
                         let len_b = len_b_glob.get().max(1);
                         let base_b = button_density_bright(pulses_b_glob.get(), len_b);
-                        leds.set(1, Led::Button, color_b, Brightness::Custom(base_b));
+                        leds.set(1, Led::Button, color_a, Brightness::Custom(base_b));
                     }
                 }
             }
@@ -864,7 +942,7 @@ pub async fn run(
                             } else {
                                 base_b
                             };
-                            leds.set(1, Led::Button, color_b, Brightness::Custom(bright_b));
+                            leds.set(1, Led::Button, color_a, Brightness::Custom(bright_b));
                         }
                     } else {
                         let base_a = button_density_bright(pulses_a_glob.get(), len_a);
@@ -890,14 +968,14 @@ pub async fn run(
                             } else {
                                 base_b
                             };
-                            leds.set(1, Led::Button, color_b, Brightness::Custom(bright_b));
+                            leds.set(1, Led::Button, color_a, Brightness::Custom(bright_b));
                         }
                     }
                 }
                 LatchLayer::Alt if flash_left == 0 => {
-                    // Rotation meters: Top + buttons, layer hues, floor so rot=0 stays lit.
-                    let ba = rot_meter_bright(rot_a_glob.get(), len_a);
-                    let bb = rot_meter_bright(rot_b_glob.get(), len_b);
+                    // Extent / Interval meters: Top + buttons.
+                    let ba = extent_meter_bright(extent_glob.get());
+                    let bb = interval_meter_bright(interval_glob.get());
                     leds.set(0, Led::Top, color_a, Brightness::Custom(ba));
                     leds.set(1, Led::Top, color_b, Brightness::Custom(bb));
                     leds.set(
@@ -911,34 +989,27 @@ pub async fn run(
                             leds.unset(1, Led::Button);
                         }
                     } else if einv_fade == 0 {
-                        leds.set(1, Led::Button, color_b, Brightness::Custom(bb));
+                        leds.set(1, Led::Button, color_a, Brightness::Custom(bb));
                     }
                 }
                 LatchLayer::Third if flash_left == 0 => {
-                    // Length meters: white Top ∝ len, Bottom band, buttons track band+len.
+                    // Length: shortest hue from each btn base → its complement; bright ∝ len.
+                    let logic_c = Logic::from_u8(glob_logic.get()).color();
+                    let ca = length_grad_color(len_a, logic_c, complement_color(logic_c));
+                    let cb = length_grad_color(len_b, color_a, complement_color(color_a));
                     let ba = len_meter_bright(len_a);
                     let bb = len_meter_bright(len_b);
-                    leds.set(0, Led::Top, Color::White, Brightness::Custom(ba));
-                    leds.set(1, Led::Top, Color::White, Brightness::Custom(bb));
-                    leds.set(0, Led::Bottom, length_band_color(len_a), Brightness::Mid);
-                    leds.set(1, Led::Bottom, length_band_color(len_b), Brightness::Mid);
-                    leds.set(
-                        0,
-                        Led::Button,
-                        length_band_color(len_a),
-                        Brightness::Custom(ba),
-                    );
+                    leds.set(0, Led::Top, ca, Brightness::Custom(ba));
+                    leds.set(1, Led::Top, cb, Brightness::Custom(bb));
+                    leds.set(0, Led::Bottom, ca, Brightness::Mid);
+                    leds.set(1, Led::Bottom, cb, Brightness::Mid);
+                    leds.set(0, Led::Button, ca, Brightness::Custom(ba));
                     if muted {
                         if einv_fade == 0 {
                             leds.unset(1, Led::Button);
                         }
                     } else if einv_fade == 0 {
-                        leds.set(
-                            1,
-                            Led::Button,
-                            length_band_color(len_b),
-                            Brightness::Custom(bb),
-                        );
+                        leds.set(1, Led::Button, cb, Brightness::Custom(bb));
                     }
                 }
                 _ => {}

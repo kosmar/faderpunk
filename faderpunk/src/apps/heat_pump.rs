@@ -291,7 +291,7 @@ fn division_to_fader(d: usize) -> u16 {
     ((d * 4095) / (n as u32 - 1)) as u16
 }
 
-#[embassy_executor::task(pool_size = 16 / CHANNELS)]
+#[embassy_executor::task(pool_size = 4)]
 pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMutex, bool>) {
     let param_store = ParamStore::<Params>::new(
         app.app_id,

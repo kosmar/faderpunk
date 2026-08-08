@@ -1,11 +1,13 @@
 //! Contura — melodic contour over selectable 12-TET pitch-class sets.
 //!
-//! Generates phrases with mixed note lengths. Scale sets are conventional
-//! interval-pattern labels (not claims about living musical practice).
-//! Optional follow of the device quantizer tonic / scale.
+//! Generates phrases with mixed note lengths. Each scale set carries a compact
+//! melodic feel (contour, leap, density bias, sustain, tonic pull, ornaments).
+//! Faders: Main = interval, Alt = phrase length, Third = note density.
+//! Labels and feels are conventional interval-pattern flavors — not claims
+//! about living musical practice. Optional follow of device tonic / scale.
 
 use embassy_futures::{
-    join::{join, join5},
+    join::{join, join3, join5},
     select::{select, select3},
 };
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, signal::Signal};
@@ -35,11 +37,10 @@ const LED_BRIGHTNESS: Brightness = Brightness::Mid;
 const OCTAVE_BLINK_MS: u16 = 250;
 const BUTTON_DUCK_MS: u16 = 25;
 
-const MIN_PHRASE: u8 = 4;
-const MAX_PHRASE: u8 = 24;
+const MIN_PHRASE: u8 = 3;
+const MAX_PHRASE: u8 = 28;
 const POOL_CAP: usize = 48;
 
-/// Clock divisions (24 PPQN ticks). Index matches Division param.
 /// Clock divisions (24 PPQN ticks). Index matches Division param.
 const RESOLUTION: [u32; 12] = [384, 192, 96, 48, 24, 16, 12, 8, 6, 4, 3, 2];
 const DIV_LABELS: &[&str] = &[
@@ -124,6 +125,248 @@ const SCALE_MASKS: [u16; 20] = [
 
 const SCALE_COUNT: usize = 20;
 
+/// Melodic biases keyed to each scale label.
+/// Stylistic 12-TET contour flavors only — not ethnographic claims.
+#[derive(Clone, Copy)]
+struct ScaleFeel {
+    /// Added to density before rest roll (higher → fewer rests).
+    density_bias: i16,
+    /// Scales max interval step (128 = ×1.0).
+    leap_q8: u16,
+    /// Shifts long-note bias in duration picks.
+    sustain_bias: i16,
+    /// Chance (0..=4095) to snap toward a tonic pitch-class.
+    tonic_pull: u16,
+    /// 0 arch · 1 descend-heavy · 2 undulate · 3 plateau/neighbor.
+    contour: u8,
+    /// Extra chance (0..=4095) to force a single-degree step.
+    step_glue: u16,
+    /// Chance (0..=4095) of a neighbor hop before settling.
+    ornament: u16,
+}
+
+const FEEL_NEUTRAL: ScaleFeel = ScaleFeel {
+    density_bias: 0,
+    leap_q8: 128,
+    sustain_bias: 0,
+    tonic_pull: 400,
+    contour: 0,
+    step_glue: 800,
+    ornament: 200,
+};
+
+/// Parallel to SCALE_LABELS / SCALE_MASKS.
+const SCALE_FEELS: [ScaleFeel; SCALE_COUNT] = [
+    // Ionian — balanced arch, mild tonic gravity
+    ScaleFeel {
+        density_bias: 200,
+        leap_q8: 128,
+        sustain_bias: 0,
+        tonic_pull: 700,
+        contour: 0,
+        step_glue: 900,
+        ornament: 250,
+    },
+    // Dorian — stepwise, gentle undulation
+    ScaleFeel {
+        density_bias: 150,
+        leap_q8: 110,
+        sustain_bias: 200,
+        tonic_pull: 500,
+        contour: 2,
+        step_glue: 1200,
+        ornament: 350,
+    },
+    // Phrygian — descend-heavy, narrower motion
+    ScaleFeel {
+        density_bias: -100,
+        leap_q8: 96,
+        sustain_bias: 150,
+        tonic_pull: 900,
+        contour: 1,
+        step_glue: 1400,
+        ornament: 400,
+    },
+    // Mixolydian — brighter, more leaps, denser
+    ScaleFeel {
+        density_bias: 400,
+        leap_q8: 150,
+        sustain_bias: -200,
+        tonic_pull: 450,
+        contour: 0,
+        step_glue: 600,
+        ornament: 300,
+    },
+    // Aeolian — longer tones, descending bias
+    ScaleFeel {
+        density_bias: -50,
+        leap_q8: 112,
+        sustain_bias: 450,
+        tonic_pull: 850,
+        contour: 1,
+        step_glue: 1100,
+        ornament: 280,
+    },
+    // Pent Maj — sticky steps, lively density
+    ScaleFeel {
+        density_bias: 350,
+        leap_q8: 90,
+        sustain_bias: -150,
+        tonic_pull: 600,
+        contour: 0,
+        step_glue: 1800,
+        ornament: 200,
+    },
+    // Pent Min — stepwise with downward lean
+    ScaleFeel {
+        density_bias: 250,
+        leap_q8: 92,
+        sustain_bias: 100,
+        tonic_pull: 650,
+        contour: 1,
+        step_glue: 1700,
+        ornament: 220,
+    },
+    // Blues Min — leaps, rests, neighbor turns
+    ScaleFeel {
+        density_bias: -250,
+        leap_q8: 170,
+        sustain_bias: -100,
+        tonic_pull: 550,
+        contour: 2,
+        step_glue: 500,
+        ornament: 900,
+    },
+    // In Sen — sparse, sustained, narrow
+    ScaleFeel {
+        density_bias: -450,
+        leap_q8: 80,
+        sustain_bias: 700,
+        tonic_pull: 1000,
+        contour: 1,
+        step_glue: 1600,
+        ornament: 500,
+    },
+    // Yo — open rising pent flavor
+    ScaleFeel {
+        density_bias: 300,
+        leap_q8: 100,
+        sustain_bias: -50,
+        tonic_pull: 500,
+        contour: 0,
+        step_glue: 1500,
+        ornament: 250,
+    },
+    // Hirajoshi — sparse ornaments, plateau
+    ScaleFeel {
+        density_bias: -350,
+        leap_q8: 85,
+        sustain_bias: 550,
+        tonic_pull: 800,
+        contour: 3,
+        step_glue: 1500,
+        ornament: 750,
+    },
+    // Bhairav — sustained, strong tonic, occasional leap
+    ScaleFeel {
+        density_bias: -150,
+        leap_q8: 140,
+        sustain_bias: 650,
+        tonic_pull: 1400,
+        contour: 3,
+        step_glue: 1000,
+        ornament: 450,
+    },
+    // Kafi — dorian-adjacent undulation
+    ScaleFeel {
+        density_bias: 100,
+        leap_q8: 115,
+        sustain_bias: 250,
+        tonic_pull: 600,
+        contour: 2,
+        step_glue: 1100,
+        ornament: 400,
+    },
+    // Bhupali — bright pent ascent
+    ScaleFeel {
+        density_bias: 320,
+        leap_q8: 95,
+        sustain_bias: -100,
+        tonic_pull: 550,
+        contour: 0,
+        step_glue: 1600,
+        ornament: 200,
+    },
+    // Hijaz — dramatic leaps, then glue
+    ScaleFeel {
+        density_bias: -100,
+        leap_q8: 185,
+        sustain_bias: 300,
+        tonic_pull: 1100,
+        contour: 1,
+        step_glue: 700,
+        ornament: 650,
+    },
+    // Bayati — descending with ornaments
+    ScaleFeel {
+        density_bias: 0,
+        leap_q8: 105,
+        sustain_bias: 200,
+        tonic_pull: 900,
+        contour: 1,
+        step_glue: 1300,
+        ornament: 700,
+    },
+    // Rast — balanced, sustained, tonic-centered
+    ScaleFeel {
+        density_bias: 150,
+        leap_q8: 120,
+        sustain_bias: 500,
+        tonic_pull: 1200,
+        contour: 0,
+        step_glue: 1000,
+        ornament: 350,
+    },
+    // Gamelan — ostinato neighbors, even short tones
+    ScaleFeel {
+        density_bias: 500,
+        leap_q8: 70,
+        sustain_bias: -400,
+        tonic_pull: 300,
+        contour: 3,
+        step_glue: 2200,
+        ornament: 1100,
+    },
+    // Hungarian — wide leaps, held peaks
+    ScaleFeel {
+        density_bias: -200,
+        leap_q8: 200,
+        sustain_bias: 600,
+        tonic_pull: 750,
+        contour: 0,
+        step_glue: 400,
+        ornament: 500,
+    },
+    // Folk — dance density, mixed leaps
+    ScaleFeel {
+        density_bias: 450,
+        leap_q8: 155,
+        sustain_bias: -250,
+        tonic_pull: 500,
+        contour: 2,
+        step_glue: 700,
+        ornament: 400,
+    },
+];
+
+fn scale_feel(follow_scale: bool, scale_set: usize) -> ScaleFeel {
+    if follow_scale {
+        FEEL_NEUTRAL
+    } else {
+        SCALE_FEELS[scale_set.min(SCALE_COUNT - 1)]
+    }
+}
+
 pub static CONFIG: Config<PARAMS> = Config::new(
     "Contura",
     "Melodic contour over selectable 12-TET scale sets, anchored to the device tonic",
@@ -161,11 +404,11 @@ pub static CONFIG: Config<PARAMS> = Config::new(
 })
 .add_param(Param::Enum {
     name: "Scale set",
-    variants: &SCALE_LABELS,
+    variants: SCALE_LABELS,
 })
 .add_param(Param::Enum {
     name: "Division",
-    variants: &DIV_LABELS,
+    variants: DIV_LABELS,
 });
 
 pub struct Params {
@@ -187,13 +430,13 @@ impl Default for Params {
             midi_channel: MidiChannel::default(),
             base_note: MidiNote::from(48),
             color: Color::Orange,
-            midi_out: MidiOut::default(),
+            midi_out: MidiOut([true, false, false]), // USB only — all-ports floods DIN+USB
             range: Range::_0_10V,
             vpo: VoltPerOct::Standard,
             follow_tonic: true,
             follow_scale: false,
             scale_set: 0, // Ionian
-            division: 4,  // 1/16
+            division: 3, // 1/8 — quieter default on crowded playground USB
         }
     }
 }
@@ -237,10 +480,10 @@ impl AppParams for Params {
 pub struct Storage {
     /// Main fader: max interval width (scale degrees).
     interval_saved: u16,
-    /// Shift fader: phrase length + density macro.
+    /// Shift fader: phrase length only (steps).
     phrase_saved: u16,
-    /// Button+fader: expressivity (repeat ↔ leap / long notes).
-    express_saved: u16,
+    /// Button+fader: note density (rests ↔ continuous).
+    density_saved: u16,
     scale_set: u8,
     octaves: u8,
     muted: bool,
@@ -251,7 +494,7 @@ impl Default for Storage {
         Self {
             interval_saved: 2048,
             phrase_saved: 2048,
-            express_saved: 2048,
+            density_saved: 1800,
             scale_set: 0,
             octaves: 2,
             muted: false,
@@ -272,6 +515,24 @@ fn cycle_octaves(o: u8) -> u8 {
     } else {
         o + 1
     }
+}
+
+/// Scale list wraps in both directions (Ionian ↔ Folk).
+fn wrap_scale(i: isize) -> u8 {
+    let n = SCALE_COUNT as isize;
+    (((i % n) + n) % n) as u8
+}
+
+fn next_scale(cur: u8) -> u8 {
+    wrap_scale(cur as isize + 1)
+}
+
+fn prev_scale(cur: u8) -> u8 {
+    wrap_scale(cur as isize - 1)
+}
+
+fn clamp_scale(s: u8) -> u8 {
+    (s as usize).min(SCALE_COUNT - 1) as u8
 }
 
 fn set_color(idx: u8) -> Color {
@@ -350,30 +611,85 @@ fn build_pool(mask: u16, tonic: u8, base: u8, octaves: u8) -> Vec<u8, POOL_CAP> 
 }
 
 fn phrase_from_fader(v: u16) -> u8 {
+    // Wide audible span: short motifs ↔ long arcs.
     let span = (MAX_PHRASE - MIN_PHRASE) as u32;
     (MIN_PHRASE as u32 + (v as u32 * span) / 4095) as u8
 }
 
+/// Third fader → rest probability gate (higher = fewer rests).
+/// Quadratic curve so the top half clearly densifies.
 fn density_from_fader(v: u16) -> u16 {
-    900 + ((v as u32 * 3195) / 4095) as u16
+    let t = v as u32;
+    let curved = (t * t) / 4095;
+    (350 + (curved * 3700) / 4095) as u16
 }
 
+/// Main fader → max scale-degree step. Bottom sticks to steps of 1;
+/// top opens wide leaps (quadratic).
 fn max_step_from_fader(v: u16, pool_len: usize) -> usize {
-    let max = (pool_len / 2).clamp(1, 8);
-    1 + ((v as usize * (max.saturating_sub(1))) / 4095)
+    let max = (pool_len / 2).clamp(1, 12);
+    let t = v as u32;
+    let curved = (t * t) / 4095;
+    1 + ((curved as usize * max.saturating_sub(1)) / 4095)
 }
 
-fn pick_duration(die: &Die, express: u16, remain: u8) -> u8 {
+/// Expressivity is no longer a fader — ScaleFeel + Main interval drive it.
+fn express_from_feel_and_interval(feel: ScaleFeel, interval: u16) -> u16 {
+    let leap = (feel.leap_q8 as i32 - 128) * 10;
+    let from_main = (interval as i32 - 2048) / 2;
+    (2048 + leap + feel.sustain_bias as i32 + from_main).clamp(0, 4095) as u16
+}
+
+fn pick_duration(die: &Die, express: u16, remain: u8, feel: ScaleFeel) -> u8 {
+    // One RNG call — keep Contura's clock tick short (playground CLOCK_PUBSUB).
     let roll = die.roll();
-    let long_bias = express;
-    let dur = if roll < 1200 + (4095 - long_bias) / 2 {
+    let long_bias = (express as i32 + feel.sustain_bias as i32).clamp(0, 4095) as u16;
+    let short_gate = 1200u32 + (4095u32 - long_bias as u32) / 2;
+    let mid_gate = 2800u32.saturating_add_signed(feel.sustain_bias as i32 / 2);
+    let dur = if (roll as u32) < short_gate {
         1
-    } else if roll < 2800 {
-        2 + (die.roll() % 3) as u8
+    } else if (roll as u32) < mid_gate {
+        2 + ((roll % 3) as u8)
     } else {
         (remain / 2).max(3).min(remain.max(1))
     };
     dur.clamp(1, remain.max(1))
+}
+
+fn shaped_max_step(interval: u16, pool_len: usize, feel: ScaleFeel) -> usize {
+    let base = max_step_from_fader(interval, pool_len);
+    let scaled = ((base as u32 * feel.leap_q8 as u32) / 128).max(1) as usize;
+    scaled.clamp(1, (pool_len / 2).clamp(1, 10))
+}
+
+fn contour_rising(contour: u8, phrase_step: u8, phrase_len: u8) -> bool {
+    let len = phrase_len.max(1);
+    match contour {
+        1 => phrase_step < len / 4,
+        2 => (phrase_step / 2).is_multiple_of(2),
+        3 => phrase_step < len / 3,
+        _ => phrase_step < len.saturating_add(1) / 2,
+    }
+}
+
+fn nearest_tonic_index(pool: &[u8], cur: usize, tonic: u8) -> usize {
+    if pool.is_empty() {
+        return 0;
+    }
+    let tonic = tonic % 12;
+    let mut best = cur.min(pool.len() - 1);
+    let mut best_dist = i16::MAX;
+    for (i, &n) in pool.iter().enumerate() {
+        if n % 12 != tonic {
+            continue;
+        }
+        let dist = (i as i16 - cur as i16).abs();
+        if dist < best_dist {
+            best_dist = dist;
+            best = i;
+        }
+    }
+    best
 }
 
 fn pick_next_index(
@@ -383,26 +699,37 @@ fn pick_next_index(
     max_step: usize,
     express: u16,
     rising: bool,
+    feel: ScaleFeel,
 ) -> usize {
     if pool_len <= 1 {
         return 0;
     }
+    // Single roll sliced into decisions — was up to 6 rolls and starved CLOCK_PUBSUB.
+    let r = die.roll();
     let repeat_chance = 4095u16.saturating_sub(express) / 3;
-    if die.roll() < repeat_chance {
+    if r < repeat_chance {
         return cur;
     }
-    let step = 1 + (die.roll() as usize % max_step.max(1));
-    let signed = if rising { step as i16 } else { -(step as i16) };
-    let signed = if express > 2800 && die.roll() < 600 {
-        -signed
-    } else {
-        signed
-    };
+
+    let mut step = 1 + ((r as usize >> 2) % max_step.max(1));
+    if (r & 0x3ff) < feel.step_glue {
+        step = 1;
+    }
+
+    let mut signed = if rising { step as i16 } else { -(step as i16) };
+    if express > 2800 && (r & 0xfff) < 600 {
+        signed = -signed;
+    }
+    if (r >> 1) < feel.ornament {
+        signed = if (r & 1) == 0 { 1 } else { -1 };
+    }
+
     let next = cur as i16 + signed;
     next.clamp(0, pool_len as i16 - 1) as usize
 }
 
-#[embassy_executor::task(pool_size = 16 / CHANNELS)]
+/// Playground: heavy WIP apps use pool_size 4 (16 instances thrash Core-1 stack).
+#[embassy_executor::task(pool_size = 4)]
 pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMutex, bool>) {
     let param_store = ParamStore::<Params>::new(app.app_id, app.layout_id, Params::default());
     let storage = ManagedStorage::<Storage>::new(app.app_id, app.layout_id);
@@ -464,27 +791,23 @@ pub async fn run(
     let midi = app.use_midi_output(midi_out, midi_chan, false);
     let cv = app.make_out_jack(0, range).await;
 
-    let (interval0, phrase0, express0, scale0, octaves0, muted0) = storage.query(|s| {
+    let (interval0, phrase0, density0, _scale0, octaves0, muted0) = storage.query(|s| {
         (
             s.interval_saved,
             s.phrase_saved,
-            s.express_saved,
+            s.density_saved,
             s.scale_set,
             s.octaves,
             s.muted,
         )
     });
 
-    let scale_init = if scale0 == 0 {
-        scale_param as u8
-    } else {
-        scale0
-    }
-    .min((SCALE_COUNT - 1) as u8);
+    let scale_init = clamp_scale(scale_param as u8);
+    storage.modify(|s| s.scale_set = scale_init);
 
     let glob_interval = app.make_global(interval0);
     let glob_phrase = app.make_global(phrase0);
-    let glob_express = app.make_global(express0);
+    let glob_density = app.make_global(density0);
     let glob_div = app.make_global(RESOLUTION[division.min(RESOLUTION.len() - 1)]);
     let glob_scale = app.make_global(scale_init);
     let glob_octaves = app.make_global(clamp_octaves(octaves0));
@@ -494,6 +817,11 @@ pub async fn run(
     let glob_octave_blink = app.make_global(0u16);
     let glob_button_duck = app.make_global(0u16);
     let long_press_fired = app.make_global(false);
+    let glob_shift_chord = app.make_global(false);
+    // Scale/octave change: clock path note-offs before pool rebuild.
+    let glob_resets_voice = app.make_global(false);
+    let glob_scale_dirty = app.make_global(false);
+    let glob_fader_dirty = app.make_global(false);
 
     if muted0 {
         leds.unset(0, Led::Button);
@@ -512,7 +840,6 @@ pub async fn run(
         let mut pool: Vec<u8, POOL_CAP> = Vec::new();
         let mut phrase_step: u8 = 0;
         let mut remain: u8 = 0;
-        let mut rising = true;
         let mut gated = false;
         let rebuild = |pool: &mut Vec<u8, POOL_CAP>, scale_set: u8, octaves: u8| -> usize {
             let mask = active_mask(follow_scale, scale_set as usize);
@@ -537,8 +864,6 @@ pub async fn run(
                     pending_note_off.set(false);
                     pending_silence.set(true);
                     glob_gate_on.set(false);
-                    leds.unset(0, Led::Top);
-                    leds.unset(0, Led::Bottom);
                 }
                 ClockEvent::Start => {}
                 ClockEvent::Tick => {
@@ -553,19 +878,33 @@ pub async fn run(
                     let octaves = glob_octaves.get();
                     let interval = glob_interval.get();
                     let phrase_f = glob_phrase.get();
-                    let express = glob_express.get();
+                    let density_f = glob_density.get();
 
-                    if scale_set != last_scale || octaves != last_oct {
+                    if scale_set != last_scale || octaves != last_oct || glob_resets_voice.get() {
+                        glob_resets_voice.set(false);
+                        if gated {
+                            pending_note_off.set(true);
+                            gated = false;
+                            glob_gate_on.set(false);
+                        }
+                        remain = 0;
                         let plen = rebuild(&mut pool, scale_set, octaves);
                         last_scale = scale_set;
                         last_oct = octaves;
-                        idx = idx.min(plen.saturating_sub(1));
+                        idx = (plen / 3).min(plen.saturating_sub(1));
+                        phrase_step = 0;
                     }
-                    let plen = pool.len().max(1);
+                    let plen = pool.len();
+                    if plen == 0 {
+                        continue;
+                    }
+                    let feel = scale_feel(follow_scale, scale_set as usize);
                     let phrase_len = phrase_from_fader(phrase_f).max(1);
-                    let density = density_from_fader(phrase_f);
-                    let max_step = max_step_from_fader(interval, plen);
-                    idx = idx.min(plen.saturating_sub(1));
+                    let density = (density_from_fader(density_f) as i32 + feel.density_bias as i32)
+                        .clamp(200, 4090) as u16;
+                    let max_step = shaped_max_step(interval, plen, feel);
+                    let express = express_from_feel_and_interval(feel, interval);
+                    idx = idx.min(plen - 1);
 
                     if muted {
                         if gated {
@@ -577,11 +916,7 @@ pub async fn run(
                         continue;
                     }
 
-                    if phrase_step == 0 {
-                        rising = true;
-                    } else if phrase_step >= phrase_len / 2 {
-                        rising = false;
-                    }
+                    let rising = contour_rising(feel.contour, phrase_step, phrase_len);
 
                     // Hold path: count down first so a new note's duration is not
                     // consumed on the same step it starts.
@@ -592,31 +927,45 @@ pub async fn run(
                             gated = false;
                             glob_gate_on.set(false);
                         }
-                    } else if die.roll() > density {
-                        // Rest for one division step.
-                        if gated {
-                            pending_note_off.set(true);
-                            gated = false;
-                            glob_gate_on.set(false);
-                        }
-                        remain = 1;
                     } else {
-                        let steps_left = phrase_len.saturating_sub(phrase_step).max(1);
-                        if phrase_step == 0 || steps_left <= 2 {
-                            if die.roll() < 2800 {
-                                idx = idx.saturating_sub(max_step.min(idx));
+                        // One shared roll for rest vs note + phrase anchors.
+                        let r = die.roll();
+                        if r > density {
+                            if gated {
+                                pending_note_off.set(true);
+                                gated = false;
+                                glob_gate_on.set(false);
                             }
+                            remain = 1;
                         } else {
-                            idx = pick_next_index(&die, idx, plen, max_step, express, rising);
-                        }
+                            let steps_left = phrase_len.saturating_sub(phrase_step).max(1);
+                            let tonic_pc = active_tonic(follow_tonic, base_note);
+                            if phrase_step == 0 || steps_left <= 2 {
+                                if r < 2800 {
+                                    idx = idx.saturating_sub(max_step.min(idx));
+                                }
+                                if (r & 0xfff) < feel.tonic_pull {
+                                    idx = nearest_tonic_index(pool.as_slice(), idx, tonic_pc);
+                                }
+                            } else {
+                                idx = pick_next_index(
+                                    &die, idx, plen, max_step, express, rising, feel,
+                                );
+                                if (r >> 2) < feel.tonic_pull / 2 {
+                                    idx = nearest_tonic_index(pool.as_slice(), idx, tonic_pc);
+                                }
+                            }
 
-                        remain = pick_duration(&die, express, steps_left).max(1);
-                        let note = pool[idx.min(plen - 1)];
-                        pending_note.set(note);
-                        pending_fire.set(true);
-                        gated = true;
-                        glob_gate_on.set(true);
-                        glob_button_duck.set(BUTTON_DUCK_MS);
+                            remain = pick_duration(&die, express, steps_left, feel).max(1);
+                            let Some(&note) = pool.get(idx.min(plen - 1)) else {
+                                continue;
+                            };
+                            pending_note.set(note);
+                            pending_fire.set(true);
+                            gated = true;
+                            glob_gate_on.set(true);
+                            glob_button_duck.set(BUTTON_DUCK_MS);
+                        }
                     }
 
                     phrase_step = phrase_step.wrapping_add(1);
@@ -630,29 +979,29 @@ pub async fn run(
 
     let fut_voice = async {
         let mut note_on: Option<u8> = None;
+        // Soft-limit MIDI note-ons so Contura doesn't hog the shared USB bulk
+        // pipe (clock realtime shares that endpoint). CV always updates.
+        let mut midi_quiet_ms: u16 = 0;
         loop {
             app.delay_millis(1).await;
+            midi_quiet_ms = midi_quiet_ms.saturating_sub(1);
 
             if pending_silence.get() {
                 pending_silence.set(false);
                 pending_fire.set(false);
                 pending_note_off.set(false);
                 if let Some(n) = note_on.take() {
-                    midi.send_note_off(MidiNote::from(n)).await;
+                    midi.try_send_note_off(MidiNote::from(n));
                 }
                 cv.set_value(0);
-                leds.unset(0, Led::Top);
-                leds.unset(0, Led::Bottom);
                 continue;
             }
 
             if pending_note_off.get() {
                 pending_note_off.set(false);
                 if let Some(n) = note_on.take() {
-                    midi.send_note_off(MidiNote::from(n)).await;
+                    midi.try_send_note_off(MidiNote::from(n));
                 }
-                // Keep pitch CV; clear gate cue.
-                leds.unset(0, Led::Top);
             }
 
             if pending_fire.get() {
@@ -661,18 +1010,21 @@ pub async fn run(
                     continue;
                 }
                 let note = pending_note.get();
-                if let Some(old) = note_on {
-                    if old != note {
-                        midi.send_note_off(MidiNote::from(old)).await;
-                    }
-                }
+                let pitch_changed = note_on != Some(note);
                 let pitch = note_to_pitch(note);
                 cv.set_value(pitch.as_counts(range, vpo));
-                midi.send_note_on(MidiNote::from(note), 3200).await;
+
+                // Pitch changes always go out; same-note retriggers respect the gap.
+                if pitch_changed || midi_quiet_ms == 0 {
+                    if let Some(old) = note_on {
+                        if old != note {
+                            midi.try_send_note_off(MidiNote::from(old));
+                        }
+                    }
+                    midi.try_send_note_on(MidiNote::from(note), 3200);
+                    midi_quiet_ms = 10;
+                }
                 note_on = Some(note);
-                leds.set(0, Led::Top, led_color, Brightness::High);
-                let bright = Brightness::Custom(((note as u16).saturating_mul(2)).min(255) as u8);
-                leds.set(0, Led::Bottom, led_color, bright);
             }
         }
     };
@@ -689,22 +1041,25 @@ pub async fn run(
             let target = match layer {
                 LatchLayer::Main => storage.query(|s| s.interval_saved),
                 LatchLayer::Alt => storage.query(|s| s.phrase_saved),
-                LatchLayer::Third => storage.query(|s| s.express_saved),
+                LatchLayer::Third => storage.query(|s| s.density_saved),
             };
 
             if let Some(v) = latch.update(faders.get_value(), layer, target) {
                 match layer {
                     LatchLayer::Main => {
                         glob_interval.set(v);
-                        storage.modify_and_save(|s| s.interval_saved = v);
+                        storage.modify(|s| s.interval_saved = v);
+                        glob_fader_dirty.set(true);
                     }
                     LatchLayer::Alt => {
                         glob_phrase.set(v);
-                        storage.modify_and_save(|s| s.phrase_saved = v);
+                        storage.modify(|s| s.phrase_saved = v);
+                        glob_fader_dirty.set(true);
                     }
                     LatchLayer::Third => {
-                        glob_express.set(v);
-                        storage.modify_and_save(|s| s.express_saved = v);
+                        glob_density.set(v);
+                        storage.modify(|s| s.density_saved = v);
+                        glob_fader_dirty.set(true);
                     }
                 }
             }
@@ -713,31 +1068,32 @@ pub async fn run(
 
     let fut_buttons = async {
         loop {
-            buttons.wait_for_any_down().await;
-            let shift = buttons.is_shift_pressed();
+            let (_, down_shift) = buttons.wait_for_any_down().await;
+            let shift_chord = down_shift || buttons.is_shift_pressed();
+            glob_shift_chord.set(shift_chord);
             long_press_fired.set(false);
             glob_fader_moved.set(false);
             buttons.wait_for_up(0).await;
+            glob_shift_chord.set(false);
 
             if long_press_fired.get() {
                 continue;
             }
 
-            if shift {
-                // Shift+short: previous scale set.
-                let scale = glob_scale.get() as usize;
-                let prev = if scale == 0 {
-                    SCALE_COUNT - 1
-                } else {
-                    scale - 1
-                };
-                glob_scale.set(prev as u8);
-                storage.modify_and_save(|s| s.scale_set = prev as u8);
-                leds.set(0, Led::Bottom, set_color(prev as u8), Brightness::High);
+            if shift_chord {
+                // Shift+short: previous scale set (wraps Folk → Ionian).
+                let prev = prev_scale(glob_scale.get());
+                glob_scale.set(prev);
+                glob_resets_voice.set(true);
+                glob_scale_dirty.set(true);
+                storage.modify(|s| s.scale_set = prev);
+                leds.set(0, Led::Bottom, set_color(prev), Brightness::High);
             } else if !glob_fader_moved.get() {
                 let muted = glob_muted.toggle();
-                storage.modify_and_save(|s| s.muted = muted);
+                storage.modify(|s| s.muted = muted);
+                glob_fader_dirty.set(true);
                 if muted {
+                    pending_silence.set(true);
                     leds.unset(0, Led::Button);
                     leds.unset(0, Led::Top);
                     leds.unset(0, Led::Bottom);
@@ -755,28 +1111,55 @@ pub async fn run(
 
     let fut_long = async {
         loop {
-            buttons.wait_for_any_long_press().await;
+            let (_, is_shift_now) = buttons.wait_for_any_long_press().await;
             long_press_fired.set(true);
+            let shift_chord =
+                glob_shift_chord.get() || is_shift_now || buttons.is_shift_pressed();
 
-            if buttons.is_shift_pressed() {
+            if shift_chord {
                 let oct = cycle_octaves(glob_octaves.get());
                 glob_octaves.set(oct);
-                storage.modify_and_save(|s| s.octaves = oct);
+                glob_resets_voice.set(true);
+                storage.modify(|s| s.octaves = oct);
+                glob_fader_dirty.set(true);
                 leds.set(0, Led::Top, OCT_COLORS[(oct - 1) as usize], Brightness::High);
                 glob_octave_blink.set(OCTAVE_BLINK_MS);
             } else if !glob_fader_moved.get() {
-                // Long: next scale set.
-                let next = (glob_scale.get() as usize + 1) % SCALE_COUNT;
-                glob_scale.set(next as u8);
-                storage.modify_and_save(|s| s.scale_set = next as u8);
-                leds.set(0, Led::Button, set_color(next as u8), Brightness::High);
+                // Long: next scale set (wraps Folk → Ionian).
+                let next = next_scale(glob_scale.get());
+                glob_scale.set(next);
+                glob_resets_voice.set(true);
+                glob_scale_dirty.set(true);
+                storage.modify(|s| s.scale_set = next);
+                leds.set(0, Led::Button, set_color(next), Brightness::High);
             }
         }
     };
 
-    let fut_leds = async {
+    let fut_scale_persist = async {
         loop {
-            app.delay_millis(1).await;
+            app.delay_millis(400).await;
+            let scale_dirty = glob_scale_dirty.get();
+            let fader_dirty = glob_fader_dirty.get();
+            if !scale_dirty && !fader_dirty {
+                continue;
+            }
+            glob_scale_dirty.set(false);
+            glob_fader_dirty.set(false);
+            if scale_dirty {
+                let s = clamp_scale(glob_scale.get());
+                storage.modify(|st| st.scale_set = s);
+            }
+            // One FRAM debounce for faders + scale/octaves — never in the clock path.
+            storage.modify_and_save(|_| {});
+        }
+    };
+
+    let fut_leds = async {
+        let mut last_layer = LatchLayer::Main;
+        let mut last_gate = false;
+        loop {
+            app.delay_millis(8).await;
 
             let layer = if buttons.is_shift_pressed() && !buttons.is_button_pressed(0) {
                 LatchLayer::Alt
@@ -788,15 +1171,17 @@ pub async fn run(
             glob_latch.set(layer);
 
             if glob_octave_blink.get() > 0 {
-                glob_octave_blink.set(glob_octave_blink.get().saturating_sub(1));
-                if glob_octave_blink.get() == 0 {
+                let left = glob_octave_blink.get().saturating_sub(8);
+                glob_octave_blink.set(left);
+                if left == 0 {
                     leds.unset(0, Led::Top);
                 }
             }
             if glob_button_duck.get() > 0 {
-                glob_button_duck.set(glob_button_duck.get().saturating_sub(1));
+                let left = glob_button_duck.get().saturating_sub(8);
+                glob_button_duck.set(left);
                 if !glob_muted.get() {
-                    let bright = if glob_button_duck.get() > 0 {
+                    let bright = if left > 0 {
                         Brightness::Low
                     } else {
                         LED_BRIGHTNESS
@@ -805,20 +1190,31 @@ pub async fn run(
                 }
             }
 
-            // Leave Top/Bottom to the voice engine on Main so note cues stay visible.
-            match layer {
-                LatchLayer::Alt => {
-                    leds.set(0, Led::Bottom, Color::White, Brightness::Low);
-                }
-                LatchLayer::Third => {
-                    leds.set(0, Led::Bottom, set_color(glob_scale.get()), Brightness::Low);
-                }
-                LatchLayer::Main => {
-                    if glob_gate_on.get() {
-                        leds.set(0, Led::Top, led_color, Brightness::Mid);
+            let gate = glob_gate_on.get();
+            if layer != last_layer {
+                match layer {
+                    LatchLayer::Alt => {
+                        leds.set(0, Led::Bottom, Color::White, Brightness::Low);
+                    }
+                    LatchLayer::Third => {
+                        leds.set(0, Led::Bottom, set_color(glob_scale.get()), Brightness::Low);
+                    }
+                    LatchLayer::Main => {
+                        if !gate {
+                            leds.unset(0, Led::Bottom);
+                        }
                     }
                 }
             }
+            if layer == LatchLayer::Main && gate != last_gate {
+                if gate {
+                    leds.set(0, Led::Top, led_color, Brightness::Mid);
+                } else {
+                    leds.unset(0, Led::Top);
+                }
+            }
+            last_gate = gate;
+            last_layer = layer;
         }
     };
 
@@ -830,7 +1226,7 @@ pub async fn run(
                         (
                             st.interval_saved,
                             st.phrase_saved,
-                            st.express_saved,
+                            st.density_saved,
                             st.scale_set,
                             st.octaves,
                             st.muted,
@@ -838,10 +1234,11 @@ pub async fn run(
                     });
                     glob_interval.set(i);
                     glob_phrase.set(p);
-                    glob_express.set(e);
-                    glob_scale.set(s.min((SCALE_COUNT - 1) as u8));
+                    glob_density.set(e);
+                    glob_scale.set(clamp_scale(s));
                     glob_octaves.set(clamp_octaves(o));
                     glob_muted.set(m);
+                    glob_resets_voice.set(true);
                     let div = params.query(|p| p.division);
                     glob_div.set(RESOLUTION[div.min(RESOLUTION.len() - 1)]);
                 }
@@ -853,7 +1250,7 @@ pub async fn run(
     join5(
         join(fut_clock, fut_voice),
         fut_faders,
-        join(fut_buttons, fut_long),
+        join3(fut_buttons, fut_long, fut_scale_persist),
         fut_leds,
         fut_scene,
     )

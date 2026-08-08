@@ -562,9 +562,9 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
             midi_channel_hats: MidiChannel::default(),
             genre: 2, // House
             swing_max_pct: 50,
-            // Short drum triggers (see TRIG_MAX_TICKS); 100% → 2 PPQN ticks.
+            // Fraction of a 16th (same GATE % convention as Euclid/Turing).
             gatel: 100,
-            midi_out: MidiOut::default(),
+            midi_out: MidiOut([true, false, false]), // USB only — all-ports floods cable
             cv_jack: CV_JACK_OUT,
             range: Range::_0_10V,
             cv_dest: DEST_DENSITY,
@@ -715,12 +715,11 @@ pub async fn run(
         let mut gate_off_at: Option<u32> = None;
         // Fire-once guard per 16th slot; u32::MAX = nothing fired yet.
         let mut last_fired_slot = u32::MAX;
-        // Drum app: GATE % scales a short trigger (1..=TRIG_MAX_TICKS), never a
-        // sustained note. Feel/swing only move the attack — they must not stretch
-        // the gate into the next 16th (that looked like Chord Vamp holds).
-        const TRIG_MAX_TICKS: u32 = 2;
-        let gate_len =
-            (TRIG_MAX_TICKS as i32 * gatel / 100).clamp(1, TRIG_MAX_TICKS as i32) as u32;
+        // GATE % = fraction of a 16th (Euclid/Turing convention). Feel/swing only
+        // move the attack; `room` below still caps so late hits never smear into
+        // the next 16th (that looked like Chord Vamp holds).
+        let gate_len = ((SIXTEENTH as i32 * gatel) / 100)
+            .clamp(1, (SIXTEENTH as i32) - 1) as u32;
 
         loop {
             match clock.wait_for_event(ClockDivision::_1).await {
@@ -936,7 +935,7 @@ pub async fn run(
                                     jack.set_value(level);
                                 }
                                 // Never hold past this 16th — late Feel/swing
-                                // attacks still get a blip, not a smear.
+                                // attacks still get a shortened gate, not a smear.
                                 let room = SIXTEENTH.saturating_sub(phase).max(1);
                                 let pulse = gate_len.min(room);
                                 gate_off_at = Some(clkn.wrapping_add(pulse));
@@ -980,15 +979,15 @@ pub async fn run(
                 pending_snare.set(false);
                 pending_hats.set(false);
                 if kick_sounding {
-                    midi_kick.send_note_off(note_kick).await;
+                    midi_kick.try_send_note_off(note_kick);
                     kick_sounding = false;
                 }
                 if snare_sounding {
-                    midi_snare.send_note_off(note_snare).await;
+                    midi_snare.try_send_note_off(note_snare);
                     snare_sounding = false;
                 }
                 if hats_sounding {
-                    midi_hats.send_note_off(note_hats).await;
+                    midi_hats.try_send_note_off(note_hats);
                     hats_sounding = false;
                 }
                 continue;
@@ -998,15 +997,15 @@ pub async fn run(
             if pending_note_off.get() {
                 pending_note_off.set(false);
                 if kick_sounding {
-                    midi_kick.send_note_off(note_kick).await;
+                    midi_kick.try_send_note_off(note_kick);
                     kick_sounding = false;
                 }
                 if snare_sounding {
-                    midi_snare.send_note_off(note_snare).await;
+                    midi_snare.try_send_note_off(note_snare);
                     snare_sounding = false;
                 }
                 if hats_sounding {
-                    midi_hats.send_note_off(note_hats).await;
+                    midi_hats.try_send_note_off(note_hats);
                     hats_sounding = false;
                 }
             }
@@ -1014,13 +1013,10 @@ pub async fn run(
             if pending_kick.get() {
                 pending_kick.set(false);
                 if !glob_muted.get() {
-                    // Retrigger hygiene if a prior on was still held.
                     if kick_sounding {
-                        midi_kick.send_note_off(note_kick).await;
+                        midi_kick.try_send_note_off(note_kick);
                     }
-                    midi_kick
-                        .send_note_on(note_kick, pending_kick_vel.get())
-                        .await;
+                    midi_kick.try_send_note_on(note_kick, pending_kick_vel.get());
                     kick_sounding = true;
                 }
             }
@@ -1028,11 +1024,9 @@ pub async fn run(
                 pending_snare.set(false);
                 if !glob_muted.get() {
                     if snare_sounding {
-                        midi_snare.send_note_off(note_snare).await;
+                        midi_snare.try_send_note_off(note_snare);
                     }
-                    midi_snare
-                        .send_note_on(note_snare, pending_snare_vel.get())
-                        .await;
+                    midi_snare.try_send_note_on(note_snare, pending_snare_vel.get());
                     snare_sounding = true;
                 }
             }
@@ -1040,11 +1034,9 @@ pub async fn run(
                 pending_hats.set(false);
                 if !glob_muted.get() {
                     if hats_sounding {
-                        midi_hats.send_note_off(note_hats).await;
+                        midi_hats.try_send_note_off(note_hats);
                     }
-                    midi_hats
-                        .send_note_on(note_hats, pending_hats_vel.get())
-                        .await;
+                    midi_hats.try_send_note_on(note_hats, pending_hats_vel.get());
                     hats_sounding = true;
                 }
             }
