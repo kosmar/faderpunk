@@ -88,7 +88,7 @@
 <body>
 
 <h1>Faderpunk WIP Apps — UX Cheatsheet</h1>
-<p class="sub">Synced to <code>test/playground</code> (IDs 29–41) · 8 Aug 2026 · A4 print</p>
+<p class="sub">Synced to <code>test/playground</code> (IDs 29–42) · 8 Aug 2026 · A4 print</p>
 
 <div class="legend">
   <div><strong>Main</strong> — Fader alone</div>
@@ -748,6 +748,47 @@
     </div>
     <div class="manual">
       <p><strong>Manual.</strong> Genre MIDI bass on the global clock (9 shared genres with Grooves / Chord Vamp). Density reveals fill hits and freer scale degrees; Alt scrubs genre on the shared spectrum axis; Third is Feel / Groove (swing, microtiming, velocity contrast, ghost drag, gate character — depth capped by Groove max %). Notes sustain across empty 16ths until the next hit (legato when the pitch repeats). Phrases are 8 bars in AA B A′ form: the rhythmic motif repeats, harmony walks the tropes, bars 5–6 answer (shifted), bar 7 ornaments, bar 8 breathes. Shift+Long cycles bassist Voice personas in historical era order (Mingus → Jamerson → Bootsy → Jaco → Robbie → Flabba → Flea → Claypool; button flash = voice color). Short resets to the downbeat; Long mutes. CV Out is pitch (V/Oct); CV In modulates Density / Feel or triggers Reset. MIDI note-ons fire outside the clock subscriber (`pending_*` isolate), same pattern as Grooves.</p>
+    </div>
+  </div>
+</section>
+
+<!-- CONTURA -->
+<section class="app">
+  <div class="app-head">
+    <span class="id">ID 42</span>
+    <h2>Contura <span class="tag draft">draft</span></h2>
+    <span class="desc">Melodic contour over selectable 12-TET scale sets, anchored to the device tonic</span>
+  </div>
+  <div class="app-body">
+    <div class="cols">
+      <div>
+        <h3>Faders</h3>
+        <ul>
+          <li><strong>Main</strong> — interval width (narrow → wide scale-degree steps)</li>
+          <li><strong>Alt</strong> (Shift) — phrase length (4–24) + note density</li>
+          <li><strong>Third</strong> (Btn hold) — expressivity (repeat/short → leaps/long holds)</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Buttons</h3>
+        <ul>
+          <li><strong>Short</strong> — mute / unmute</li>
+          <li><strong>Shift+short</strong> — previous scale set</li>
+          <li><strong>Long</strong> — next scale set</li>
+          <li><strong>Shift+long</strong> — octave span 1→2→3→4</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Scale sets / LEDs</h3>
+        <ul>
+          <li>Flat list of named 12-TET sets (Ionian…Folk) — conventional interval-pattern labels, not cultural claims</li>
+          <li>Follow device tonic (default on); Follow device scale uses the global Key mask instead of the selected set</li>
+          <li>Button hue cycles by scale index · Top = gate · Bottom = pitch height · Division via config (default 1/16)</li>
+        </ul>
+      </div>
+    </div>
+    <div class="manual">
+      <p><strong>Manual.</strong> # Contura Generates melodic contour phrases over selectable 12-TET pitch-class sets, anchored to the device quantizer tonic. Scale-set names are conventional labels for interval patterns (Western modes and other named collections on equal footing). They are not claims about living musical practice or authentic intonation. Needs a running clock. Pitch CV on the channel jack; gates via MIDI note on/off. Phrases mix short, medium, and longer note lengths.</p>
     </div>
   </div>
 </section>

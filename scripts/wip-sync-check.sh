@@ -69,11 +69,16 @@ else:
     print("OK  ID 28 not registered")
 
 # Rule list should mention current high IDs
-if "Control Issues" not in rule or "Venn" not in rule or "Bassment" not in rule:
-    print("FAIL playground-flash.mdc missing Control Issues / Venn / Bassment")
+if (
+    "Control Issues" not in rule
+    or "Venn" not in rule
+    or "Bassment" not in rule
+    or "Contura" not in rule
+):
+    print("FAIL playground-flash.mdc missing Control Issues / Venn / Bassment / Contura")
     fail = 1
 else:
-    print("OK  playground-flash.mdc lists CI + Venn + Bassment")
+    print("OK  playground-flash.mdc lists CI + Venn + Bassment + Contura")
 
 # Genre axis (shared Grooves/Vamp)
 palette = Path("faderpunk/src/apps/genre_palette.rs").read_text()

@@ -25,6 +25,7 @@ Flash integration branch: **`test/playground`** (count-agnostic; formerly
 | 39 | Control Issues | `feat/control-issues` | CV shape → MIDI CC/NRPN |
 | 40 | Venn | `feat/venn` | Dual Euclidean + boolean logic |
 | 41 | Bassment | `feat/bassment` | Multi-genre basslines × bassist voices |
+| 42 | Contura | `feat/contura` | Melodic contour over selectable 12-TET scale sets |
 
-Next free WIP ID: **42**
+Next free WIP ID: **43**
 

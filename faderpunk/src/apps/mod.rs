@@ -44,4 +44,5 @@ register_apps!(
     39 => control_issues,
     40 => venn,
     41 => bassment,
+    42 => contura,
 );
