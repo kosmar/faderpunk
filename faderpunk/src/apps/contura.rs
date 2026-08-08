@@ -40,8 +40,9 @@ const MAX_PHRASE: u8 = 24;
 const POOL_CAP: usize = 48;
 
 /// Clock divisions (24 PPQN ticks). Index matches Division param.
+/// Clock divisions (24 PPQN ticks). Index matches Division param.
 const RESOLUTION: [u32; 12] = [384, 192, 96, 48, 24, 16, 12, 8, 6, 4, 3, 2];
-const DIV_LABELS: [&str; 12] = [
+const DIV_LABELS: &[&str] = &[
     "1/1", "1/2", "1/4", "1/8", "1/16", "1/24", "1/32", "1/48", "1/64", "1/96", "1/128", "1/192",
 ];
 
@@ -75,7 +76,7 @@ const MASK_FOLK: u16 = 0b110111011010;
 
 /// Flat list of named 12-TET sets (Western modes and other named collections,
 /// same footing). Labels are conventional interval-pattern names only.
-const SCALE_LABELS: [&str; 20] = [
+const SCALE_LABELS: &[&str] = &[
     "Ionian",
     "Dorian",
     "Phrygian",
@@ -121,7 +122,7 @@ const SCALE_MASKS: [u16; 20] = [
     MASK_FOLK,
 ];
 
-const SCALE_COUNT: usize = SCALE_LABELS.len();
+const SCALE_COUNT: usize = 20;
 
 pub static CONFIG: Config<PARAMS> = Config::new(
     "Contura",
