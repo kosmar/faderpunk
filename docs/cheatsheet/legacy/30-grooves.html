@@ -1,0 +1,55 @@
+<!-- GROOVES -->
+<section class="app">
+  <div class="app-head">
+    <span class="id">ID 30</span>
+    <h2>Grooves <span class="tag ready">ready</span></h2>
+    <span class="desc">Multi-genre MIDI drum grooves with swing</span>
+  </div>
+  <div class="app-body">
+    <div class="cols">
+      <div>
+        <h3>Faders</h3>
+        <ul>
+          <li><strong>Main</strong> — Density (extra hits)</li>
+          <li><strong>Alt</strong> — Genre scrub (same colors as Chord Vamp)</li>
+          <li><strong>Third</strong> — Swing (capped by Swing max %)</li>
+        </ul>
+        <h3>Genres</h3>
+        <ul>
+          <li>Dub → Disco → House → Techno → Trip-Hop → Hip-Hop → Jungle → UK Garage → Dubstep</li>
+          <li>Colors (shared w/ Vamp): Orange · Yellow · Pink · Cyan · Violet · Red · Lime · Green · Blue</li>
+          <li>Alt scrub LEDs: continuous IR→UV spectrum (not discrete genre chrome)</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Buttons</h3>
+        <ul>
+          <li><strong>Short</strong> — Reset to downbeat</li>
+          <li><strong>Long</strong> — Mute (notes off)</li>
+          <li><strong>Shift+Short</strong> — Reverse swing</li>
+          <li><strong>Shift+Long</strong> — Toggle jack Any ↔ Stacked (yellow/violet flash)</li>
+        </ul>
+        <h3>Jack params</h3>
+        <ul>
+          <li>Jack: CV Out / CV In</li>
+          <li>CV Dest: Density · Swing · Reset (Configurator only)</li>
+          <li>Range, CV Att</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Params / LEDs</h3>
+        <ul>
+          <li>Kick / Snare / Hats: note + channel</li>
+          <li>Groove, Swing max %, GATE %, Color, MIDI Out</li>
+          <li><strong>Button</strong> Main: genre hue sat half→full (density) + bar lightness; hit dips kick −50% / snare −30% / hats −10%</li>
+          <li><strong>Button</strong> Third: White→Color→Red (swing); same voice-weighted hit dips</li>
+          <li><strong>Button</strong> Alt: committed genre hue (Top/Bottom = live fader meters; color changes only after latch pickup)</li>
+        </ul>
+      </div>
+    </div>
+    <div class="manual">
+      <p><strong>Manual.</strong> Genre MIDI drums on the global clock (9 shared genres with Chord Vamp, including Jungle). Density reveals hits; Shift+Fader scrubs genre on the shared axis — button hue follows the latched genre (meters show live fader until pickup); Button+Fader = Swing (capped by Swing max %). Watch the button: Main density ramps genre hue from half→full saturation with bar lightness; hits dim by voice (kick −50%, snare −30%, hats −10%) — not a clock blink. MIDI fires outside the clock subscriber (pending_* isolate). Third swing blends White→app→Red. Shift+Long toggles CV Out Any↔Stacked. Jack=CV In modulates Density/Swing or triggers Reset — set CV Dest in the Configurator only. CV Att scales input.</p>
+    </div>
+  </div>
+</section>
+

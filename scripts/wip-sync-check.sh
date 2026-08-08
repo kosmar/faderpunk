@@ -11,6 +11,11 @@ bad() { echo "FAIL $*"; fail=1; }
 
 echo "=== wip-sync-check ==="
 
+# --- per-app docs fragments + assembled cheatsheet freshness ---
+echo "=== app docs / cheatsheet assembly ==="
+python3 scripts/validate-app-docs.py || exit 1
+python3 scripts/assemble-cheatsheet.py --scope wip --check || exit 1
+
 # --- registry vs register_apps! ---
 python3 - <<'PY' || exit 1
 import re, sys
@@ -64,11 +69,11 @@ else:
     print("OK  ID 28 not registered")
 
 # Rule list should mention current high IDs
-if "Control Issues" not in rule or "Venn" not in rule:
-    print("FAIL playground-flash.mdc missing Control Issues / Venn")
+if "Control Issues" not in rule or "Venn" not in rule or "Bassment" not in rule:
+    print("FAIL playground-flash.mdc missing Control Issues / Venn / Bassment")
     fail = 1
 else:
-    print("OK  playground-flash.mdc lists CI + Venn")
+    print("OK  playground-flash.mdc lists CI + Venn + Bassment")
 
 # Genre axis (shared Grooves/Vamp)
 palette = Path("faderpunk/src/apps/genre_palette.rs").read_text()

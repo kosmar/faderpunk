@@ -4,7 +4,7 @@
   "name": "Venn",
   "status": "wip",
   "tag": "ready",
-  "description": "Dual Euclidean layers + boolean logic (OR/AND/XOR/Accnt)",
+  "description": "Dual Euclidean layers + boolean logic; generative melody via Extent",
   "color": "Cyan",
   "icon": "Euclid",
   "channels_count": 2,
@@ -17,14 +17,14 @@
     "Division",
     "GATE %",
     "Prob %",
-    "Vel %",
+    "Humanize",
     "Color"
   ],
   "storage": [
     "Pulses A",
     "Pulses B",
-    "Rotation A",
-    "Rotation B",
+    "Extent",
+    "Interval",
     "Length A",
     "Length B",
     "Logic",
@@ -37,9 +37,11 @@
         {
           "heading": "Faders",
           "items": [
-            "<strong>Main</strong> — F0 pulses A · F1 pulses B",
-            "<strong>Alt</strong> (Shift) — F0 rotation A · F1 rotation B",
-            "<strong>Third</strong> (Btn1 or Btn2 hold) — F0 length A · F1 length B (2–32)"
+            "<strong>Main</strong> — F0 pulses A · F1 pulses B (density; absolute pulse count, Bjorklund redistributes)",
+            "<strong>Alt</strong> (Shift) — F0 Extent (melodic span 0–24 st from Note A) · F1 Interval (0–12 st above the line for Ch2)",
+            "<strong>Third</strong> (Btn1 or Btn2 hold) — F0 length A · F1 length B (2–32; independent)",
+            "Rotation fixed at 0 (slots freed for Extent / Interval)",
+            "<strong>Division</strong> (config) — note values 1/1 … 1/192 (default 1/16)"
           ]
         }
       ]
@@ -60,14 +62,16 @@
     {
       "sections": [
         {
-          "heading": "Params / LEDs",
+          "heading": "Melody / LEDs",
           "items": [
-            "Division, GATE %, Prob %, Vel %, MIDI CH / Note A / Interval B / Out, Color",
-            "Color = Layer A; Btn2 / Top B = fixed complement (Cyan↔Pink, Blue↔Orange, Green↔Violet, Rose↔Yellow, …)",
-            "Main Btn: logic hue / complement · density bright · soft hit dip (−38% → 62%)",
-            "Alt: Top+Btn ∝ rotation (floor); Bottom = step-0 sync · Third: white Top ∝ length, Bottom/Btn = length band (live 1 ms)",
+            "Note A (config) = root; each Length-A step maps into 0…Extent semitones; Ch2 = same line + Interval",
+            "Extent 0 = monotone Note A; higher = wider ascending line through the A cycle",
+            "Division (note values), GATE %, Prob %, Humanize (Vel jitter; 0 = fixed max), MIDI CH / Note A / Interval B / Out, Color",
+            "Color = App Color on Btn1; Btn0 = Logic hue; Top A/B = App Color / complement (layer hits)",
+            "Main Btn: logic / app color · density bright · soft hit dip",
+            "Alt: Top+Btn dim→sat ∝ Extent / Interval (fixed hues) · Third: shortest hue btn→complement ∝ length",
             "Top flashes = layer hits (Main) · Bottom flashes = logic outs (Main)",
-            "Jack0 = logic result · Jack1 coupled (OR→∩, AND→△, XOR→∩, Accnt→accent)"
+            "Jack0 = logic result + melodic line · Jack1 coupled (OR→∩, AND→△, XOR→∩, Accnt→accent) + Interval"
           ]
         }
       ]
@@ -76,31 +80,31 @@
   "channels": [
     {
       "jackTitle": "Logic out",
-      "jackDescription": "Gate + MIDI Note A for the primary boolean result",
+      "jackDescription": "Gate + melodic MIDI (Note A + step→Extent) for the primary boolean result",
       "faderTitle": "Pulses A",
-      "faderDescription": "Number of pulses in Euclidean layer A",
-      "faderPlusShiftTitle": "Rotation A",
-      "faderPlusShiftDescription": "Rotate layer A pattern",
+      "faderDescription": "Number of pulses in Euclidean layer A (density)",
+      "faderPlusShiftTitle": "Extent",
+      "faderPlusShiftDescription": "Melodic span above Note A (0–24 semitones)",
       "faderPlusFnTitle": "Length A",
-      "faderPlusFnDescription": "Cycle length for layer A (2–32)",
+      "faderPlusFnDescription": "Cycle length for layer A and melody phase (2–32)",
       "fnTitle": "Third / Logic",
       "fnDescription": "Hold for length; Shift+tap cycles OR→AND→XOR→Accnt",
-      "ledTop": "Layer A hits / rotation / length",
-      "ledBottom": "Logic outs / step sync / length band"
+      "ledTop": "Layer A hits / extent meter / length hue (btn→complement)",
+      "ledBottom": "Logic outs / length hue"
     },
     {
       "jackTitle": "Coupled out",
-      "jackDescription": "Secondary gate + MIDI Note A+Interval B (overlap / Δ / accent)",
+      "jackDescription": "Secondary gate + same melodic line + Interval",
       "faderTitle": "Pulses B",
-      "faderDescription": "Number of pulses in Euclidean layer B",
-      "faderPlusShiftTitle": "Rotation B",
-      "faderPlusShiftDescription": "Rotate layer B pattern",
+      "faderDescription": "Number of pulses in Euclidean layer B (density)",
+      "faderPlusShiftTitle": "Interval",
+      "faderPlusShiftDescription": "Semitones above the melodic line for Ch2 (0–12)",
       "faderPlusFnTitle": "Length B",
       "faderPlusFnDescription": "Cycle length for layer B (2–32)",
       "fnTitle": "Mute / Invert",
       "fnDescription": "Tap mute both; Shift+tap toggles post-logic invert",
-      "ledTop": "Layer B complement color",
-      "ledBottom": "Coupled with logic meters"
+      "ledTop": "Layer B complement hits / interval meter / length hue",
+      "ledBottom": "Coupled with logic meters / length hue"
     }
   ]
 }

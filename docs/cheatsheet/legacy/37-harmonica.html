@@ -1,0 +1,42 @@
+<!-- HARMONICA -->
+<section class="app">
+  <div class="app-head">
+    <span class="id">ID 37</span>
+    <h2>Harmonica <span class="tag ready">ready</span></h2>
+    <span class="desc">Monophonic root in → chord MIDI out</span>
+  </div>
+  <div class="app-body">
+    <div class="cols">
+      <div>
+        <h3>Faders</h3>
+        <ul>
+          <li><strong>Main</strong> — Chord type</li>
+          <li><strong>Alt</strong> — Spread / voicing width</li>
+          <li><strong>Third</strong> — Velocity</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Buttons</h3>
+        <ul>
+          <li><strong>Short</strong> (no fader move) — Mute / unmute all voices</li>
+          <li><strong>Alt+Short</strong> — Cycle harmony octave (−1 / 0 / +1)</li>
+          <li><strong>Alt+Long</strong> — Step voicing preset</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Params</h3>
+        <ul>
+          <li>I/O: MIDI / CV root; MIDI In/Out CH</li>
+          <li>CV Gate: Sustain · ms · clock divisions</li>
+          <li>Strum (ms), Color, Range, V/Oct</li>
+          <li>Near-0V CV = rest; unpatched stays silent until stable pitch</li>
+          <li>LEDs: IR→UV spectrum per layer; mute = red; preset flash on Alt+Long</li>
+        </ul>
+      </div>
+    </div>
+    <div class="manual">
+      <p><strong>Manual.</strong> One root (last MIDI note or pitch CV) picks the chord root; fader picks chord type; up to four MIDI voices (MIDI→CV follows highest). Not a polyphonic keyboard. Mute is a short tap; use Third (button+fader) for velocity so mute and vel don’t collide. Alt+Long walks voicing presets.</p>
+    </div>
+  </div>
+</section>
+

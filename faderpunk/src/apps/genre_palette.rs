@@ -1,4 +1,4 @@
-//! Shared genre labels + LED colors for Grooves and Chord Vamp (Shift+Fader scrub).
+//! Shared genre labels + LED colors for Grooves, Chord Vamp, and Bassment (Shift+Fader scrub).
 
 use libfp::Color;
 

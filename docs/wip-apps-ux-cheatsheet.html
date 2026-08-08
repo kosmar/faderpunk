@@ -88,7 +88,7 @@
 <body>
 
 <h1>Faderpunk WIP Apps — UX Cheatsheet</h1>
-<p class="sub">Synced to <code>test/playground</code> (IDs 29–40) · 7 Aug 2026 · A4 print</p>
+<p class="sub">Synced to <code>test/playground</code> (IDs 29–41) · 8 Aug 2026 · A4 print</p>
 
 <div class="legend">
   <div><strong>Main</strong> — Fader alone</div>
@@ -650,16 +650,18 @@
   <div class="app-head">
     <span class="id">ID 40</span>
     <h2>Venn <span class="tag ready">ready</span></h2>
-    <span class="desc">Dual Euclidean layers + boolean logic (OR/AND/XOR/Accnt)</span>
+    <span class="desc">Dual Euclidean layers + boolean logic; generative melody via Extent</span>
   </div>
   <div class="app-body">
     <div class="cols">
       <div>
         <h3>Faders</h3>
         <ul>
-          <li><strong>Main</strong> — F0 pulses A · F1 pulses B</li>
-          <li><strong>Alt</strong> (Shift) — F0 rotation A · F1 rotation B</li>
-          <li><strong>Third</strong> (Btn1 or Btn2 hold) — F0 length A · F1 length B (2–32)</li>
+          <li><strong>Main</strong> — F0 pulses A · F1 pulses B (density; absolute pulse count, Bjorklund redistributes)</li>
+          <li><strong>Alt</strong> (Shift) — F0 Extent (melodic span 0–24 st from Note A) · F1 Interval (0–12 st above the line for Ch2)</li>
+          <li><strong>Third</strong> (Btn1 or Btn2 hold) — F0 length A · F1 length B (2–32; independent)</li>
+          <li>Rotation fixed at 0 (slots freed for Extent / Interval)</li>
+          <li><strong>Division</strong> (config) — note values 1/1 … 1/192 (default 1/16)</li>
         </ul>
       </div>
       <div>
@@ -672,19 +674,80 @@
         </ul>
       </div>
       <div>
-        <h3>Params / LEDs</h3>
+        <h3>Melody / LEDs</h3>
         <ul>
-          <li>Division, GATE %, Prob %, Vel %, MIDI CH / Note A / Interval B / Out, Color</li>
-          <li>Color = Layer A; Btn2 / Top B = fixed complement (Cyan↔Pink, Blue↔Orange, Green↔Violet, Rose↔Yellow, …)</li>
-          <li>Main Btn: logic hue / complement · density bright · soft hit dip (−38% → 62%)</li>
-          <li>Alt: Top+Btn ∝ rotation (floor); Bottom = step-0 sync · Third: white Top ∝ length, Bottom/Btn = length band (live 1 ms)</li>
+          <li>Note A (config) = root; each Length-A step maps into 0…Extent semitones; Ch2 = same line + Interval</li>
+          <li>Extent 0 = monotone Note A; higher = wider ascending line through the A cycle</li>
+          <li>Division (note values), GATE %, Prob %, Humanize (Vel jitter; 0 = fixed max), MIDI CH / Note A / Interval B / Out, Color</li>
+          <li>Color = App Color on Btn1; Btn0 = Logic hue; Top A/B = App Color / complement (layer hits)</li>
+          <li>Main Btn: logic / app color · density bright · soft hit dip</li>
+          <li>Alt: Top+Btn dim→sat ∝ Extent / Interval (fixed hues) · Third: shortest hue btn→complement ∝ length</li>
           <li>Top flashes = layer hits (Main) · Bottom flashes = logic outs (Main)</li>
-          <li>Jack0 = logic result · Jack1 coupled (OR→∩, AND→△, XOR→∩, Accnt→accent)</li>
+          <li>Jack0 = logic result + melodic line · Jack1 coupled (OR→∩, AND→△, XOR→∩, Accnt→accent) + Interval</li>
         </ul>
       </div>
     </div>
     <div class="manual">
       <p><strong>Manual.</strong> Two independent Euclidean masks combined with boolean logic — the OXI GEN dual-layer idea without pitch. Color sets Layer A; Layer B LEDs use a fixed complement (always the same pairs). Btn1 shows logic mode, not Color. Different lengths per layer enable polyrhythmic XOR/AND patterns Euclid cannot make alone. Needs clock. Prob % &lt; 100 adds optional flakiness; 100 is fully deterministic. No pitch CV (use GenSeq for that).</p>
+    </div>
+  </div>
+</section>
+
+<!-- BASSMENT -->
+<section class="app">
+  <div class="app-head">
+    <span class="id">ID 41</span>
+    <h2>Bassment <span class="tag ready">ready</span></h2>
+    <span class="desc">Multi-genre monophonic basslines with bassist Voice personas</span>
+  </div>
+  <div class="app-body">
+    <div class="cols">
+      <div>
+        <h3>Faders</h3>
+        <ul>
+          <li><strong>Main</strong> — Density (extra onsets + freer degrees)</li>
+          <li><strong>Alt</strong> — Genre scrub (shared axis with Grooves / Chord Vamp)</li>
+          <li><strong>Third</strong> — Feel / Groove (swing · microtiming · velocity · ghosts · gate; capped by Groove max %)</li>
+        </ul>
+        <h3>Genres</h3>
+        <ul>
+          <li>Dub → Disco → House → Techno → Trip-Hop → Hip-Hop → Jungle → UK Garage → Dubstep</li>
+          <li>Alt scrub LEDs: continuous IR→UV spectrum (shared palette)</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Buttons</h3>
+        <ul>
+          <li><strong>Short</strong> — Reset to downbeat</li>
+          <li><strong>Long</strong> — Mute (notes off)</li>
+          <li><strong>Shift+Short</strong> — Reverse swing</li>
+          <li><strong>Shift+Long</strong> — Cycle Voice (historical era order; flash = voice color)</li>
+        </ul>
+        <h3>Jack params</h3>
+        <ul>
+          <li>Jack: CV Out (pitch V/Oct) / CV In</li>
+          <li>CV Dest: Density · Feel · Reset (Configurator)</li>
+          <li>Range, V/Oct, CV Att</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Voices / LEDs</h3>
+        <ul>
+          <li>Order = historical era: bebop → Motown → P-Funk → fusion → dub duo → alt-funk → quirk</li>
+          <li><strong>Mingus</strong> Violet — chromatic neighbors</li>
+          <li><strong>Jamerson</strong> Orange — pocket root/fifth</li>
+          <li><strong>Bootsy</strong> Pink — funk ghosts + octave drops</li>
+          <li><strong>Jaco</strong> Cyan — melodic approaches + leaps</li>
+          <li><strong>Robbie</strong> Green — dub pocket, sustained / sparse</li>
+          <li><strong>Flabba</strong> Lime — roots walk, roomy gates</li>
+          <li><strong>Flea</strong> Red — staccato + aggressive jumps</li>
+          <li><strong>Claypool</strong> Yellow — quirky leaps + chromatic nudges</li>
+          <li>Button: genre hue in play; Shift+Long flash = voice color; hits duck Mid→Low</li>
+        </ul>
+      </div>
+    </div>
+    <div class="manual">
+      <p><strong>Manual.</strong> Genre MIDI bass on the global clock (9 shared genres with Grooves / Chord Vamp). Density reveals fill hits and freer scale degrees; Alt scrubs genre on the shared spectrum axis; Third is Feel / Groove (swing, microtiming, velocity contrast, ghost drag, gate character — depth capped by Groove max %). Notes sustain across empty 16ths until the next hit (legato when the pitch repeats). Phrases are 8 bars in AA B A′ form: the rhythmic motif repeats, harmony walks the tropes, bars 5–6 answer (shifted), bar 7 ornaments, bar 8 breathes. Shift+Long cycles bassist Voice personas in historical era order (Mingus → Jamerson → Bootsy → Jaco → Robbie → Flabba → Flea → Claypool; button flash = voice color). Short resets to the downbeat; Long mutes. CV Out is pitch (V/Oct); CV In modulates Density / Feel or triggers Reset. MIDI note-ons fire outside the clock subscriber (`pending_*` isolate), same pattern as Grooves.</p>
     </div>
   </div>
 </section>

@@ -8,7 +8,7 @@ alwaysApply: true
 When building or flashing `test/playground` (or any all-WIP integration build):
 
 1. **Source of truth:** `docs/wip-app-ids.md`. Every claimed WIP ID (except upstream Sift **28**) must be in `faderpunk/src/apps/mod.rs` `register_apps!`.
-2. **Never skip apps.** Current required WIP set: Heat Pump (29), Grooves (30), Golden Gate (31), Super LFO (32), Echolot (33), Arp de Lévy (34), Chord Vamp (35), Hold Sam (36), **Harmonica (37)**, Loop de Cay (38), **Control Issues (39)**, **Venn (40)**. Update this list when `wip-app-ids.md` changes.
+2. **Never skip apps.** Current required WIP set: Heat Pump (29), Grooves (30), Golden Gate (31), Super LFO (32), Echolot (33), Arp de Lévy (34), Chord Vamp (35), Hold Sam (36), **Harmonica (37)**, Loop de Cay (38), **Control Issues (39)**, **Venn (40)**, **Bassment (41)**. Update this list when `wip-app-ids.md` changes.
 3. **Preflight on the ELF binary** with `rg -aF` (not UF2, not `strings` — UF2 splits payloads; `strings` drops non-ASCII like Lévy). `flash-now.sh` must abort unless each required CONFIG name is present. Keep that script in sync with the table.
 4. **ID 28 = Sift** — never register it. No need to leave a comment in `mod.rs`.
 5. Before saying flash is done, confirm USB shows **Faderpunk** and note which WIP names were verified.

@@ -1,7 +1,7 @@
 mod genre_palette;
-mod led_spectrum;
-mod led_fx;
 mod groove;
+mod led_fx;
+mod led_spectrum;
 
 register_apps!(
     1 => control,
@@ -43,4 +43,5 @@ register_apps!(
     38 => loop_de_cay,
     39 => control_issues,
     40 => venn,
+    41 => bassment,
 );
