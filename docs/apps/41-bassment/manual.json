@@ -56,17 +56,17 @@
         {
           "heading": "Buttons",
           "items": [
-            "<strong>Short</strong> — Reset to downbeat",
-            "<strong>Long</strong> — Mute (notes off)",
+            "<strong>Short</strong> — Mute (notes off)",
             "<strong>Shift+Short</strong> — Reverse swing",
-            "<strong>Shift+Long</strong> — Cycle Voice (historical era order; flash = voice color)"
+            "<strong>Long</strong> — Next Voice (flash = voice color)",
+            "<strong>Shift+Long</strong> — Previous Voice"
           ]
         },
         {
           "heading": "Jack params",
           "items": [
             "Jack: CV Out (pitch V/Oct) / CV In",
-            "CV Dest: Density · Feel · Reset (Configurator)",
+            "CV Dest: Density · Feel · Reset (Configurator) — Reset now lives here only",
             "Range, V/Oct, CV Att"
           ]
         }
@@ -86,7 +86,7 @@
             "<strong>Flabba</strong> Lime — roots walk, roomy gates",
             "<strong>Flea</strong> Red — staccato + aggressive jumps",
             "<strong>Claypool</strong> Yellow — quirky leaps + chromatic nudges",
-            "Button: genre hue in play; Shift+Long flash = voice color; hits duck Mid→Low"
+            "Button: genre hue in play; Long / Shift+Long flash = voice color; hits duck Mid→Low"
           ]
         }
       ]

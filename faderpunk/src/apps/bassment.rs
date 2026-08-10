@@ -17,12 +17,12 @@ use libfp::{
     latch::LatchLayer,
     quantizer::Pitch,
     utils::{attenuate_bipolar, split_unsigned_value, value_to_index},
-    AppIcon, Brightness, ClockDivision, Color, Config, Key, MidiChannel, MidiNote, MidiOut, Note,
+    AppIcon, Brightness, Color, Config, Key, MidiChannel, MidiNote, MidiOut, Note,
     Param, Range, Value, VoltPerOct, APP_MAX_PARAMS,
 };
 
 use crate::app::{
-    App, AppParams, AppStorage, ClockEvent, Led, ManagedStorage, ParamStore, SceneEvent,
+    App, AppParams, AppStorage, Led, ManagedStorage, ParamStore, SceneEvent,
 };
 use crate::apps::genre_palette::{genre_fader_center, GENRE_NAMES, NUM_GENRES};
 use crate::apps::groove::{
@@ -103,9 +103,9 @@ struct VoiceProfile {
     ghost_pct: u8,
     /// Gate length scale (0–100); lower = more staccato.
     staccato: u8,
-    /// Extra density reveal bias in 0..=512 (added before clamp).
+    /// Extra density reveal bias in 0..=1600 (added before clamp).
     syncop_bias: u16,
-    /// Accent velocity boost 0..=40.
+    /// Accent velocity boost 0..=55.
     accent_boost: u8,
     /// Prefer root/fifth: fold odd degrees toward 0 or 4.
     pocket: bool,
@@ -115,81 +115,81 @@ const VOICES: [VoiceProfile; NUM_VOICES] = [
     // Mingus — chromatic approach, odd accents (bebop / post-bop)
     VoiceProfile {
         oct_span: 1,
-        approach_pct: 90,
-        ghost_pct: 40,
-        staccato: 80,
-        syncop_bias: 350,
-        accent_boost: 24,
+        approach_pct: 95,
+        ghost_pct: 55,
+        staccato: 68,
+        syncop_bias: 480,
+        accent_boost: 32,
         pocket: false,
     },
     // Jamerson — locked Motown pocket (root/fifth only, no leaps)
     VoiceProfile {
         oct_span: 0,
         approach_pct: 0,
-        ghost_pct: 5,
-        staccato: 90,
+        ghost_pct: 2,
+        staccato: 96,
         syncop_bias: 0,
-        accent_boost: 4,
+        accent_boost: 2,
         pocket: true,
     },
     // Bootsy — funk ghosts + octave drops
     VoiceProfile {
         oct_span: 1,
-        approach_pct: 25,
-        ghost_pct: 85,
-        staccato: 55,
-        syncop_bias: 700,
-        accent_boost: 30,
+        approach_pct: 40,
+        ghost_pct: 96,
+        staccato: 42,
+        syncop_bias: 1200,
+        accent_boost: 36,
         pocket: false,
     },
     // Jaco — melodic, sustained, approaches + octave leaps
     VoiceProfile {
         oct_span: 2,
-        approach_pct: 70,
-        ghost_pct: 25,
+        approach_pct: 88,
+        ghost_pct: 12,
         staccato: 100,
-        syncop_bias: 120,
-        accent_boost: 10,
+        syncop_bias: 60,
+        accent_boost: 8,
         pocket: false,
     },
     // Robbie — Shakespeare dub pocket: deep, sustained, sparse
     VoiceProfile {
         oct_span: 0,
-        approach_pct: 8,
-        ghost_pct: 12,
+        approach_pct: 0,
+        ghost_pct: 4,
         staccato: 100,
-        syncop_bias: 40,
-        accent_boost: 6,
+        syncop_bias: 0,
+        accent_boost: 3,
         pocket: true,
     },
     // Flabba — Holt roots walk: roomy gates, mild syncop (duo with Robbie)
     VoiceProfile {
         oct_span: 1,
-        approach_pct: 18,
-        ghost_pct: 30,
-        staccato: 95,
-        syncop_bias: 180,
-        accent_boost: 14,
+        approach_pct: 22,
+        ghost_pct: 28,
+        staccato: 92,
+        syncop_bias: 220,
+        accent_boost: 16,
         pocket: false,
     },
     // Flea — short gates, max syncop, hard accents, octave jumps
     VoiceProfile {
         oct_span: 2,
-        approach_pct: 15,
-        ghost_pct: 50,
-        staccato: 28,
-        syncop_bias: 900,
-        accent_boost: 40,
+        approach_pct: 28,
+        ghost_pct: 72,
+        staccato: 16,
+        syncop_bias: 1600,
+        accent_boost: 48,
         pocket: false,
     },
     // Claypool — quirky leaps, chromatic nudges, odd staccato
     VoiceProfile {
         oct_span: 2,
-        approach_pct: 55,
-        ghost_pct: 45,
-        staccato: 40,
-        syncop_bias: 650,
-        accent_boost: 35,
+        approach_pct: 78,
+        ghost_pct: 68,
+        staccato: 24,
+        syncop_bias: 1100,
+        accent_boost: 44,
         pocket: false,
     },
 ];
@@ -261,10 +261,10 @@ fn phrase_degree_si(step: u32, phrase_bar: u32) -> usize {
 }
 
 const PATTERNS: [BassPattern; NUM_GENRES] = [
-    // 0 Dub — sparse half-time, root-heavy
+    // 0 Dub — sparse half-time; fill densifies toward walking 8ths/16ths
     BassPattern {
         hits: 0b0000_0001_0000_0001,
-        hits_fill: 0b0000_0100_0001_0000,
+        hits_fill: 0b1010_1010_1010_1010,
         accent_mask: 0b0000_0000_0000_0001,
         base_vel: 70,
         accent_vel: 105,
@@ -276,7 +276,7 @@ const PATTERNS: [BassPattern; NUM_GENRES] = [
     // 1 Disco — four-on-floor roots with octave pops
     BassPattern {
         hits: 0b0001_0001_0001_0001,
-        hits_fill: 0b0100_0100_0100_0100,
+        hits_fill: 0b1110_1110_1110_1110,
         accent_mask: 0b0001_0000_0001_0000,
         base_vel: 75,
         accent_vel: 110,
@@ -288,7 +288,7 @@ const PATTERNS: [BassPattern; NUM_GENRES] = [
     // 2 House — classic pump i–VII–VI–VII
     BassPattern {
         hits: 0b0001_0001_0001_0001,
-        hits_fill: 0b0100_0000_0100_0100,
+        hits_fill: 0b1110_1110_1110_1110,
         accent_mask: 0b0001_0001_0001_0001,
         base_vel: 80,
         accent_vel: 112,
@@ -300,7 +300,7 @@ const PATTERNS: [BassPattern; NUM_GENRES] = [
     // 3 Techno — minimal root drones + sparse fifths
     BassPattern {
         hits: 0b0001_0001_0001_0001,
-        hits_fill: 0b0000_0100_0000_0000,
+        hits_fill: 0b0100_0100_0100_0100,
         accent_mask: 0b0001_0000_0001_0000,
         base_vel: 85,
         accent_vel: 108,
@@ -312,7 +312,7 @@ const PATTERNS: [BassPattern; NUM_GENRES] = [
     // 4 Trip-Hop — laid-back sparse line
     BassPattern {
         hits: 0b0000_0001_0000_0001,
-        hits_fill: 0b0000_1000_0001_0000,
+        hits_fill: 0b1001_1000_1001_1000,
         accent_mask: 0b0000_0000_0000_0001,
         base_vel: 60,
         accent_vel: 95,
@@ -324,7 +324,7 @@ const PATTERNS: [BassPattern; NUM_GENRES] = [
     // 5 Hip-Hop — boom-bap walk
     BassPattern {
         hits: 0b0100_0001_0010_0001,
-        hits_fill: 0b0000_0100_0100_0100,
+        hits_fill: 0b1010_1110_1101_1110,
         accent_mask: 0b0000_0001_0000_0001,
         base_vel: 70,
         accent_vel: 110,
@@ -336,7 +336,7 @@ const PATTERNS: [BassPattern; NUM_GENRES] = [
     // 6 Jungle — busy amen energy
     BassPattern {
         hits: 0b0100_1001_0010_0101,
-        hits_fill: 0b0010_0000_0100_1000,
+        hits_fill: 0b1111_0110_1101_1010,
         accent_mask: 0b0000_0001_0000_0001,
         base_vel: 65,
         accent_vel: 108,
@@ -348,7 +348,7 @@ const PATTERNS: [BassPattern; NUM_GENRES] = [
     // 7 UK Garage — skippy 2-step bass
     BassPattern {
         hits: 0b1000_1001_0010_0001,
-        hits_fill: 0b0010_0000_0100_0000,
+        hits_fill: 0b0111_0110_1101_1110,
         accent_mask: 0b0000_0001_0000_0001,
         base_vel: 70,
         accent_vel: 110,
@@ -360,7 +360,7 @@ const PATTERNS: [BassPattern; NUM_GENRES] = [
     // 8 Dubstep — half-time wobble roots
     BassPattern {
         hits: 0b0000_0000_0000_0001,
-        hits_fill: 0b0000_1000_0100_0000,
+        hits_fill: 0b1000_1000_1100_1000,
         accent_mask: 0b0000_0000_0000_0001,
         base_vel: 80,
         accent_vel: 115,
@@ -544,6 +544,28 @@ fn fill_reveal(fill: u16, density: u16, step: u32) -> Option<u8> {
     }
 }
 
+/// When density is in the upper third and DNA left the step empty, insert
+/// synthetic fill hits so max Density actually feels busy (fills alone are
+/// still capped by the pattern mask).
+fn synth_reveal(density: u16, step: u32, voice_idx: usize) -> Option<u8> {
+    const FLOOR: u16 = 2730;
+    if density < FLOOR {
+        return None;
+    }
+    let span = u32::from(4095u16.saturating_sub(FLOOR));
+    let t = u32::from(density.saturating_sub(FLOOR)).min(span);
+    // Offbeats first; downbeats rarer (cores usually cover them).
+    let chance = if step % 2 == 1 {
+        (t * 92 / span) as u8
+    } else {
+        (t * 55 / span) as u8
+    };
+    if step_chance(step, voice_idx, 17 + (step % 4)) >= chance {
+        return None;
+    }
+    Some(((t * 255) / span).max(80) as u8)
+}
+
 fn ghost_vel_pct(frac: u8, quiet: u16, full: u16) -> u16 {
     quiet + ((full - quiet) as u32 * frac as u32 / 255) as u16
 }
@@ -556,11 +578,20 @@ fn ghost_drag_ticks(density: u16, feel: u16, groove_max_pct: i32) -> u32 {
 }
 
 /// How many 16ths a hit can sustain before the next sounded step (1..=8).
-fn sustain_sixteenths(hits: u16, hits_fill: u16, step: u32, density: u16) -> u32 {
+fn sustain_sixteenths(
+    hits: u16,
+    hits_fill: u16,
+    step: u32,
+    density: u16,
+    voice_idx: usize,
+) -> u32 {
     let mut n = 1u32;
     for look in 1..8u32 {
         let s = step + look;
-        if bit_set(hits, s) || fill_reveal(hits_fill, density, s).is_some() {
+        if bit_set(hits, s)
+            || fill_reveal(hits_fill, density, s).is_some()
+            || synth_reveal(density, s, voice_idx).is_some()
+        {
             break;
         }
         n += 1;
@@ -692,7 +723,12 @@ fn resolve_hit(
 
     let core = bit_set(hits, si_step);
     let ghost = fill_reveal(hits_fill, density, si_step);
-    if !core && ghost.is_none() {
+    let synth = if !core && ghost.is_none() {
+        synth_reveal(density, step, voice_idx)
+    } else {
+        None
+    };
+    if !core && ghost.is_none() && synth.is_none() {
         return None;
     }
 
@@ -716,9 +752,10 @@ fn resolve_hit(
     let approach_pct = voice.approach_pct as u16
         + ((100u16.saturating_sub(voice.approach_pct as u16)) * groove_t / 4095) / 3;
 
-    let is_ghost = !core && ghost.is_some();
+    let fill_frac = ghost.or(synth);
+    let is_ghost = !core && fill_frac.is_some();
     if is_ghost {
-        let frac = ghost.unwrap_or(0);
+        let frac = fill_frac.unwrap_or(0);
         if step_chance(step, voice_idx, 3) >= ghost_pct.min(100) as u8 && frac < 200 && frac < 128
         {
             return None;
@@ -730,6 +767,15 @@ fn resolve_hit(
         i32::from(pat_hi.degree[si]),
         g_frac,
     ) as i8;
+    // Synthetic fills: walk 0–3–5–7-ish degrees so empty steps aren't all roots.
+    if synth.is_some() && degree == 0 {
+        degree = match step_chance(step, voice_idx, 21) % 4 {
+            0 => 0,
+            1 => 3,
+            2 => 4,
+            _ => 5,
+        };
+    }
     if voice.pocket {
         degree = fold_pocket(degree);
     }
@@ -738,7 +784,7 @@ fn resolve_hit(
     degree = (i32::from(degree) + chord).rem_euclid(7) as i8;
 
     // Higher density → allow more adventurous degrees (less folding toward root).
-    if density < 1365
+    if density < 900
         && !voice.pocket
         && degree != 0
         && degree != 4
@@ -798,7 +844,7 @@ fn resolve_hit(
         u16::from(base)
     };
     let vel_pct = if is_ghost {
-        let g = ghost_vel_pct(ghost.unwrap_or(255), 12, 45);
+        let g = ghost_vel_pct(fill_frac.unwrap_or(255), 12, 45);
         feel_lerp_u16(quiet_flat, g, gfeel)
     } else {
         feel_lerp_u16(quiet_flat, character, gfeel)
@@ -895,8 +941,8 @@ pub async fn run(
         )
     });
 
-    let mut clock = app.use_clock();
-    let ticks = clock.get_ticker();
+    // Ticker only — never CLOCK_PUBSUB (Grooves+Vamp+Bassment+Contura combo).
+    let ticks = app.clock_ticker();
     let faders = app.use_faders();
     let buttons = app.use_buttons();
     let leds = app.use_leds();
@@ -947,6 +993,8 @@ pub async fn run(
     let glob_reverse_fade_up = app.make_global(false);
     let glob_voice_flash = app.make_global(0u16);
     let glob_button_duck = app.make_global(0u16);
+    // ManagedStorage: only genre_persist writes FRAM (avoids RefCell vs saver_task).
+    let glob_storage_dirty = app.make_global(false);
 
     let pending_silence = app.make_global(false);
     let pending_note_off = app.make_global(false);
@@ -976,9 +1024,31 @@ pub async fn run(
         let mut gate_off_at: Option<u32> = None;
         let mut last_fired_slot = u32::MAX;
 
+        let mut last_tick = ticks();
+        let mut stall_ms = 0u16;
+
         loop {
-            match clock.wait_for_event(ClockDivision::_1).await {
-                ClockEvent::Reset | ClockEvent::Stop => {
+            app.delay_millis(1).await;
+            let t = ticks();
+            let mut do_stop = false;
+            if t == last_tick {
+                stall_ms = stall_ms.saturating_add(1);
+                if stall_ms == 250 {
+                    do_stop = true;
+                } else {
+                    continue;
+                }
+            } else if t < last_tick {
+                do_stop = true;
+                last_tick = t;
+                stall_ms = 0;
+            } else {
+                stall_ms = 0;
+                last_tick = t;
+            }
+
+            if do_stop {
+
                     pending_note_on.set(false);
                     pending_note_off.set(false);
                     pending_silence.set(true);
@@ -1002,8 +1072,11 @@ pub async fn run(
                         );
                         leds.unset(0, Led::Bottom);
                     }
-                }
-                ClockEvent::Tick => {
+                
+                continue;
+            }
+
+
                     let clkn = ticks() as u32;
 
                     if !origin_set || glob_reset.get() {
@@ -1091,8 +1164,17 @@ pub async fn run(
                             scale,
                         );
 
-                        let core = bit_set(pat.hits, step);
-                        let any_ghost = fill_reveal(pat.hits_fill, density, step).is_some();
+                        let rot = phrase_rot(bar % PHRASE_BARS);
+                        let core = bit_set(rot16(pat.hits, rot), step);
+                        let any_ghost = fill_reveal(rot16(pat.hits_fill, rot), density, step)
+                            .or_else(|| {
+                                if !core {
+                                    synth_reveal(density, step, voice_idx)
+                                } else {
+                                    None
+                                }
+                            })
+                            .is_some();
                         let ghost_extra = ghost_drag_ticks(density, feel_val, gmax);
                         let required_delay = if core || !any_ghost {
                             delay
@@ -1125,12 +1207,12 @@ pub async fn run(
 
                                 // Sustain across empty 16ths until the next hit —
                                 // was clamped to one 16th, which made every line staccato.
-                                let rot = phrase_rot(bar % PHRASE_BARS);
                                 let sust = sustain_sixteenths(
                                     rot16(pat.hits, rot),
                                     rot16(pat.hits_fill, rot),
                                     step,
                                     density,
+                                    voice_idx,
                                 );
                                 let max_ticks = (SIXTEENTH * 8).saturating_sub(1);
                                 let step_gate = ((SIXTEENTH as i32
@@ -1163,9 +1245,7 @@ pub async fn run(
                             Brightness::Custom(((step * 255) / STEPS_PER_BAR) as u8),
                         );
                     }
-                }
-                _ => {}
-            }
+                
         }
     };
 
@@ -1215,9 +1295,9 @@ pub async fn run(
                 buttons.wait_for_up(0).await;
                 glob_shift_chord.set(false);
                 if !long_press_fired.get() {
-                    // Shift + short: reverse swing
+                    // Shift+short: reverse swing
                     let reversed = glob_reversed.toggle();
-                    storage.modify_and_save(|s| s.reversed = reversed);
+                    glob_storage_dirty.set(true);
                     glob_reverse_fade_up.set(!reversed);
                     glob_reverse_fade.set(REVERSE_FADE_MS);
                 }
@@ -1226,13 +1306,10 @@ pub async fn run(
                 glob_fader_at_down.set(faders.get_value());
                 buttons.wait_for_up(0).await;
                 glob_shift_chord.set(false);
-                if !long_press_fired.get() {
-                    if !glob_fader_moved.get() {
-                        glob_reset.set(true);
-                    }
-                } else if !glob_fader_moved.get() {
+                // Short: mute — same as Contura. Reset moved to CV Dest: Reset.
+                if !long_press_fired.get() && !glob_fader_moved.get() {
                     let muted = glob_muted.toggle();
-                    storage.modify_and_save(|s| s.muted = muted);
+                    glob_storage_dirty.set(true);
                     if muted {
                         leds.unset(0, Led::Button);
                         if let Some(ref jack) = out_jack {
@@ -1262,20 +1339,24 @@ pub async fn run(
             // long-press event is delivered (same race Arp avoids by re-polling).
             let shift_chord =
                 glob_shift_chord.get() || is_shift_now || buttons.is_shift_pressed();
-            if shift_chord {
-                let next = (glob_voice.get() + 1) % NUM_VOICES;
-                glob_voice.set(next);
-                storage.modify_and_save(|s| s.voice = next as u8);
-                glob_voice_dirty.set(true);
-                glob_voice_flash.set(VOICE_FLASH_MS);
-                if !glob_muted.get() {
-                    leds.set(
-                        0,
-                        Led::Button,
-                        VOICE_FLASH_COLOR[next],
-                        Brightness::High,
-                    );
-                }
+            // Long / Shift+Long walk the Voice list forward / backward — same
+            // press length, Shift only flips direction (Contura grammar).
+            // Button+fader is the Third-layer Feel scrub, never a Voice change.
+            if !shift_chord && glob_fader_moved.get() {
+                continue;
+            }
+            let cur = glob_voice.get();
+            let next = if shift_chord {
+                (cur + NUM_VOICES - 1) % NUM_VOICES
+            } else {
+                (cur + 1) % NUM_VOICES
+            };
+            glob_voice.set(next);
+            glob_storage_dirty.set(true);
+            glob_voice_dirty.set(true);
+            glob_voice_flash.set(VOICE_FLASH_MS);
+            if !glob_muted.get() {
+                leds.set(0, Led::Button, VOICE_FLASH_COLOR[next], Brightness::High);
             }
         }
     };
@@ -1295,16 +1376,16 @@ pub async fn run(
             }
 
             let target_value = match latch_layer {
-                LatchLayer::Main => storage.query(|s| s.density),
+                LatchLayer::Main => glob_density.get(),
                 LatchLayer::Alt => glob_genre_fader.get(),
-                LatchLayer::Third => storage.query(|s| s.feel),
+                LatchLayer::Third => glob_feel.get(),
             };
 
             if let Some(new_value) = latch.update(fader_val, latch_layer, target_value) {
                 match latch_layer {
                     LatchLayer::Main => {
                         glob_density.set(new_value);
-                        storage.modify_and_save(|s| s.density = new_value);
+                        glob_storage_dirty.set(true);
                     }
                     LatchLayer::Alt => {
                         glob_genre_fader.set(new_value);
@@ -1316,7 +1397,7 @@ pub async fn run(
                     }
                     LatchLayer::Third => {
                         glob_feel.set(new_value);
-                        storage.modify_and_save(|s| s.feel = new_value);
+                        glob_storage_dirty.set(true);
                         glob_fader_moved.set(true);
                     }
                 }
@@ -1542,6 +1623,16 @@ pub async fn run(
                 glob_voice_dirty.set(false);
                 let v = glob_voice.get().min(NUM_VOICES - 1);
                 params.update(|p| p.voice = v).await;
+            }
+            if glob_storage_dirty.get() {
+                glob_storage_dirty.set(false);
+                storage.modify_and_save(|s| {
+                    s.feel = glob_feel.get();
+                    s.density = glob_density.get();
+                    s.reversed = glob_reversed.get();
+                    s.muted = glob_muted.get();
+                    s.voice = glob_voice.get() as u8;
+                });
             }
         }
     };

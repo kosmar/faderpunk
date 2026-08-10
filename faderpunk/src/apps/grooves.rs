@@ -10,12 +10,12 @@ use libfp::{
     ext::FromValue,
     latch::LatchLayer,
     utils::{attenuate_bipolar, split_unsigned_value, value_to_index},
-    AppIcon, Brightness, ClockDivision, Color, Config, MidiChannel, MidiNote, MidiOut, Param,
+    AppIcon, Brightness, Color, Config, MidiChannel, MidiNote, MidiOut, Param,
     Range, Value, APP_MAX_PARAMS,
 };
 
 use crate::app::{
-    App, AppParams, AppStorage, ClockEvent, Led, ManagedStorage, ParamStore, SceneEvent,
+    App, AppParams, AppStorage, Led, ManagedStorage, ParamStore, SceneEvent,
 };
 use crate::apps::genre_palette::{genre_fader_center, GENRE_NAMES, NUM_GENRES};
 use crate::apps::groove::{
@@ -631,8 +631,8 @@ pub async fn run(
         )
     });
 
-    let mut clock = app.use_clock();
-    let ticks = clock.get_ticker();
+    // Ticker only — never CLOCK_PUBSUB (Grooves+Vamp+Bassment+Contura combo).
+    let ticks = app.clock_ticker();
     let faders = app.use_faders();
     let buttons = app.use_buttons();
     let leds = app.use_leds();
@@ -672,6 +672,9 @@ pub async fn run(
     let glob_fader_at_down = app.make_global(0u16);
     // Genre changed on device; persist ParamStore off the fader hot-path.
     let glob_genre_dirty = app.make_global(false);
+    // Scene storage: globals only on fader/button path — never storage.modify
+    // while saver_task may borrow_mut (RefCell panic under ADC noise / mute).
+    let glob_storage_dirty = app.make_global(false);
     let glob_latch_layer = app.make_global(LatchLayer::Main);
     let glob_reverse_fade = app.make_global(0u16);
     let glob_reverse_fade_up = app.make_global(false);
@@ -721,9 +724,31 @@ pub async fn run(
         let gate_len = ((SIXTEENTH as i32 * gatel) / 100)
             .clamp(1, (SIXTEENTH as i32) - 1) as u32;
 
+        let mut last_tick = ticks();
+        let mut stall_ms = 0u16;
+
         loop {
-            match clock.wait_for_event(ClockDivision::_1).await {
-                ClockEvent::Reset | ClockEvent::Stop => {
+            app.delay_millis(1).await;
+            let t = ticks();
+            let mut do_stop = false;
+            if t == last_tick {
+                stall_ms = stall_ms.saturating_add(1);
+                if stall_ms == 250 {
+                    do_stop = true;
+                } else {
+                    continue;
+                }
+            } else if t < last_tick {
+                do_stop = true;
+                last_tick = t;
+                stall_ms = 0;
+            } else {
+                stall_ms = 0;
+                last_tick = t;
+            }
+
+            if do_stop {
+
                     // Flag only — voice owns MIDI so we keep draining clock ticks.
                     pending_kick.set(false);
                     pending_snare.set(false);
@@ -753,8 +778,11 @@ pub async fn run(
                         );
                         leds.unset(0, Led::Bottom);
                     }
-                }
-                ClockEvent::Tick => {
+                
+                continue;
+            }
+
+
                     let clkn = ticks() as u32;
 
                     if !origin_set || glob_reset.get() {
@@ -957,9 +985,7 @@ pub async fn run(
                             Brightness::Custom(((step * 255) / STEPS_PER_BAR) as u8),
                         );
                     }
-                }
-                _ => {}
-            }
+                
         }
     };
 
@@ -1052,7 +1078,7 @@ pub async fn run(
                 if !long_press_fired.get() {
                     // Shift + short: reverse swing
                     let reversed = glob_reversed.toggle();
-                    storage.modify_and_save(|s| s.reversed = reversed);
+                    glob_storage_dirty.set(true);
                     glob_reverse_fade_up.set(!reversed);
                     glob_reverse_fade.set(REVERSE_FADE_MS);
                 }
@@ -1061,15 +1087,11 @@ pub async fn run(
                 glob_fader_moved.set(false);
                 glob_fader_at_down.set(faders.get_value());
                 buttons.wait_for_up(0).await;
-                if !long_press_fired.get() {
-                    // Short: reset to downbeat (and not a Feel scrub)
-                    if !glob_fader_moved.get() {
-                        glob_reset.set(true);
-                    }
-                } else if !glob_fader_moved.get() {
-                    // Long (no fader move): mute
+                // Short: mute — same as Contura / Bassment. Reset moved to
+                // Shift+Long (and stays on CV Dest: Reset).
+                if !long_press_fired.get() && !glob_fader_moved.get() {
                     let muted = glob_muted.toggle();
-                    storage.modify_and_save(|s| s.muted = muted);
+                    glob_storage_dirty.set(true);
                     if muted {
                         leds.unset(0, Led::Button);
                         if let Some(ref jack) = out_jack {
@@ -1093,14 +1115,16 @@ pub async fn run(
             let (_, is_shift) = buttons.wait_for_any_long_press().await;
             long_press_fired.set(true);
             if is_shift {
-                // Shift + long: toggle CV Out jack activity mode (Any ↔ Stacked)
+                // Shift+long: toggle CV Out jack activity mode (Any ↔ Stacked).
+                // Grooves has no multi-entry selector, so the long pair carries
+                // reset and jack mode instead of a forward/backward cycle.
                 let next = if glob_jack_mode.get() == JACK_STACKED {
                     JACK_ANY
                 } else {
                     JACK_STACKED
                 };
                 glob_jack_mode.set(next);
-                storage.modify_and_save(|s| s.jack_mode = next);
+                glob_storage_dirty.set(true);
                 glob_jack_flash.set(300);
                 if !glob_muted.get() {
                     let color = if next == JACK_STACKED {
@@ -1110,9 +1134,11 @@ pub async fn run(
                     };
                     leds.set(0, Led::Button, color, Brightness::High);
                 }
+            } else if !glob_fader_moved.get() {
+                // Long: reset to downbeat. Button+fader is the Swing scrub and
+                // must not reset.
+                glob_reset.set(true);
             }
-            // Plain long: mute is handled on release only if the fader never
-            // moved (Button+Fader Feel scrub must not mute).
         }
     };
 
@@ -1132,16 +1158,16 @@ pub async fn run(
             }
 
             let target_value = match latch_layer {
-                LatchLayer::Main => storage.query(|s| s.density),
+                LatchLayer::Main => glob_density.get(),
                 LatchLayer::Alt => glob_genre_fader.get(),
-                LatchLayer::Third => storage.query(|s| s.feel),
+                LatchLayer::Third => glob_feel.get(),
             };
 
             if let Some(new_value) = latch.update(fader_val, latch_layer, target_value) {
                 match latch_layer {
                     LatchLayer::Main => {
                         glob_density.set(new_value);
-                        storage.modify_and_save(|s| s.density = new_value);
+                        glob_storage_dirty.set(true);
                     }
                     LatchLayer::Alt => {
                         glob_genre_fader.set(new_value);
@@ -1155,7 +1181,7 @@ pub async fn run(
                     }
                     LatchLayer::Third => {
                         glob_feel.set(new_value);
-                        storage.modify_and_save(|s| s.feel = new_value);
+                        glob_storage_dirty.set(true);
                         glob_fader_moved.set(true);
                     }
                 }
@@ -1327,6 +1353,8 @@ pub async fn run(
 
     // Persist genre off the fader hot-path. Flush while Shift is held too so
     // Scopepunk / configurator see the nearest genre live (same as Chord Vamp).
+    // Scene storage is also flushed here — never modify_and_save from faders/buttons
+    // while saver_task may hold the RefCell.
     let genre_persist = async {
         loop {
             app.delay_millis(40).await;
@@ -1334,6 +1362,16 @@ pub async fn run(
                 glob_genre_dirty.set(false);
                 let g = glob_genre.get().min(NUM_GENRES - 1);
                 params.update(|p| p.genre = g).await;
+            }
+            if glob_storage_dirty.get() {
+                glob_storage_dirty.set(false);
+                storage.modify_and_save(|s| {
+                    s.feel = glob_feel.get();
+                    s.density = glob_density.get();
+                    s.jack_mode = glob_jack_mode.get();
+                    s.reversed = glob_reversed.get();
+                    s.muted = glob_muted.get();
+                });
             }
         }
     };

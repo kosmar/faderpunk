@@ -12,12 +12,12 @@ use libfp::{
     latch::LatchLayer,
     quantizer::Pitch,
     utils::{attenuate_bipolar, split_unsigned_value, value_to_index},
-    AppIcon, Brightness, ClockDivision, Color, Config, Key, MidiCc, MidiChannel, MidiNote, MidiOut,
+    AppIcon, Brightness, Color, Config, Key, MidiCc, MidiChannel, MidiNote, MidiOut,
     Note, Param, Range, Value, VoltPerOct, APP_MAX_PARAMS,
 };
 
 use crate::app::{
-    App, AppParams, AppStorage, ClockEvent, Die, Led, ManagedStorage, ParamStore, SceneEvent,
+    App, AppParams, AppStorage, Die, Led, ManagedStorage, ParamStore, SceneEvent,
 };
 use crate::apps::genre_palette::{genre_fader_center, GENRE_NAMES, NUM_GENRES};
 use crate::apps::groove::{swing_bias, swing_delay_ticks};
@@ -956,8 +956,8 @@ pub async fn run(
     let fader = app.use_faders();
     let buttons = app.use_buttons();
     let leds = app.use_leds();
-    let mut clock = app.use_clock();
-    let ticks = clock.get_ticker();
+    // Ticker only — never CLOCK_PUBSUB (Grooves+Vamp+Bassment+Contura combo).
+    let ticks = app.clock_ticker();
     let die = app.use_die();
     let midi = app.use_midi_output(midi_out_cfg, midi_chan, false);
     let out_jack = if cv_jack == CV_JACK_OUT {
@@ -1207,9 +1207,45 @@ pub async fn run(
         let mut harm_i: usize = 0;
         let mut segment_end: u32 = 0;
         let mut current_degree: u8 = glob_degree.get();
+        let mut last_tick = ticks();
+        let mut stall_ms = 0u16;
+
         loop {
-            match clock.wait_for_event(ClockDivision::_1).await {
-                ClockEvent::Tick => {
+            app.delay_millis(1).await;
+            let t = ticks();
+            let mut do_stop = false;
+            if t == last_tick {
+                stall_ms = stall_ms.saturating_add(1);
+                if stall_ms == 250 {
+                    do_stop = true;
+                } else {
+                    continue;
+                }
+            } else if t < last_tick {
+                do_stop = true;
+                last_tick = t;
+                stall_ms = 0;
+            } else {
+                stall_ms = 0;
+                last_tick = t;
+            }
+
+            if do_stop {
+
+                    pending_release.set(true);
+                    pending_on_at.set(NO_AT);
+                    pending_off_at.set(NO_AT);
+                    phrase_i = 0;
+                    harm_i = 0;
+                    segment_end = 0;
+                    if glob_clip_active.get() {
+                        glob_clip_armed.set(true);
+                    }
+                
+                continue;
+            }
+
+
                     if !(glob_mode_auto.get() && glob_auto_running.get()) {
                         continue;
                     }
@@ -1335,20 +1371,7 @@ pub async fn run(
                         segment_end = clkn.wrapping_add(total.max(1));
                         phrase_i = phrase_i.wrapping_add(1);
                     }
-                }
-                ClockEvent::Stop | ClockEvent::Reset => {
-                    pending_release.set(true);
-                    pending_on_at.set(NO_AT);
-                    pending_off_at.set(NO_AT);
-                    phrase_i = 0;
-                    harm_i = 0;
-                    segment_end = 0;
-                    if glob_clip_active.get() {
-                        glob_clip_armed.set(true);
-                    }
-                }
-                _ => {}
-            }
+                
         }
     };
 
@@ -1620,12 +1643,10 @@ pub async fn run(
             long_press_fired.set(true);
 
             if shift {
-                if glob_mode_auto.get() {
-                    // Auto Shift+Long: Panic (All Notes/Sound Off)
-                    panic_flag.set(true);
-                    glob_capture_flash.set(160); // visible ack (was silent)
-                }
-                // Perform Shift+Long: unused — capture is Shift+Tap.
+                // Shift+Long: Panic (All Notes/Sound Off) in both modes — a
+                // stuck Perform chord needs the same escape hatch as Auto.
+                panic_flag.set(true);
+                glob_capture_flash.set(160);
                 continue;
             }
 
