@@ -1,6 +1,6 @@
 use embassy_executor::Spawner;
 use embassy_futures::select::{select, Either};
-use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, watch::Watch};
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, watch::Watch};
 use embassy_time::Timer;
 use libfp::{AuxJackMode, GlobalConfig, Key, Note, LED_BRIGHTNESS_RANGE};
 use max11300::config::{ConfigMode0, ConfigMode3, Mode, Port};
@@ -32,8 +32,11 @@ fn swing_to_val(swing: i8) -> u16 {
     (((swing.clamp(-35, 35) as i32 + 35) * 4095) / 70).clamp(0, 4095) as u16
 }
 
+// CriticalSectionRawMutex is mandatory: Core 0 writes (faders, host config)
+// while Core 1 apps read. ThreadModeRawMutex does not lock across cores, so the
+// inner RefCell could be borrowed on both sides at once — which aborts Core 1.
 pub static GLOBAL_CONFIG_WATCH: Watch<
-    ThreadModeRawMutex,
+    CriticalSectionRawMutex,
     GlobalConfig,
     GLOBAL_CONFIG_WATCH_SUBSCRIBERS,
 > = Watch::new_with(GlobalConfig::new());
