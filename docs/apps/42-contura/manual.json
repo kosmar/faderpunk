@@ -48,9 +48,9 @@
           "heading": "Buttons",
           "items": [
             "<strong>Short</strong> — mute / unmute",
-            "<strong>Shift+short</strong> — previous scale set",
+            "<strong>Shift+Short</strong> — octave span 1→2→3→4",
             "<strong>Long</strong> — next scale set",
-            "<strong>Shift+long</strong> — octave span 1→2→3→4"
+            "<strong>Shift+Long</strong> — previous scale set"
           ]
         }
       ]
@@ -63,7 +63,7 @@
             "Flat list of named 12-TET sets (Ionian…Folk) — conventional interval-pattern labels, not cultural claims",
             "Follow device tonic (default on); Follow device scale uses the global Key mask instead of the selected set",
             "Per-set melodic feel (contour / leap / sustain) — expressivity is not a fader",
-            "Button hue cycles by scale index · Top = gate · Bottom = pitch height · Division via config (default 1/16)"
+            "Button hue cycles by scale index · Top = gate · Bottom = pitch height · Division via config (default 1/8)"
           ]
         }
       ]
@@ -80,12 +80,12 @@
       "faderPlusFnTitle": "Density",
       "faderPlusFnDescription": "How often notes fire vs rests — bottom sparse, top continuous",
       "fnTitle": "Mute",
-      "fnDescription": "Short press mutes/unmutes. Long press cycles the scale set.",
-      "fnPlusShiftTitle": "Scale / octaves",
-      "fnPlusShiftDescription": "Shift+short = previous scale set · Shift+long = octave span 1→4",
+      "fnDescription": "Short press mutes/unmutes. Long press steps to the next scale set.",
+      "fnPlusShiftTitle": "Octaves / scale",
+      "fnPlusShiftDescription": "Shift+Short = octave span 1→4 · Shift+Long = previous scale set",
       "ledTop": "Gate / note-on cue (app color)",
       "ledBottom": "Pitch height within the current span",
-      "ledTopPlusShift": "Octave-span color blink after Shift+long"
+      "ledTopPlusShift": "Octave-span color blink after Shift+Short"
     }
   ]
 }
