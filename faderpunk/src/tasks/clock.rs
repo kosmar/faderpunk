@@ -33,8 +33,9 @@ use crate::{
 };
 
 const CLOCK_PUBSUB_SIZE: usize = 16;
-// 16 apps + 1 metronome
-const CLOCK_PUBSUB_SUBSCRIBERS: usize = 17;
+// Max concurrent use_clock() apps. Metronome polls TICK_COUNTER — never
+// subscribe here (sleeping on CLOCK_PUBSUB stalls gatekeeper publish().await).
+const CLOCK_PUBSUB_SUBSCRIBERS: usize = 16;
 // Only the gatekeeper publishes to CLOCK_PUBSUB
 const CLOCK_PUBSUB_PUBLISHERS: usize = 5;
 // Add a slight delay before the very first tick (to offset it to reset)
@@ -235,10 +236,10 @@ async fn send_analog_ticks(spawner: &Spawner, config: &GlobalConfig, counters: &
         }
     }
     if !ports.is_empty() {
-        MAX_CHANNEL
+        // try_send: never stall the clock gatekeeper on a full MAX queue.
+        let _ = MAX_CHANNEL
             .sender()
-            .send(MaxCmd::GpoSetHighMany(ports.clone()))
-            .await;
+            .try_send(MaxCmd::GpoSetHighMany(ports.clone()));
         spawner.spawn(analog_tick_release(ports, 5)).ok();
     }
 }
@@ -251,10 +252,9 @@ async fn send_analog_reset(spawner: &Spawner, config: &GlobalConfig) {
         }
     }
     if !ports.is_empty() {
-        MAX_CHANNEL
+        let _ = MAX_CHANNEL
             .sender()
-            .send(MaxCmd::GpoSetHighMany(ports.clone()))
-            .await;
+            .try_send(MaxCmd::GpoSetHighMany(ports.clone()));
         spawner.spawn(analog_tick_release(ports, 10)).ok();
     }
 }
@@ -262,35 +262,49 @@ async fn send_analog_reset(spawner: &Spawner, config: &GlobalConfig) {
 #[embassy_executor::task(pool_size = 4)]
 async fn analog_tick_release(ports: heapless::Vec<Port, 4>, trigger_len: u64) {
     Timer::after_millis(trigger_len).await;
-    MAX_CHANNEL
-        .sender()
-        .send(MaxCmd::GpoSetLowMany(ports))
-        .await;
+    let _ = MAX_CHANNEL.sender().try_send(MaxCmd::GpoSetLowMany(ports));
 }
 
+/// Scene LED beat flash — polls [`TICK_COUNTER`] only.
+///
+/// Must never subscribe to [`CLOCK_PUBSUB`]: awaiting a timer while holding a
+/// subscriber slot lets the shared queue fill, then gatekeeper
+/// `publish().await` blocks and the whole device clock freezes (Contura and
+/// friends go silent after a few bars).
 #[embassy_executor::task]
 async fn metronome() {
-    let mut sub = CLOCK_PUBSUB.subscriber().unwrap();
-    let mut tick_count: u64 = 0;
+    let mut last_seen = TICK_COUNTER.load(Ordering::Relaxed);
+    let mut last_beat = u64::MAX;
+    let mut high_left_ms: u16 = 0;
 
     loop {
-        match sub.next_message_pure().await {
-            ClockEvent::Tick => {
-                tick_count += 1;
-                // Fire on the first tick of each quarter note (every 24 ppqn ticks).
-                if tick_count % 24 == 1 {
-                    METRONOME_HIGH.store(true, Ordering::Relaxed);
-                    Timer::after_millis(METRONOME_HIGH_MS).await;
-                    METRONOME_HIGH.store(false, Ordering::Relaxed);
-                }
-            }
-            ClockEvent::Start | ClockEvent::Reset => {
-                tick_count = 0;
-                METRONOME_HIGH.store(true, Ordering::Relaxed);
-            }
-            ClockEvent::Stop => {
+        Timer::after_millis(1).await;
+
+        if high_left_ms > 0 {
+            high_left_ms -= 1;
+            if high_left_ms == 0 {
                 METRONOME_HIGH.store(false, Ordering::Relaxed);
             }
+        }
+
+        let t = TICK_COUNTER.load(Ordering::Relaxed);
+        if t == last_seen {
+            continue;
+        }
+        // Counter reset (Start/Reset stores u64::MAX then ticks from 0).
+        if t < last_seen {
+            last_beat = u64::MAX;
+            METRONOME_HIGH.store(true, Ordering::Relaxed);
+            high_left_ms = METRONOME_HIGH_MS as u16;
+        }
+        last_seen = t;
+
+        // First tick of each quarter note (every 24 PPQN ticks), same as before.
+        let beat = t / 24;
+        if beat != last_beat {
+            last_beat = beat;
+            METRONOME_HIGH.store(true, Ordering::Relaxed);
+            high_left_ms = METRONOME_HIGH_MS as u16;
         }
     }
 }
@@ -360,7 +374,9 @@ async fn run_clock_gatekeeper() {
                         {
                             // Relies on AtomicU64 wrapping on overflow MAX + 1 to ensure first reported TICK_COUNTER after a Clock::Start is always 0
                             TICK_COUNTER.fetch_add(1, Ordering::Relaxed);
-                            clock_publisher.publish(ClockEvent::Tick).await;
+                            // Never await here: a full CLOCK_PUBSUB blocks the gatekeeper,
+                            // CLOCK_IN then fills, and the whole device clock dies.
+                            clock_publisher.publish_immediate(ClockEvent::Tick);
                             send_analog_ticks(&spawner, &config, &mut analog_tick_counters).await;
                         }
                     }
