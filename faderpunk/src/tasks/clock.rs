@@ -34,7 +34,7 @@ use crate::{
 
 const CLOCK_PUBSUB_SIZE: usize = 16;
 // 16 apps + 1 metronome
-const CLOCK_PUBSUB_SUBSCRIBERS: usize = 17;
+const CLOCK_PUBSUB_SUBSCRIBERS: usize = 16;
 // Only the gatekeeper publishes to CLOCK_PUBSUB
 const CLOCK_PUBSUB_PUBLISHERS: usize = 5;
 // Add a slight delay before the very first tick (to offset it to reset)
@@ -311,26 +311,45 @@ async fn analog_tick_release(ports: heapless::Vec<Port, 4>, trigger_len: u64) {
     let _ = MAX_CHANNEL.sender().try_send(MaxCmd::GpoSetLowMany(ports));
 }
 
+/// Scene LED beat flash — polls [`TICK_COUNTER`] only.
+///
+/// Must never subscribe to [`CLOCK_PUBSUB`]: awaiting a timer while holding a
+/// subscriber slot lets the shared queue fill, and a gatekeeper that cannot
+/// publish stops the whole device clock.
 #[embassy_executor::task]
 async fn metronome() {
-    let mut sub = CLOCK_PUBSUB.subscriber().unwrap();
+    let mut last_seen = TICK_COUNTER.load(Ordering::Relaxed);
+    let mut last_beat = u64::MAX;
+    let mut high_left_ms: u16 = 0;
 
     loop {
-        match sub.next_message_pure().await {
-            ClockEvent::Tick(ticks) => {
-                // Fire on the first tick of each quarter note (every 24 ppqn ticks).
-                if ticks.is_multiple_of(24) {
-                    METRONOME_HIGH.store(true, Ordering::Relaxed);
-                    Timer::after_millis(METRONOME_HIGH_MS).await;
-                    METRONOME_HIGH.store(false, Ordering::Relaxed);
-                }
-            }
-            ClockEvent::Start | ClockEvent::Reset => {
-                METRONOME_HIGH.store(true, Ordering::Relaxed);
-            }
-            ClockEvent::Stop => {
+        Timer::after_millis(1).await;
+
+        if high_left_ms > 0 {
+            high_left_ms -= 1;
+            if high_left_ms == 0 {
                 METRONOME_HIGH.store(false, Ordering::Relaxed);
             }
+        }
+
+        let t = TICK_COUNTER.load(Ordering::Relaxed);
+        if t == last_seen {
+            continue;
+        }
+        // Counter reset (Start/Reset stores u64::MAX, then ticks from 0).
+        if t < last_seen {
+            last_beat = u64::MAX;
+            METRONOME_HIGH.store(true, Ordering::Relaxed);
+            high_left_ms = METRONOME_HIGH_MS as u16;
+        }
+        last_seen = t;
+
+        // First tick of each quarter note (every 24 PPQN ticks).
+        let beat = t / 24;
+        if beat != last_beat {
+            last_beat = beat;
+            METRONOME_HIGH.store(true, Ordering::Relaxed);
+            high_left_ms = METRONOME_HIGH_MS as u16;
         }
     }
 }
