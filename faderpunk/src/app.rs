@@ -23,7 +23,7 @@ use crate::{
     events::{EventPubSubChannel, InputEvent},
     tasks::{
         buttons::{is_channel_button_pressed, is_shift_button_pressed},
-        clock::{ClockSubscriber, CLOCK_PUBSUB, CLOCK_RUNNING, CURRENT_TICK, GLOBAL_SWING},
+        clock::{ClockSubscriber, CLOCK_PUBSUB, TICK_COUNTER},
         global_config::get_global_config,
         i2c::I2cLeaderPublisher,
         leds::{set_led_mode, LedMsg},
@@ -800,29 +800,16 @@ impl<const N: usize> App<N> {
         Clock::new()
     }
 
-    /// Current global swing amount ([-35, 35], 0 = straight), as dialed in by
-    /// the user. Apps that add their own swing/groove should read this to
-    /// avoid fighting the user's setting.
-    #[allow(dead_code)]
-    pub fn global_swing(&self) -> i8 {
-        GLOBAL_SWING.load(Ordering::Relaxed)
-    }
-
-    /// Synchronous snapshot of the absolute tick count (24 PPQN) since the last
-    /// clock reset/start, without awaiting `Clock::wait_for_event`. `None` means
-    /// no tick has occurred yet since the last reset/startup.
-    #[allow(dead_code)]
-    pub fn current_tick(&self) -> Option<u64> {
-        let tick = CURRENT_TICK.load(Ordering::Relaxed);
-        (tick != u64::MAX).then_some(tick)
-    }
-
-    /// Synchronous, real-time read of whether the clock is currently running,
-    /// for apps that need this outside of reacting to `ClockEvent::Start`/
-    /// `Stop`. See `tasks::clock::CLOCK_RUNNING` for the analog-source caveat.
-    #[allow(dead_code)]
-    pub fn is_clock_running(&self) -> bool {
-        CLOCK_RUNNING.load(Ordering::Relaxed)
+    /// Poll the current tick instead of subscribing to the clock.
+    ///
+    /// For apps that derive everything from the tick number and never react to
+    /// Start/Stop/Reset. Unlike [`Self::use_clock`] this costs no subscriber
+    /// slot, and an app that falls behind cannot back up the shared clock
+    /// queue. Returns `u64::MAX` before the first tick; the counter going
+    /// backwards means the clock was restarted or reset.
+    #[allow(dead_code)] // first users are the WIP app branches
+    pub fn clock_ticker(&self) -> fn() -> u64 {
+        ticks
     }
 
     pub fn use_quantizer(&self, range: Range, vpo: VoltPerOct, bypass: bool) -> Quantizer {
@@ -899,4 +886,9 @@ pub fn pitch_as_counts(pitch: Pitch, range: Range, vpo: VoltPerOct) -> u16 {
 /// from the live global config.
 pub fn vpo_counts_per_oct(vpo: VoltPerOct) -> i16 {
     get_global_config().vpo_counts_per_oct(vpo)
+}
+
+#[allow(dead_code)] // see App::clock_ticker
+fn ticks() -> u64 {
+    TICK_COUNTER.load(Ordering::Relaxed)
 }

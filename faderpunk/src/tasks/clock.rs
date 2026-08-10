@@ -16,7 +16,7 @@ use embassy_sync::{
 use embassy_time::{Duration, Instant, Timer};
 use heapless::Deque;
 use midly::live::SystemRealtime;
-use portable_atomic::{AtomicBool, AtomicI8, AtomicU64, Ordering};
+use portable_atomic::{AtomicBool, AtomicU64, Ordering};
 
 use libfp::{
     utils::bpm_to_clock_duration, AuxJackMode, ClockSrc, GlobalConfig, MidiOut, MidiOutConfig,
@@ -47,15 +47,13 @@ const METRONOME_HIGH_MS: u64 = 25;
 
 pub static METRONOME_HIGH: AtomicBool = AtomicBool::new(true);
 
-/// Point-to-point notification for the metronome only, fed by the gatekeeper.
+/// Current gatekeeper tick, mirrored for readers that only need the count.
 ///
 /// A [`CLOCK_PUBSUB`] subscription costs a queue slot and obliges the reader to
-/// keep draining it; `signal()` is a single-slot mailbox that a producer can
-/// never block on, so the gatekeeper can notify the metronome the same way it
-/// publishes to CLOCK_PUBSUB without risking a stall if the metronome is busy
-/// (e.g. mid beat-flash). Overwriting an unread value only costs the metronome
-/// a beat, same tradeoff as CLOCK_PUBSUB's `publish_immediate` for apps.
-static METRONOME_SIGNAL: Signal<CriticalSectionRawMutex, ClockEvent> = Signal::new();
+/// keep draining it; anything that only wants "which tick is it" can poll this
+/// instead and never influence the gatekeeper. `u64::MAX` means "not started" —
+/// the first tick after a Start/Reset is 0.
+pub static TICK_COUNTER: AtomicU64 = AtomicU64::new(u64::MAX);
 
 type AuxInputs = (
     Peri<'static, PIN_1>,
@@ -444,15 +442,10 @@ async fn run_clock_gatekeeper() {
                             || matches!(source, ClockSrc::Atom | ClockSrc::Meteor | ClockSrc::Cube)
                         {
                             tick_counter = tick_counter.wrapping_add(1);
-                            CURRENT_TICK.store(tick_counter, Ordering::Relaxed);
-                            // Never await on the tick path: a subscriber that
-                            // sleeps while holding its slot fills the queue,
-                            // and a blocked gatekeeper stops the whole device
-                            // clock. Overwriting the oldest tick only costs a
-                            // lagged subscriber a beat. METRONOME_SIGNAL is a
-                            // single-slot mailbox, so signal() never blocks either.
-                            clock_publisher.publish_immediate(ClockEvent::Tick(tick_counter));
-                            METRONOME_SIGNAL.signal(ClockEvent::Tick(tick_counter));
+                            TICK_COUNTER.store(tick_counter, Ordering::Relaxed);
+                            clock_publisher
+                                .publish(ClockEvent::Tick(tick_counter))
+                                .await;
                             send_analog_ticks(&spawner, &config, &mut analog_tick_counters).await;
                         }
                     }
@@ -474,7 +467,7 @@ async fn run_clock_gatekeeper() {
                     // (Re-)start the clock. Full phase reset
                     ClockInEvent::Start(_) => {
                         tick_counter = u64::MAX;
-                        CURRENT_TICK.store(tick_counter, Ordering::Relaxed);
+                        TICK_COUNTER.store(u64::MAX, Ordering::Relaxed);
                         is_running = true;
                         clock_publisher.publish(ClockEvent::Reset).await;
                         clock_publisher.publish(ClockEvent::Start).await;
@@ -493,7 +486,7 @@ async fn run_clock_gatekeeper() {
                     // Reset the phase without affecting the run state
                     ClockInEvent::Reset(_) => {
                         tick_counter = u64::MAX;
-                        CURRENT_TICK.store(tick_counter, Ordering::Relaxed);
+                        TICK_COUNTER.store(u64::MAX, Ordering::Relaxed);
                         clock_publisher.publish(ClockEvent::Reset).await;
                         METRONOME_SIGNAL.signal(ClockEvent::Reset);
                         analog_tick_counters = [0; 3];
