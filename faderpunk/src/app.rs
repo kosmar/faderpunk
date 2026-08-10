@@ -2,6 +2,7 @@ use core::cell::RefCell;
 
 use embassy_futures::select::{select, Either};
 use embassy_rp::clocks::RoscRng;
+use embassy_sync::pubsub::WaitResult;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, signal::Signal};
 use embassy_time::Timer;
 use max11300::config::{
@@ -163,10 +164,16 @@ impl<const N: usize> Buttons<N> {
         let mut subscriber = self.event_pubsub.subscriber().unwrap();
 
         loop {
-            if let InputEvent::ButtonDown(channel) = subscriber.next_message_pure().await {
-                if (self.start_channel..self.start_channel + N).contains(&channel) {
-                    return (channel - self.start_channel, self.is_shift_pressed());
+            match subscriber.next_message().await {
+                WaitResult::Lagged(_) => {
+                    Timer::after_millis(1).await;
                 }
+                WaitResult::Message(InputEvent::ButtonDown(channel)) => {
+                    if (self.start_channel..self.start_channel + N).contains(&channel) {
+                        return (channel - self.start_channel, self.is_shift_pressed());
+                    }
+                }
+                WaitResult::Message(_) => {}
             }
         }
     }
@@ -187,10 +194,16 @@ impl<const N: usize> Buttons<N> {
         let mut subscriber = self.event_pubsub.subscriber().unwrap();
 
         loop {
-            if let InputEvent::ButtonUp(channel) = subscriber.next_message_pure().await {
-                if (self.start_channel..self.start_channel + N).contains(&channel) {
-                    return (channel - self.start_channel, self.is_shift_pressed());
+            match subscriber.next_message().await {
+                WaitResult::Lagged(_) => {
+                    Timer::after_millis(1).await;
                 }
+                WaitResult::Message(InputEvent::ButtonUp(channel)) => {
+                    if (self.start_channel..self.start_channel + N).contains(&channel) {
+                        return (channel - self.start_channel, self.is_shift_pressed());
+                    }
+                }
+                WaitResult::Message(_) => {}
             }
         }
     }
@@ -210,10 +223,16 @@ impl<const N: usize> Buttons<N> {
         let mut subscriber = self.event_pubsub.subscriber().unwrap();
 
         loop {
-            if let InputEvent::ButtonLongPress(channel) = subscriber.next_message_pure().await {
-                if (self.start_channel..self.start_channel + N).contains(&channel) {
-                    return (channel - self.start_channel, self.is_shift_pressed());
+            match subscriber.next_message().await {
+                WaitResult::Lagged(_) => {
+                    Timer::after_millis(1).await;
                 }
+                WaitResult::Message(InputEvent::ButtonLongPress(channel)) => {
+                    if (self.start_channel..self.start_channel + N).contains(&channel) {
+                        return (channel - self.start_channel, self.is_shift_pressed());
+                    }
+                }
+                WaitResult::Message(_) => {}
             }
         }
     }
@@ -258,10 +277,16 @@ impl<const N: usize> Faders<N> {
         let mut subscriber = self.event_pubsub.subscriber().unwrap();
 
         loop {
-            if let InputEvent::FaderChange(channel) = subscriber.next_message_pure().await {
-                if (self.start_channel..self.start_channel + N).contains(&channel) {
-                    return channel - self.start_channel;
+            match subscriber.next_message().await {
+                WaitResult::Lagged(_) => {
+                    Timer::after_millis(1).await;
                 }
+                WaitResult::Message(InputEvent::FaderChange(channel)) => {
+                    if (self.start_channel..self.start_channel + N).contains(&channel) {
+                        return channel - self.start_channel;
+                    }
+                }
+                WaitResult::Message(_) => {}
             }
         }
     }
@@ -315,17 +340,24 @@ impl Clock {
 
     pub async fn wait_for_event(&mut self, division: ClockDivision) -> ClockEvent {
         loop {
-            match self.subscriber.next_message_pure().await {
-                ClockEvent::Tick => {
+            // Prefer next_message (not pure): Lagged must yield. publish_immediate
+            // on the gatekeeper can lag slow use_clock() apps; busy-looping on
+            // Lagged starves Core 1 and fills every other queue.
+            match self.subscriber.next_message().await {
+                WaitResult::Lagged(_) => {
+                    Timer::after_millis(1).await;
+                }
+                WaitResult::Message(ClockEvent::Tick) => {
                     let ticks = TICK_COUNTER.load(Ordering::Relaxed);
                     if ticks.is_multiple_of(division as u64) {
                         return ClockEvent::Tick;
                     }
                 }
-                ClockEvent::Stop => {
+                WaitResult::Message(ClockEvent::Stop) => {
                     return ClockEvent::Stop;
                 }
-                clock_event @ ClockEvent::Start | clock_event @ ClockEvent::Reset => {
+                WaitResult::Message(clock_event @ ClockEvent::Start)
+                | WaitResult::Message(clock_event @ ClockEvent::Reset) => {
                     return clock_event;
                 }
             }
@@ -398,9 +430,19 @@ impl MidiOutput {
     }
 
     async fn send_midi_msg(&self, msg: MidiMessage) {
-        // NoteOff always passes the soft-mute — dropping it hangs a note.
-        if crate::tasks::midi::perf_local_muted_public()
-            && !matches!(msg, MidiMessage::NoteOff { .. })
+        // Hard mute (spawn / HoldPerfMute): drop Local except NoteOff.
+        // Soft mute (post-layout grace): only suppress CC/NRPN — NoteOn must
+        // pass or USB scopes see NoteOff-only storms while CV still plays.
+        let soft_only = crate::tasks::midi::perf_local_soft_muted_only();
+        let hard = crate::tasks::midi::perf_local_hard_muted();
+        if hard && !matches!(msg, MidiMessage::NoteOff { .. }) {
+            return;
+        }
+        if soft_only
+            && !matches!(
+                msg,
+                MidiMessage::NoteOff { .. } | MidiMessage::NoteOn { .. }
+            )
         {
             return;
         }
@@ -479,7 +521,8 @@ impl MidiOutput {
     /// Non-blocking NoteOn — drops if `APP_MIDI_CHANNEL` is full instead of
     /// stalling Core 1 (dense melodic apps + busy playground).
     pub fn try_send_note_on(&self, note_number: MidiNote, velocity: u16) {
-        if crate::tasks::midi::perf_local_muted_public() {
+        // Soft mute must not swallow NoteOn (CV still plays → USB NoteOff-only).
+        if crate::tasks::midi::perf_local_hard_muted() {
             return;
         }
         let message = MidiMessage::NoteOn {
@@ -931,14 +974,18 @@ impl<const N: usize> App<N> {
         let mut subscriber = self.event_pubsub.subscriber().unwrap();
 
         loop {
-            match subscriber.next_message_pure().await {
-                InputEvent::LoadSceneFromButton(scene) | InputEvent::LoadSceneFromMidi(scene) => {
+            match subscriber.next_message().await {
+                WaitResult::Lagged(_) => {
+                    Timer::after_millis(1).await;
+                }
+                WaitResult::Message(InputEvent::LoadSceneFromButton(scene))
+                | WaitResult::Message(InputEvent::LoadSceneFromMidi(scene)) => {
                     return SceneEvent::LoadScene(scene);
                 }
-                InputEvent::SaveScene(scene) => {
+                WaitResult::Message(InputEvent::SaveScene(scene)) => {
                     return SceneEvent::SaveScene(scene);
                 }
-                _ => {}
+                WaitResult::Message(_) => {}
             }
         }
     }

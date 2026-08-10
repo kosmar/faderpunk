@@ -83,10 +83,13 @@ static PERF_LOCAL_LAST_MS: portable_atomic::AtomicU32 = portable_atomic::AtomicU
 /// during soft mute (only their Local MIDI is dropped), and a host push keeps
 /// it alive via CONFIG_SOFT_MUTE_EXTEND_MS on every config message anyway.
 /// This also arms on FRAM boot, so long values stall standalone MIDI output.
-pub const POST_LAYOUT_PERF_MUTE_MS: u32 = 4_000;
+/// Was 4000 — swallowed every NoteOn for seconds (USB saw only NoteOffs), then
+/// dense multi-app play still wedged the device.
+pub const POST_LAYOUT_PERF_MUTE_MS: u32 = 400;
 
 /// Sliding extension on every config SysEx so soft-mute cannot expire mid-push.
-pub const CONFIG_SOFT_MUTE_EXTEND_MS: u32 = 8_000;
+/// Keep short so a live Scopepunk/config session cannot mute NoteOns forever.
+pub const CONFIG_SOFT_MUTE_EXTEND_MS: u32 = 1_200;
 
 pub fn set_layout_usb_midi_mute(mute: bool) {
     LAYOUT_USB_MIDI_MUTE.store(mute, Ordering::Relaxed);
@@ -153,6 +156,23 @@ fn perf_local_muted() -> bool {
     }
     if HOST_HOLDS_PERF_MUTE.load(Ordering::Relaxed) {
         return true;
+    }
+    let until = PERF_LOCAL_MUTE_UNTIL_MS.load(Ordering::Relaxed);
+    if until == 0 {
+        return false;
+    }
+    (Instant::now().as_millis() as u32) < until
+}
+
+/// Spawn / HoldPerfMute — drop Local except NoteOff.
+pub fn perf_local_hard_muted() -> bool {
+    LAYOUT_USB_MIDI_MUTE.load(Ordering::Relaxed) || HOST_HOLDS_PERF_MUTE.load(Ordering::Relaxed)
+}
+
+/// Post-layout grace only (no hard mute) — CC quiet, notes still allowed.
+pub fn perf_local_soft_muted_only() -> bool {
+    if perf_local_hard_muted() {
+        return false;
     }
     let until = PERF_LOCAL_MUTE_UNTIL_MS.load(Ordering::Relaxed);
     if until == 0 {
@@ -443,15 +463,17 @@ pub async fn midi_distributor() {
     let midi_out_sender = MIDI_CHANNEL.sender();
     let app_midi_receiver = APP_MIDI_CHANNEL.receiver();
     let mut ticker = Ticker::every(Duration::from_millis(2));
+    // Soft-hang symptom: ports up, zero Local MIDI for minutes — often
+    // LAYOUT_USB_MIDI_MUTE / HoldPerfMute left asserted after a wedged spawn.
+    let mut mute_watch_ticks: u32 = 0;
 
     loop {
         match select(app_midi_receiver.receive(), ticker.next()).await {
             // A new message from an app has arrived, enqueue it.
             Either::First((start_channel, ev)) => {
-                // During SetLayout, drop Local traffic before it reaches Core 0
-                // midi_out (note-off storms + mute-drain starved USB SOFs).
-                // NoteOff always passes — dropping it hangs a sounding note.
-                if perf_local_muted() {
+                // Hard mute: drop Local except NoteOff.
+                // Soft mute: notes pass (CC still dropped later in midi_out).
+                if perf_local_hard_muted() {
                     let is_local = matches!(
                         &ev,
                         MidiMsg::Live {
@@ -473,6 +495,22 @@ pub async fn midi_distributor() {
             }
             // The throttle timer has fired, send a small burst.
             Either::Second(_) => {
+                mute_watch_ticks = mute_watch_ticks.wrapping_add(1);
+                // ~5 s at 2 ms ticks
+                if mute_watch_ticks.is_multiple_of(2500) {
+                    let hard = LAYOUT_USB_MIDI_MUTE.load(Ordering::Relaxed);
+                    let hold = HOST_HOLDS_PERF_MUTE.load(Ordering::Relaxed);
+                    let spawning = LAYOUT_SPAWN_ACTIVE.load(Ordering::Relaxed);
+                    if hard && !hold && !spawning {
+                        defmt::warn!("midi: clearing stuck LAYOUT_USB_MIDI_MUTE");
+                        LAYOUT_USB_MIDI_MUTE.store(false, Ordering::Relaxed);
+                    }
+                    // Abandoned Full Push (no Release) — unmute after ~60 s.
+                    if hold && mute_watch_ticks.is_multiple_of(30_000) {
+                        defmt::warn!("midi: force-clearing stuck HoldPerfMute");
+                        set_host_holds_perf_mute(false);
+                    }
+                }
                 for _ in 0..MIDI_BURST_PER_TICK {
                     let mut sent = false;
 
@@ -480,7 +518,7 @@ pub async fn midi_distributor() {
                     for i in 0..16 {
                         let app_idx = (last_app_id + 1 + i) % 16;
                         if let Some(ev) = app_queues[app_idx].pop_front() {
-                            midi_out_sender.send(MidiOutEvent::Event(ev)).await;
+                            midi_out_sender.try_send(MidiOutEvent::Event(ev)).ok();
                             last_app_id = app_idx;
                             sent = true;
                             break;
@@ -575,15 +613,17 @@ pub async fn midi_out_task<'a>(
                         mut target,
                         source,
                     }) => {
-                        // Layout transition + post-spawn grace: drop Local
-                        // (USB+DIN). Mute-only USB skips used to spin-drain
-                        // this queue and starve usb.run() / config.
-                        if matches!(source, MidiEventSource::Local)
-                            && perf_local_muted()
-                            && !is_note_off_event(&event)
-                        {
-                            yield_now().await;
-                            continue;
+                        // Hard mute: Local except NoteOff.
+                        // Soft mute: notes pass; CC/other still dropped.
+                        if matches!(source, MidiEventSource::Local) {
+                            if perf_local_hard_muted() && !is_note_off_event(&event) {
+                                yield_now().await;
+                                continue;
+                            }
+                            if perf_local_soft_muted_only() && !is_note_event(&event) {
+                                yield_now().await;
+                                continue;
+                            }
                         }
                         // Disable targets where we have a strict THRU port or no output.
                         // Only for local events; passthrough and clock are handled elsewhere.
