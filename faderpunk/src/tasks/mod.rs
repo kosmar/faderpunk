@@ -9,4 +9,5 @@ pub mod input_handlers;
 pub mod leds;
 pub mod max;
 pub mod midi;
+pub mod panic_beacon;
 pub mod transport;
