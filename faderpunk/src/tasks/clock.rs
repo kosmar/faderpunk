@@ -339,13 +339,7 @@ async fn send_analog_reset(spawner: &Spawner, config: &GlobalConfig) {
 #[embassy_executor::task(pool_size = 4)]
 async fn analog_tick_release(ports: heapless::Vec<Port, 4>, trigger_len: u64) {
     Timer::after_millis(trigger_len).await;
-    // This task runs off the gatekeeper's path, so blocking here only delays
-    // this release, never the clock: awaiting a queue slot is safe, and the
-    // port is guaranteed to eventually go low instead of getting stuck high.
-    MAX_CHANNEL
-        .sender()
-        .send(MaxCmd::GpoSetLowMany(ports))
-        .await;
+    let _ = MAX_CHANNEL.sender().try_send(MaxCmd::GpoSetLowMany(ports));
 }
 
 /// Scene LED beat flash — waits on [`METRONOME_SIGNAL`] only.
@@ -444,15 +438,12 @@ async fn run_clock_gatekeeper() {
                             || matches!(source, ClockSrc::Atom | ClockSrc::Meteor | ClockSrc::Cube)
                         {
                             tick_counter = tick_counter.wrapping_add(1);
-                            CURRENT_TICK.store(tick_counter, Ordering::Relaxed);
                             // Never await on the tick path: a subscriber that
                             // sleeps while holding its slot fills the queue,
                             // and a blocked gatekeeper stops the whole device
                             // clock. Overwriting the oldest tick only costs a
-                            // lagged subscriber a beat. METRONOME_SIGNAL is a
-                            // single-slot mailbox, so signal() never blocks either.
+                            // lagged subscriber a beat.
                             clock_publisher.publish_immediate(ClockEvent::Tick(tick_counter));
-                            METRONOME_SIGNAL.signal(ClockEvent::Tick(tick_counter));
                             send_analog_ticks(&spawner, &config, &mut analog_tick_counters).await;
                         }
                     }
