@@ -9,6 +9,7 @@ embedded-io-async = "0.6.1"
 embassy-embedded-hal = { version = "0.3.2", features = ["defmt"] }
 embassy-sync = { version = "0.7.2", features = ["defmt"] }
 embassy-executor = { version = "0.7.0", features = [
+  # Sized for a full 16-channel layout of dense apps.
   "task-arena-size-262144",
   "arch-cortex-m",
   "executor-thread",

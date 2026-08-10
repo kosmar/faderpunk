@@ -78,7 +78,10 @@ bind_interrupts!(struct Irqs {
     UART1_IRQ => uart::BufferedInterruptHandler<UART1>;
 });
 
-static mut CORE1_STACK: Stack<196_608> = Stack::new();
+// Apps poll deep join/select futures on this thread stack. Core 1's stack and
+// Core 0's both come out of the RAM left over after .bss, so raising this
+// directly shrinks Core 0 — keep it here unless an app actually overflows.
+static mut CORE1_STACK: Stack<131_072> = Stack::new();
 static EXECUTOR1: StaticCell<Executor> = StaticCell::new();
 
 /// MIDI buffers (RX and TX)
