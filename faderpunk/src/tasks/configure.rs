@@ -66,32 +66,16 @@ pub static APP_PARAM_CHANNEL: Channel<
     GLOBAL_CHANNELS,
 > = Channel::new();
 
-/// One bit per layout id: set when that app's params changed on the device
-/// itself (`ParamStore::update`), rather than via a host `SetAppParams`.
-/// `GetChangedAppParams` swaps this to 0 and re-fetches the current values for
-/// every id that was set, so a host polling it learns about device-driven
-/// changes without the device ever sending unsolicited SysEx — see the
-/// `#640` review for why a push doesn't work: the configurator can't tell one
-/// apart from a reply to whatever it just asked.
-pub static APP_PARAM_DIRTY: AtomicU16 = AtomicU16::new(0);
-
-/// Marks `layout_id`'s params as changed on the device, for `GetChangedAppParams`
-/// to pick up. `layout_id` is always a channel a `ParamStore` was constructed
-/// for, so always < `GLOBAL_CHANNELS`; out-of-range is ignored rather than
-/// panicking, since it can now arrive from an FPApp over the host boundary
-/// (`blob_kind::PARAM_DIRTY`).
-pub fn mark_params_dirty(layout_id: u8) {
-    defmt::info!("DEBUG mark_params_dirty layout_id={}", layout_id);
-    if let Some(bit) = 1u16.checked_shl(u32::from(layout_id)) {
-        APP_PARAM_DIRTY.fetch_or(bit, Ordering::Relaxed);
-        defmt::info!(
-            "DEBUG mark_params_dirty set bit, mask now={:016b}",
-            APP_PARAM_DIRTY.load(Ordering::Relaxed)
-        );
-    } else {
-        defmt::info!("DEBUG mark_params_dirty layout_id out of range");
-    }
-}
+/// Unsolicited app→host param updates, e.g. a gesture that picks a genre on
+/// the device. Forwarded as `AppState` while the config loop is idle so hosts
+/// track on-device edits live. Kept separate from [`APP_PARAM_CHANNEL`], which
+/// carries request/response replies only — a push queued there would be
+/// drained as a stale reply and never reach the host.
+pub static APP_PARAM_PUSH_CHANNEL: Channel<
+    CriticalSectionRawMutex,
+    (u8, Vec<Value, APP_MAX_PARAMS>),
+    4,
+> = Channel::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum ProtocolError {
@@ -168,10 +152,18 @@ pub async fn start_config_loop<'a>(usb_tx: &'a SharedUsbSender<'a>) {
     let mut layout = layout_receiver.get().await;
     let mut pending_voct_eviction: Option<(u8, EvictedApp)> = None;
     loop {
-        let msg = match proto.read_msg().await {
-            Ok(msg) => msg,
-            Err(err) => {
+        // Cancel-safe: read_msg awaits on the frame channel, so no partial
+        // frame state is lost when the select flips to a push.
+        let msg = match select(proto.read_msg(), APP_PARAM_PUSH_CHANNEL.receive()).await {
+            Either::First(Ok(msg)) => msg,
+            Either::First(Err(err)) => {
                 defmt::warn!("Dropping invalid config frame: {}", err);
+                continue;
+            }
+            Either::Second((id, values)) => {
+                if let Err(err) = proto.send_msg(ConfigMsgOut::AppState(id, &values)).await {
+                    defmt::warn!("Failed to push AppState({}): {}", id, err);
+                }
                 continue;
             }
         };

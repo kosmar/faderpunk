@@ -714,24 +714,11 @@ impl<P: AppParams> ParamStore<P> {
         accessor(&*guard)
     }
 
-    /// Changes a param from inside the app — e.g. a panel gesture that picks a
-    /// value the user could otherwise only set from the configurator — and
-    /// persists it. Marks the layout dirty rather than pushing the change over
-    /// MIDI: an unsolicited message on the config connection has no way to be
-    /// told apart from a reply to whatever the host just asked (see the `#640`
-    /// review), so the host instead learns about it next time it calls
-    /// `GetChangedAppParams`, which reads the *current* values rather than a
-    /// value snapshotted here.
+    /// Change a param from inside the app, persist it, and tell the host.
     ///
-    /// Does not restart `run()` — unlike a host-driven `SetAppParams`, which
-    /// only restarts on an applied change. A gesture already runs inside
-    /// `run()`, so restarting it out from under itself would be wrong; a
-    /// param that must be re-derived by other in-flight state should re-derive
-    /// it at the same point the gesture applies it, not rely on a restart.
-    ///
-    /// No built-in app calls this yet — see AGENTS.md/the `#640` decision on
-    /// why device-driven param edits are deliberately rare. Kept available
-    /// (and mirrored in `fpapp-sdk`) for the apps that do want it.
+    /// Params normally travel host→device. An app that lets the user pick a
+    /// value on the hardware has to close the loop itself, otherwise the
+    /// configurator keeps showing the old value until the app restarts.
     #[allow(dead_code)]
     pub async fn update<F>(&self, modifier: F)
     where
@@ -742,7 +729,11 @@ impl<P: AppParams> ParamStore<P> {
             modifier(&mut inner);
         }
         self.save().await;
-        mark_params_dirty(self.layout_id);
+        let values = {
+            let guard = self.inner.borrow();
+            guard.to_values()
+        };
+        let _ = crate::tasks::configure::APP_PARAM_PUSH_CHANNEL.try_send((self.layout_id, values));
     }
 
     pub async fn param_handler(&self) {
