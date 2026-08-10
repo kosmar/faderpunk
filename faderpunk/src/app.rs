@@ -347,10 +347,9 @@ impl Clock {
                 WaitResult::Lagged(_) => {
                     Timer::after_millis(1).await;
                 }
-                WaitResult::Message(ClockEvent::Tick) => {
-                    let ticks = TICK_COUNTER.load(Ordering::Relaxed);
+                WaitResult::Message(ClockEvent::Tick(ticks)) => {
                     if ticks.is_multiple_of(division as u64) {
-                        return ClockEvent::Tick;
+                        return ClockEvent::Tick(ticks);
                     }
                 }
                 WaitResult::Message(ClockEvent::Stop) => {
@@ -456,6 +455,12 @@ impl MidiOutput {
 
     /// Sends a MIDI CC message. In NRPN mode, sends as 14-bit NRPN instead.
     /// value is normalized to a range of 0-4095
+    ///
+    /// Non-blocking: callers use this for continuous "latest value wins"
+    /// streams (LFOs, CV converters, etc.), so a full app MIDI queue drops
+    /// this update rather than stalling the caller's control loop — the next
+    /// update supersedes it anyway. Unlike note on/off, dropping here can't
+    /// leave a stuck note.
     pub async fn send_cc(&self, cc: MidiCc, value: u16) {
         // Don't enqueue during HoldPerfMute / soft-mute — await-send would
         // fill APP_MIDI_CHANNEL and stall Core 1 while the distributor drops.
@@ -464,13 +469,17 @@ impl MidiOutput {
         }
         if self.nrpn_mode {
             let msg = MidiMsg::nrpn(self.midi_channel, cc.as_u16(), value, self.midi_out);
-            self.midi_sender.send((self.start_channel, msg)).await;
+            let _ = self.midi_sender.try_send((self.start_channel, msg));
         } else {
-            let msg = MidiMessage::Controller {
-                controller: cc.into(),
-                value: scale_bits_12_7(value),
+            let event = LiveEvent::Midi {
+                channel: self.midi_channel,
+                message: MidiMessage::Controller {
+                    controller: cc.into(),
+                    value: scale_bits_12_7(value),
+                },
             };
-            self.send_midi_msg(msg).await;
+            let msg = MidiMsg::new(event, self.midi_out, MidiEventSource::Local);
+            let _ = self.midi_sender.try_send((self.start_channel, msg));
         }
     }
 
@@ -1007,4 +1016,17 @@ impl<const N: usize> App<N> {
             self.reset().await;
         }
     }
+}
+
+/// Convert a quantized pitch to DAC counts, resolving any Custom V/Oct curve
+/// from the live global config. Prefer this over `GlobalConfig::pitch_as_counts`
+/// in app code — no need to import or snapshot `get_global_config`.
+pub fn pitch_as_counts(pitch: Pitch, range: Range, vpo: VoltPerOct) -> u16 {
+    get_global_config().pitch_as_counts(pitch, range, vpo)
+}
+
+/// Return DAC counts-per-octave for `vpo`, resolving any Custom V/Oct curve
+/// from the live global config.
+pub fn vpo_counts_per_oct(vpo: VoltPerOct) -> i16 {
+    get_global_config().vpo_counts_per_oct(vpo)
 }

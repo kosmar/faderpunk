@@ -827,7 +827,7 @@ pub async fn run(
                     }
                     prev_pos = None;
                 }
-                ClockEvent::Tick => {
+                ClockEvent::Tick(_) => {
                     let tick = ticks();
                     let bars = bars_glob.get();
                     let mut b = buf.get();

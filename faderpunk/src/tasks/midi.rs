@@ -16,7 +16,6 @@ use embassy_sync::{
     pubsub::{PubSubChannel, Publisher, Subscriber},
 };
 use embassy_time::{with_timeout, Duration, Instant, Ticker, TimeoutError};
-use embassy_usb::class::midi::{Receiver as UsbReceiver, Sender as UsbSender};
 use embedded_io_async::{Read, Write};
 use heapless::{Deque, Vec};
 use midly::{
@@ -37,6 +36,7 @@ use crate::{
         configure::{CONFIG_FRAME_BUF, CONFIG_RX_CHANNEL},
         global_config::GLOBAL_CONFIG_WATCH,
     },
+    usb_midi::{Receiver as UsbReceiver, Sender as UsbSender},
 };
 
 /// Virtual USB-MIDI cable carrying the configurator SysEx protocol.
@@ -404,6 +404,10 @@ async fn write_msg_to_usb<'a>(
     usb_tx: &SharedUsbSender<'a>,
     midi_ev: LiveEvent<'a>,
 ) -> Result<(), TimeoutError> {
+    // No host attached: fail so the caller stops queueing for a dead endpoint.
+    if !crate::tasks::transport::USB_CONNECTED.load(Ordering::Relaxed) {
+        return Err(TimeoutError);
+    }
     // Hard layout mute + config hold only. Soft post-layout mute is enforced
     // on Local events in midi_out_task so clock can still tick on USB.
     if LAYOUT_USB_MIDI_MUTE.load(Ordering::Relaxed) || CONFIG_HOLDS_PERF_USB.load(Ordering::Relaxed)

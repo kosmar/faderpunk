@@ -662,7 +662,7 @@ pub async fn run(
     let clock_handler = async {
         loop {
             match clock.wait_for_event(ClockDivision::_1).await {
-                ClockEvent::Tick => {
+                ClockEvent::Tick(_) => {
                     let div_ticks =
                         DIVISION_TICKS[glob_division.get().min(DIVISION_TICKS.len() - 1)];
                     let clkn = ticks() as u32;

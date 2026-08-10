@@ -981,7 +981,7 @@ pub async fn run(
     let clock_handler = async {
         loop {
             match clk.wait_for_event(ClockDivision::_1).await {
-                ClockEvent::Tick => {
+                ClockEvent::Tick(_) => {
                     if storage.query(|s| s.clocked) {
                         glob_clock_held.set(false);
                     }

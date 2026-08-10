@@ -556,7 +556,7 @@ pub async fn run(
                     leds.unset(0, Led::Bottom);
                     leds.unset(1, Led::Bottom);
                 }
-                ClockEvent::Tick => {
+                ClockEvent::Tick(_) => {
                     let clkn = ticks() as u32;
                     let muted = glob_muted.get();
                     let latch = glob_latch_layer.get();

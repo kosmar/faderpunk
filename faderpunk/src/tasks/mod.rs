@@ -11,3 +11,4 @@ pub mod max;
 pub mod midi;
 pub mod panic_beacon;
 pub mod transport;
+pub mod voct_freq;

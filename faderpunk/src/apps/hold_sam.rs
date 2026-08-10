@@ -312,7 +312,7 @@ pub async fn run(
                     transport_stopped.set(true);
                     // Gate continues until gate_end_instant (polled by fut_release).
                 }
-                ClockEvent::Tick => {
+                ClockEvent::Tick(_) => {
                     let now = Instant::now();
                     let dt = now
                         .checked_duration_since(last_tick_at.get())

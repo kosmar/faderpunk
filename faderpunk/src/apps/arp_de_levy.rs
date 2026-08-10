@@ -631,7 +631,7 @@ pub async fn run(
                     leds.unset(0, Led::Top);
                     leds.unset(0, Led::Bottom);
                 }
-                ClockEvent::Tick => {
+                ClockEvent::Tick(_) => {
                     let clkn = ticks() as u32;
                     let octaves = clamp_octaves(glob_octaves.get());
                     let lo = base_midi(base_note);
