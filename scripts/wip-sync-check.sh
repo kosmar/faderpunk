@@ -109,6 +109,15 @@ rg -q 'Clock watch → voice engine' faderpunk/src/apps/arp_de_levy.rs && ok "Ar
 rg -q 'clock_ticker' faderpunk/src/apps/harmonica.rs && ok "Harmonica clock_ticker" || bad "Harmonica clock_ticker"
 rg -q 'clock_ticker' faderpunk/src/apps/control_issues.rs && ok "CI clock_ticker" || bad "CI clock_ticker"
 rg -q 'use_clock' faderpunk/src/apps/control_issues.rs && bad "CI must not use_clock" || ok "CI no use_clock"
+# Combo freeze: Grooves+Vamp+Bassment+Contura must not subscribe to CLOCK_PUBSUB.
+rg -q 'clock_ticker' faderpunk/src/apps/grooves.rs && ok "Grooves clock_ticker" || bad "Grooves clock_ticker"
+rg -q 'use_clock' faderpunk/src/apps/grooves.rs && bad "Grooves must not use_clock" || ok "Grooves no use_clock"
+rg -q 'clock_ticker' faderpunk/src/apps/vamp.rs && ok "Vamp clock_ticker" || bad "Vamp clock_ticker"
+rg -q 'use_clock' faderpunk/src/apps/vamp.rs && bad "Vamp must not use_clock" || ok "Vamp no use_clock"
+rg -q 'clock_ticker' faderpunk/src/apps/bassment.rs && ok "Bassment clock_ticker" || bad "Bassment clock_ticker"
+rg -q 'use_clock' faderpunk/src/apps/bassment.rs && bad "Bassment must not use_clock" || ok "Bassment no use_clock"
+rg -q 'clock_ticker' faderpunk/src/apps/contura.rs && ok "Contura clock_ticker" || bad "Contura clock_ticker"
+rg -q 'use_clock' faderpunk/src/apps/contura.rs && bad "Contura must not use_clock" || ok "Contura no use_clock"
 
 # --- modules for grooves tip ---
 [[ -f faderpunk/src/apps/groove.rs ]] && ok "groove.rs" || bad "groove.rs missing"

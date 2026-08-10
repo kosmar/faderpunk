@@ -7,3 +7,6 @@
 # devenv
 .devenv/
 .devenv.flake.nix
+
+# Python bytecode from the docs/cheatsheet scripts
+__pycache__/
