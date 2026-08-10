@@ -3,6 +3,7 @@
 //! Generates phrases with mixed note lengths. Each scale set carries a compact
 //! melodic feel (contour, leap, density bias, sustain, tonic pull, ornaments).
 //! Faders: Main = interval, Alt = phrase length, Third = note density.
+//! Jack = CV Out (pitch) or CV In (Density / Interval / Reset), Configurator-only.
 //! Labels and feels are conventional interval-pattern flavors — not claims
 //! about living musical practice. Optional follow of device tonic / scale.
 
@@ -16,8 +17,9 @@ use midly::num::u7;
 use serde::{Deserialize, Serialize};
 
 use libfp::{
-    ext::FromValue, latch::LatchLayer, quantizer::Pitch, AppIcon, Brightness, Color, Config, Key,
-    MidiChannel, MidiNote, MidiOut, Note, Param, Range, Value, VoltPerOct, APP_MAX_PARAMS,
+    ext::FromValue, latch::LatchLayer, quantizer::Pitch, utils::attenuate_bipolar, AppIcon,
+    Brightness, Color, Config, Key, MidiChannel, MidiNote, MidiOut, Note, Param, Range, Value,
+    VoltPerOct, APP_MAX_PARAMS,
 };
 
 use crate::{
@@ -26,11 +28,20 @@ use crate::{
 };
 
 pub const CHANNELS: usize = 1;
-pub const PARAMS: usize = 10;
+pub const PARAMS: usize = 13;
 
 const LED_BRIGHTNESS: Brightness = Brightness::Mid;
 const OCTAVE_BLINK_MS: u16 = 250;
 const BUTTON_DUCK_MS: u16 = 25;
+
+const CV_JACK_OUT: usize = 0;
+const CV_JACK_IN: usize = 1;
+const DEST_DENSITY: usize = 0;
+const DEST_INTERVAL: usize = 1;
+const DEST_RESET: usize = 2;
+const DEST_COUNT: usize = 3;
+/// ~+1.5 V on ±5 V jack — same gate threshold as Grooves / Bassment.
+const TRIG_HIGH: u16 = 2458;
 
 const MIN_PHRASE: u8 = 3;
 const MAX_PHRASE: u8 = 28;
@@ -408,6 +419,19 @@ pub static CONFIG: Config<PARAMS> = Config::new(
 .add_param(Param::Enum {
     name: "Division",
     variants: DIV_LABELS,
+})
+.add_param(Param::Enum {
+    name: "Jack",
+    variants: &["CV Out", "CV In"],
+})
+.add_param(Param::Enum {
+    name: "CV Dest",
+    variants: &["Density", "Interval", "Reset"],
+})
+.add_param(Param::i32 {
+    name: "CV Att",
+    min: 0,
+    max: 100,
 });
 
 pub struct Params {
@@ -421,6 +445,9 @@ pub struct Params {
     follow_scale: bool,
     scale_set: usize,
     division: usize,
+    cv_jack: usize,
+    cv_dest: usize,
+    cv_att: i32,
 }
 
 impl Default for Params {
@@ -436,15 +463,28 @@ impl Default for Params {
             follow_scale: false,
             scale_set: 0, // Ionian
             division: 6,  // 1/8 — quieter default on crowded playground USB
+            cv_jack: CV_JACK_OUT,
+            cv_dest: DEST_DENSITY,
+            cv_att: 100,
         }
     }
 }
 
 impl AppParams for Params {
     fn from_values(values: &[Value]) -> Option<Self> {
-        if values.len() < PARAMS {
+        // Pre-CV-dest layouts had 10 params; accept and default Jack/Dest/Att.
+        if values.len() < 10 {
             return None;
         }
+        let (cv_jack, cv_dest, cv_att) = if values.len() >= PARAMS {
+            (
+                usize::from_value(values[10]).min(1),
+                usize::from_value(values[11]).min(DEST_COUNT - 1),
+                i32::from_value(values[12]).clamp(0, 100),
+            )
+        } else {
+            (CV_JACK_OUT, DEST_DENSITY, 100)
+        };
         Some(Self {
             midi_channel: MidiChannel::from_value(values[0]),
             base_note: MidiNote::from_value(values[1]),
@@ -456,6 +496,9 @@ impl AppParams for Params {
             follow_scale: bool::from_value(values[7]),
             scale_set: usize::from_value(values[8]).min(SCALE_COUNT - 1),
             division: usize::from_value(values[9]).min(RESOLUTION.len() - 1),
+            cv_jack,
+            cv_dest,
+            cv_att,
         })
     }
 
@@ -471,8 +514,19 @@ impl AppParams for Params {
         vec.push(self.follow_scale.into()).unwrap();
         vec.push(self.scale_set.into()).unwrap();
         vec.push(self.division.into()).unwrap();
+        vec.push(self.cv_jack.into()).unwrap();
+        vec.push(self.cv_dest.into()).unwrap();
+        vec.push(self.cv_att.into()).unwrap();
         vec
     }
+}
+
+fn att_from_pct(pct: i32) -> u16 {
+    ((pct.clamp(0, 100) as u32 * 4095) / 100) as u16
+}
+
+fn mod_u16(base: u16, in_val: u16) -> u16 {
+    (base as i32 + in_val as i32 - 2047).clamp(0, 4095) as u16
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy)]
@@ -808,6 +862,9 @@ pub async fn run(
         follow_scale,
         scale_param,
         division,
+        cv_jack,
+        cv_dest,
+        cv_att,
     ) = params.query(|p| {
         (
             p.midi_out,
@@ -820,6 +877,9 @@ pub async fn run(
             p.follow_scale,
             p.scale_set,
             p.division,
+            p.cv_jack.min(1),
+            p.cv_dest.min(DEST_COUNT - 1),
+            att_from_pct(p.cv_att),
         )
     });
 
@@ -831,7 +891,16 @@ pub async fn run(
     let ticks = app.clock_ticker();
     let die = app.use_die();
     let midi = app.use_midi_output(midi_out, midi_chan, false);
-    let cv = app.make_out_jack(0, range).await;
+    let out_jack = if cv_jack == CV_JACK_OUT {
+        Some(app.make_out_jack(0, range).await)
+    } else {
+        None
+    };
+    let in_jack = if cv_jack == CV_JACK_IN {
+        Some(app.make_in_jack(0, Range::_Neg5_5V).await)
+    } else {
+        None
+    };
 
     let (interval0, phrase0, density0, _scale0, octaves0, muted0) = storage.query(|s| {
         (
@@ -863,6 +932,8 @@ pub async fn run(
     let glob_resets_voice = app.make_global(false);
     let glob_scale_dirty = app.make_global(false);
     let glob_fader_dirty = app.make_global(false);
+    let glob_cv_val = app.make_global(2047u16);
+    let glob_reset = app.make_global(false);
 
     if muted0 {
         leds.unset(0, Led::Button);
@@ -904,19 +975,18 @@ pub async fn run(
         let mut last_seen = ticks();
         let mut last_div_fire: u64 = u64::MAX;
         let mut stall_ms = 0u16;
+        let mut prev_gate_high = false;
 
         let silence = |note_on: &mut Option<u8>,
                        gated: &mut bool,
                        remain: &mut u8,
                        phrase_step: &mut u8| {
             if let Some(n) = note_on.take() {
-                
                 midi.try_send_note_off(MidiNote::from(n));
-            
             }
-            
-            cv.set_value(0);
-        
+            if let Some(ref jack) = out_jack {
+                jack.set_value(0);
+            }
             *gated = false;
             *remain = 0;
             *phrase_step = 0;
@@ -927,6 +997,20 @@ pub async fn run(
             // 2 ms: still tracks 1/8–1/32 boundaries; half the timer pressure.
             app.delay_millis(2).await;
             midi_quiet_ms = midi_quiet_ms.saturating_sub(2);
+
+            if let Some(ref input) = in_jack {
+                let in_val = attenuate_bipolar(input.get_value(), cv_att);
+                glob_cv_val.set(in_val);
+                if cv_dest == DEST_RESET {
+                    let high = in_val >= TRIG_HIGH;
+                    if high && !prev_gate_high {
+                        glob_reset.set(true);
+                    }
+                    prev_gate_high = high;
+                } else {
+                    prev_gate_high = false;
+                }
+            }
 
             if glob_silence_req.get() {
                 glob_silence_req.set(false);
@@ -964,17 +1048,29 @@ pub async fn run(
             let muted = glob_muted.get();
             let scale_set = glob_scale.get();
             let octaves = glob_octaves.get();
-            let interval = glob_interval.get();
+            let interval = if cv_jack == CV_JACK_IN && cv_dest == DEST_INTERVAL {
+                mod_u16(glob_interval.get(), glob_cv_val.get())
+            } else {
+                glob_interval.get()
+            };
             let phrase_f = glob_phrase.get();
-            let density_f = glob_density.get();
+            let density_f = if cv_jack == CV_JACK_IN && cv_dest == DEST_DENSITY {
+                mod_u16(glob_density.get(), glob_cv_val.get())
+            } else {
+                glob_density.get()
+            };
+
+            if glob_reset.get() {
+                glob_reset.set(false);
+                phrase_step = 0;
+                remain = 0;
+            }
 
             if scale_set != last_scale || octaves != last_oct || glob_resets_voice.get() {
                 glob_resets_voice.set(false);
                 if gated {
                     if let Some(n) = note_on.take() {
-                        
                         midi.try_send_note_off(MidiNote::from(n));
-                    
                     }
                     gated = false;
                     glob_gate_on.set(false);
@@ -1001,9 +1097,7 @@ pub async fn run(
             if muted {
                 if gated {
                     if let Some(n) = note_on.take() {
-                        
                         midi.try_send_note_off(MidiNote::from(n));
-                    
                     }
                     gated = false;
                 }
@@ -1018,9 +1112,7 @@ pub async fn run(
                 remain -= 1;
                 if remain == 0 && gated {
                     if let Some(n) = note_on.take() {
-                        
                         midi.try_send_note_off(MidiNote::from(n));
-                    
                     }
                     gated = false;
                     glob_gate_on.set(false);
@@ -1030,9 +1122,7 @@ pub async fn run(
                 if r > density {
                     if gated {
                         if let Some(n) = note_on.take() {
-                            
                             midi.try_send_note_off(MidiNote::from(n));
-                        
                         }
                         gated = false;
                         glob_gate_on.set(false);
@@ -1076,19 +1166,19 @@ pub async fn run(
                     .max(1);
                     if let Some(&note) = pool.get(idx.min(plen - 1)) {
                         let pitch_changed = note_on != Some(note);
-                        
-                        cv.set_value(note_to_pitch(note).as_counts(range, vpo));
-                    
+                        if let Some(ref jack) = out_jack {
+                            jack.set_value(note_to_pitch(note).as_counts(range, vpo));
+                        }
+
                         let gap = midi_gap_ms_for_div(div as u32);
                         if pitch_changed || midi_quiet_ms == 0 {
-                            
                             if let Some(old) = note_on {
                                 if old != note {
                                     midi.try_send_note_off(MidiNote::from(old));
                                 }
                             }
                             midi.try_send_note_on(MidiNote::from(note), 3200);
-                        
+
                             midi_quiet_ms = gap;
                         }
                         note_on = Some(note);
