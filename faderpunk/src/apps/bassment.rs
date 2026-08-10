@@ -22,9 +22,9 @@ use libfp::{
 };
 
 use crate::app::{
-    App, AppParams, AppStorage, Led, ManagedStorage, ParamStore, SceneEvent,
+    App, AppParams, AppStorage, Die, Led, ManagedStorage, ParamStore, SceneEvent,
 };
-use crate::apps::genre_palette::{genre_fader_center, GENRE_NAMES, NUM_GENRES};
+use crate::apps::genre_palette::{genre_fader_center, GENRE_NAMES, GENRE_PROG_8, NUM_GENRES};
 use crate::apps::groove::{
     feel_curve, feel_lerp_i32, feel_lerp_u16, swing_bias, swing_delay_ticks, FLAT_VEL, SIXTEENTH,
 };
@@ -208,28 +208,6 @@ const VOICE_FLASH_COLOR: [Color; NUM_VOICES] = [
 
 /// Phrase length in bars (rhythm + harmony cycle together).
 const PHRASE_BARS: u32 = 8;
-
-/// 8-bar chord roots (scale degrees). First 4 ≈ Chord Vamp tropes; bars 5–8 = answer / turnaround.
-const PHRASE_PROG: [[u8; 8]; NUM_GENRES] = [
-    // Dub — i–IV–i–V | i–IV–V–i
-    [0, 3, 0, 4, 0, 3, 4, 0],
-    // Disco — I–vi–IV–V | I–IV–V–I
-    [0, 5, 3, 4, 0, 3, 4, 0],
-    // House — i–VII–VI–VII | i–VI–VII–i
-    [0, 6, 5, 6, 0, 5, 6, 0],
-    // Techno — pedal + rare V | pedal + drop
-    [0, 0, 0, 4, 0, 0, 4, 0],
-    // Trip-Hop — i–VII–VI–v | i–VI–v–i
-    [0, 6, 5, 4, 0, 5, 4, 0],
-    // Hip-Hop — i–VI–III–VII | i–III–VI–VII
-    [0, 5, 2, 6, 0, 2, 5, 6],
-    // Jungle — i–VII–VI–III | i–VI–III–VII
-    [0, 6, 5, 2, 0, 5, 2, 6],
-    // UK Garage — i–III–VI–VII | i–VI–III–VII
-    [0, 2, 5, 6, 0, 5, 2, 6],
-    // Dubstep — i–i–VI–VII | i–VI–VII–i
-    [0, 0, 5, 6, 0, 5, 6, 0],
-];
 
 /// Rotate a 16-step mask left by `n` sixteenths (phrase answer / displacement).
 fn rot16(mask: u16, n: u32) -> u16 {
@@ -570,11 +548,21 @@ fn ghost_vel_pct(frac: u8, quiet: u16, full: u16) -> u16 {
     quiet + ((full - quiet) as u32 * frac as u32 / 255) as u16
 }
 
+/// Extra microtiming ticks at high groove (beyond pattern DNA).
+fn groove_timing_boost(feel: u16, groove_max_pct: i32, step: u32) -> i32 {
+    let g = groove_feel(feel, groove_max_pct);
+    let t = i32::from(feel_curve(g));
+    // Odd 16ths push later; some even 16ths pull early — classic pocket.
+    // Wider throw than before so Feel actually moves the pocket.
+    let signed = if step % 2 == 1 { 5 } else { -2 };
+    (signed * t) / 4095
+}
+
 fn ghost_drag_ticks(density: u16, feel: u16, groove_max_pct: i32) -> u32 {
     let g = groove_feel(feel, groove_max_pct);
     let dens = (density as u32 * 3) / 4095;
-    let feel_extra = (u32::from(feel_curve(g)) * 3) / 4095;
-    (dens + feel_extra).min(5)
+    let feel_extra = (u32::from(feel_curve(g)) * 4) / 4095;
+    (dens + feel_extra).min(6)
 }
 
 /// How many 16ths a hit can sustain before the next sounded step (1..=8).
@@ -619,15 +607,6 @@ fn feel_swing_pct(bias: u8, feel: u16, groove_max_pct: i32) -> i32 {
     // Blend: keep genre DNA but let Groove max open the ceiling.
     let pct = (from_bias * 2 + toward_max) / 3;
     pct.min(groove_max_pct.clamp(10, 100) as u32) as i32
-}
-
-/// Extra microtiming ticks at high groove (beyond pattern DNA).
-fn groove_timing_boost(feel: u16, groove_max_pct: i32, step: u32) -> i32 {
-    let g = groove_feel(feel, groove_max_pct);
-    let t = i32::from(feel_curve(g));
-    // Odd 16ths push later; some even 16ths pull early — classic pocket.
-    let signed = if step % 2 == 1 { 3 } else { -1 };
-    (signed * t) / 4095
 }
 
 fn midi_u8(note: MidiNote) -> u8 {
@@ -680,7 +659,31 @@ fn fold_pocket(degree: i8) -> i8 {
     }
 }
 
-/// Deterministic 0..99 hash from step + voice (no RNG needed).
+/// Soft Voice × Genre coupling (no new params): pocket voices tame Jungle/UKG fills;
+/// busy voices thin out in sparse Dub/Techno.
+fn voice_genre_bias(voice: &VoiceProfile, genre: usize) -> (u8, u8) {
+    let mut ghost = voice.ghost_pct;
+    let mut approach = voice.approach_pct;
+    match genre.min(NUM_GENRES - 1) {
+        6 | 7 if voice.pocket => {
+            // Jamerson/Robbie in Jungle / UK Garage — keep the pocket, cut ghosts.
+            ghost /= 3;
+            approach /= 2;
+        }
+        0 | 3 if !voice.pocket => {
+            // Busy voices in Dub / Techno — less chatter on sparse DNA.
+            ghost = ((ghost as u16 * 2) / 3) as u8;
+        }
+        5 | 6 if voice.approach_pct > 50 => {
+            // Walking/approach voices lean into Hip-Hop / Jungle answers.
+            approach = approach.saturating_add(12).min(100);
+        }
+        _ => {}
+    }
+    (ghost, approach)
+}
+
+/// Deterministic 0..99 hash from step + voice (hit masks / sustain lookahead).
 fn step_chance(step: u32, voice: usize, salt: u32) -> u8 {
     let x = step
         .wrapping_mul(37)
@@ -688,6 +691,15 @@ fn step_chance(step: u32, voice: usize, salt: u32) -> u8 {
         .wrapping_mul(17)
         .wrapping_add(salt);
     (x % 100) as u8
+}
+
+/// Groove-weighted roll: low Feel stays hash-locked; high Feel leans on live Die.
+fn chance_roll(die: &Die, step: u32, voice: usize, salt: u32, groove_t: u16) -> u8 {
+    let hashed = u32::from(step_chance(step, voice, salt));
+    let live = u32::from(die.roll() % 100);
+    // Cap live mix at ~80% so genre DNA still peeks through at max Feel.
+    let w = (u32::from(groove_t) * 4) / 5;
+    ((hashed * (4095 - w) + live * w) / 4095) as u8
 }
 
 struct ResolvedHit {
@@ -712,6 +724,7 @@ fn resolve_hit(
     voice_idx: usize,
     root_midi: u8,
     scale: usize,
+    die: &Die,
 ) -> Option<ResolvedHit> {
     let phrase_bar = bar % PHRASE_BARS;
     let rot = phrase_rot(phrase_bar);
@@ -721,6 +734,9 @@ fn resolve_hit(
     let si = phrase_degree_si(step, phrase_bar);
     let si_step = step % STEPS_PER_BAR;
 
+    let gfeel = groove_feel(feel, groove_max_pct);
+    let groove_t = feel_curve(gfeel); // 0..=4095 curved
+
     let core = bit_set(hits, si_step);
     let ghost = fill_reveal(hits_fill, density, si_step);
     let synth = if !core && ghost.is_none() {
@@ -728,15 +744,34 @@ fn resolve_hit(
     } else {
         None
     };
-    if !core && ghost.is_none() && synth.is_none() {
+
+    // Groovyland pickups: quiet lead-ins on the 'e'/'a' before the downbeat when
+    // Feel is up and DNA left the slot empty (hash keeps sustain lookahead stable;
+    // live Die decides whether the pickup actually fires).
+    let mut pickup = false;
+    if !core && ghost.is_none() && synth.is_none() && phrase_bar != 7 {
+        let pickup_chance = if matches!(si_step, 14 | 15) {
+            12u16 + (groove_t / 80)
+        } else if si_step % 4 == 3 && groove_t > 2200 {
+            6u16 + (groove_t / 120)
+        } else {
+            0
+        };
+        if pickup_chance > 0
+            && chance_roll(die, step, voice_idx, 41, groove_t) < pickup_chance.min(55) as u8
+        {
+            pickup = true;
+        }
+    }
+
+    if !core && ghost.is_none() && synth.is_none() && !pickup {
         return None;
     }
 
+    let is_accent = bit_set(accent_mask, si_step);
+
     // Cadence breath on bar 8 only — keep the repeating A bars full.
-    if phrase_bar == 7
-        && core
-        && !bit_set(accent_mask, si_step)
-        && step_chance(step + phrase_bar * 16, voice_idx, 13) < 65
+    if phrase_bar == 7 && core && !is_accent && chance_roll(die, step, voice_idx, 13, groove_t) < 65
     {
         return None;
     }
@@ -744,19 +779,63 @@ fn resolve_hit(
         return None;
     }
 
-    let gfeel = groove_feel(feel, groove_max_pct);
-    let groove_t = feel_curve(gfeel); // 0..=4095 curved
-    // High groove opens Voice ghost/approach character.
-    let ghost_pct = voice.ghost_pct as u16
-        + ((100u16.saturating_sub(voice.ghost_pct as u16)) * groove_t / 4095) / 2;
-    let approach_pct = voice.approach_pct as u16
-        + ((100u16.saturating_sub(voice.approach_pct as u16)) * groove_t / 4095) / 3;
+    // Air in the pocket: at high Feel, drop soft (non-accent) cores for space —
+    // classic groove negative space, stronger for busy voices.
+    if core
+        && !is_accent
+        && !pickup
+        && groove_t > 2200
+        && phrase_bar != 7
+    {
+        let air = if voice.pocket {
+            ((groove_t - 2200) * 18) / 1895
+        } else {
+            ((groove_t - 2200) * 32) / 1895
+        };
+        if chance_roll(die, step, voice_idx, 19, groove_t) < air.min(40) as u8 {
+            return None;
+        }
+    }
 
-    let fill_frac = ghost.or(synth);
-    let is_ghost = !core && fill_frac.is_some();
-    if is_ghost {
+    // Voice × genre: pocket players stay sparse in busy breaks; busy voices chill in dub/techno.
+    let (ghost_base, approach_base) = voice_genre_bias(voice, genre);
+    // Phrase-aware: answer bars invite approaches; breath bar kills chromatic noise.
+    let approach_phrase = match phrase_bar {
+        4 | 5 => 28u16, // B answer — more walk
+        6 => 18,        // A′ ornament
+        7 => 0,         // cadence breath
+        _ => 8,         // A bars still get light greasy approaches when Feel is up
+    };
+    let ghost_phrase = match phrase_bar {
+        7 => 0u16,
+        4 | 5 => (ghost_base as u16 * 3) / 4,
+        _ => ghost_base as u16,
+    };
+    // High groove opens Voice ghost/approach character (except cadence breath).
+    // Extra groovyland bias: Feel unlocks more ghosts/approaches than before.
+    let ghost_pct = if phrase_bar == 7 {
+        0
+    } else {
+        let opened = ghost_phrase + ((100u16.saturating_sub(ghost_phrase)) * groove_t / 4095) * 2 / 3;
+        opened.min(100)
+    };
+    let approach_pct = if phrase_bar == 7 {
+        0
+    } else {
+        (approach_base as u16 + approach_phrase)
+            .min(100)
+            .saturating_add(((100u16.saturating_sub(approach_base as u16)) * groove_t / 4095) / 2)
+            .min(100)
+    };
+
+    let fill_frac = ghost.or(synth).or(if pickup { Some(90u8) } else { None });
+    let is_ghost = (!core && fill_frac.is_some()) || pickup;
+    if is_ghost && !pickup {
         let frac = fill_frac.unwrap_or(0);
-        if step_chance(step, voice_idx, 3) >= ghost_pct.min(100) as u8 && frac < 200 && frac < 128
+        // Keep more partial ghosts when Feel is cooking (was too eager to drop).
+        let drop_bar = if groove_t > 2800 { 90u8 } else { 128u8 };
+        if chance_roll(die, step, voice_idx, 3, groove_t) >= ghost_pct.min(100) as u8
+            && frac < drop_bar
         {
             return None;
         }
@@ -767,20 +846,29 @@ fn resolve_hit(
         i32::from(pat_hi.degree[si]),
         g_frac,
     ) as i8;
-    // Synthetic fills: walk 0–3–5–7-ish degrees so empty steps aren't all roots.
-    if synth.is_some() && degree == 0 {
-        degree = match step_chance(step, voice_idx, 21) % 4 {
+    // Synthetic fills / pickups: walk chord tones so empty steps aren't all roots.
+    if (synth.is_some() || pickup) && degree == 0 {
+        degree = match chance_roll(die, step, voice_idx, 21, groove_t) % 4 {
             0 => 0,
             1 => 3,
             2 => 4,
             _ => 5,
         };
     }
+    // Groovyland neighbor dance on ghosts: ±1 scale degree before pocket fold.
+    if is_ghost && groove_t > 1600 && !voice.pocket {
+        let wobble = chance_roll(die, step, voice_idx, 23, groove_t);
+        if wobble < 35 {
+            degree = (i32::from(degree) - 1).rem_euclid(7) as i8;
+        } else if wobble > 70 {
+            degree = (i32::from(degree) + 1).rem_euclid(7) as i8;
+        }
+    }
     if voice.pocket {
         degree = fold_pocket(degree);
     }
     // 8-bar harmony: transpose the line by the phrase chord root.
-    let chord = i32::from(PHRASE_PROG[genre.min(NUM_GENRES - 1)][phrase_bar as usize]);
+    let chord = i32::from(GENRE_PROG_8[genre.min(NUM_GENRES - 1)][phrase_bar as usize]);
     degree = (i32::from(degree) + chord).rem_euclid(7) as i8;
 
     // Higher density → allow more adventurous degrees (less folding toward root).
@@ -788,7 +876,7 @@ fn resolve_hit(
         && !voice.pocket
         && degree != 0
         && degree != 4
-        && step_chance(step, voice_idx, 9) > 40
+        && chance_roll(die, step, voice_idx, 9, groove_t) > 40
     {
         degree = if degree > 3 { 4 } else { 0 };
     }
@@ -804,10 +892,10 @@ fn resolve_hit(
     }
     // Voices with span≥2: punch accents up/down an octave so leaps are obvious.
     if voice.oct_span >= 2
-        && bit_set(accent_mask, si_step)
-        && step_chance(step, voice_idx, 5) < 55
+        && is_accent
+        && chance_roll(die, step, voice_idx, 5, groove_t) < 55
     {
-        oct = if step_chance(step, voice_idx, 6) < 50 {
+        oct = if chance_roll(die, step, voice_idx, 6, groove_t) < 50 {
             voice.oct_span
         } else {
             -voice.oct_span
@@ -825,32 +913,57 @@ fn resolve_hit(
 
     let mut note = (i16::from(root_midi) + semis + i16::from(oct) * 12).clamp(0, 127) as u8;
 
-    // Chromatic approach a semitone below (Voice × Groove).
-    if step_chance(step, voice_idx, 11) < approach_pct.min(100) as u8
-        && (core || density > 2048 || groove_t > 2048)
+    // Approaches: chromatic below, or scale-neighbor (Voice × Groove × Die).
+    if chance_roll(die, step, voice_idx, 11, groove_t) < approach_pct.min(100) as u8
+        && (core || pickup || density > 1800 || groove_t > 1600)
     {
-        note = note.saturating_sub(1);
+        let flavor = chance_roll(die, step, voice_idx, 29, groove_t);
+        if flavor < 55 || voice.pocket {
+            // Classic chromatic approach from below.
+            note = note.saturating_sub(1);
+        } else if flavor < 80 {
+            // Scale degree below target.
+            let below = (deg_i + n - 1) % n;
+            let below_semi = i16::from(offsets[below]);
+            let wrap = if below > deg_i { -12i16 } else { 0 };
+            note = (i16::from(root_midi) + below_semi + wrap + i16::from(oct) * 12).clamp(0, 127)
+                as u8;
+        } else {
+            // Upper neighbor (greasy anticipation).
+            note = (note as u16 + 1).min(127) as u8;
+        }
     }
 
     let base = lerp_u8(pat_lo.base_vel, pat_hi.base_vel, g_frac);
     let accent = lerp_u8(pat_lo.accent_vel, pat_hi.accent_vel, g_frac)
         .saturating_add(voice.accent_boost)
         .min(127);
-    // High groove widens quiet↔loud spread.
+    // High groove widens quiet↔loud spread + live rake on accents.
     let quiet_flat = feel_lerp_u16(FLAT_VEL, 45, gfeel);
-    let character = if bit_set(accent_mask, si_step) {
+    let mut character = if is_accent {
         u16::from(accent)
     } else {
         u16::from(base)
     };
+    if is_accent && groove_t > 2000 {
+        let rake = i32::from(chance_roll(die, step, voice_idx, 31, groove_t)) - 50;
+        character = (i32::from(character) + rake / 3).clamp(40, 127) as u16;
+    }
     let vel_pct = if is_ghost {
-        let g = ghost_vel_pct(fill_frac.unwrap_or(255), 12, 45);
+        let g = ghost_vel_pct(fill_frac.unwrap_or(255), 12, if pickup { 38 } else { 45 });
         feel_lerp_u16(quiet_flat, g, gfeel)
     } else {
         feel_lerp_u16(quiet_flat, character, gfeel)
     };
 
-    let gate_w = lerp_u8(pat_lo.gate_w[si], pat_hi.gate_w[si], g_frac);
+    let mut gate_w = lerp_u8(pat_lo.gate_w[si], pat_hi.gate_w[si], g_frac);
+    // Dead notes: some ghosts become short muted chucks when Feel is up.
+    if is_ghost
+        && groove_t > 1800
+        && chance_roll(die, step, voice_idx, 37, groove_t) < (18 + groove_t / 200) as u8
+    {
+        gate_w = gate_w.min(28);
+    }
     // Low groove → even gates; high groove → Voice staccato character.
     let stacc = feel_lerp_u16(100, u16::from(voice.staccato), gfeel) as u8;
     let gate_w = ((u16::from(gate_w) * u16::from(stacc)) / 100).min(100) as u8;
@@ -946,6 +1059,7 @@ pub async fn run(
     let faders = app.use_faders();
     let buttons = app.use_buttons();
     let leds = app.use_leds();
+    let die = app.use_die();
     let midi = app.use_midi_output(midi_out, midi_channel, false);
     let out_jack = if cv_jack == CV_JACK_OUT {
         Some(app.make_out_jack(0, range).await)
@@ -1162,6 +1276,7 @@ pub async fn run(
                             voice_idx,
                             root_midi,
                             scale,
+                            &die,
                         );
 
                         let rot = phrase_rot(bar % PHRASE_BARS);

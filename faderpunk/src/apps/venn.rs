@@ -1,8 +1,10 @@
 //! Venn — dual Euclidean layers combined with boolean logic (OR/AND/XOR/Accnt).
 //!
-//! Gates + generative MIDI melody (step→pitch within Extent; Ch2 = line + Interval).
-//! Inspired by OXI ONE MKII GEN page 2 (eLen/ePul + Logic). Rotation is fixed at 0
-//! (live slots used for Extent / Interval). Distinct from Euclid and GenSeq.
+//! Gates + generative MIDI melody: Length-A phase walks a scale-degree arch
+//! within Extent; Ch2 = same line + diatonic Interval. Scale shape follows the
+//! device quantizer key (Note A = degree 0). Inspired by OXI ONE MKII GEN page 2
+//! (eLen/ePul + Logic). Rotation is fixed at 0 (live slots used for Extent /
+//! Interval). Distinct from Euclid and GenSeq.
 
 use embassy_futures::{
     join::join5,
@@ -12,30 +14,32 @@ use embassy_sync::{blocking_mutex::raw::NoopRawMutex, signal::Signal};
 use heapless::Vec;
 use libfp::{
     ext::FromValue, latch::LatchLayer, utils::euclidean_at, AppIcon, Brightness, ClockDivision,
-    Color, Config, MidiChannel, MidiNote, MidiOut, Param, Value, APP_MAX_PARAMS,
+    Color, Config, Key, MidiChannel, MidiNote, MidiOut, Param, Value, APP_MAX_PARAMS,
 };
+use midly::num::u7;
 use serde::{Deserialize, Serialize};
 
 use crate::app::{
     App, AppParams, AppStorage, ClockEvent, Led, ManagedStorage, ParamStore, SceneEvent,
 };
 use crate::apps::led_fx::hsv_to_rgb;
+use crate::tasks::global_config::get_global_config;
 use crate::tasks::leds::LedMode;
 use smart_leds::RGB8;
 
 pub const CHANNELS: usize = 2;
 pub const PARAMS: usize = 9;
 
-/// Interval B select labels (index == semitone offset). Kept as CONFIG param so
-/// FRAM/wire value order stays stable; live Interval is also on Alt F1.
+/// Interval B select labels (index == diatonic steps above the line).
+/// Wire/FRAM indices 0..=12 stay stable; live Interval is also on Alt F1.
 const INTERVAL_B_VARIANTS: &[&str] = &[
     "Unison", "m2", "M2", "m3", "M3", "P4", "TT", "P5", "m6", "M6", "m7", "M7", "Octave",
 ];
 
-/// Max melodic span above Note A (semitones) when Extent fader is full.
-const EXTENT_MAX_SEMIS: u8 = 24;
-/// Max Interval B above the melodic line (Unison…Octave).
-const INTERVAL_MAX_SEMIS: u8 = 12;
+/// Max melodic span above Note A in **scale degrees** when Extent fader is full.
+const EXTENT_MAX_DEGREES: u8 = 24;
+/// Max Interval B above the melodic line in **scale degrees** (0..=12).
+const INTERVAL_MAX_DEGREES: u8 = 12;
 
 const LED_BRIGHTNESS: Brightness = Brightness::Mid;
 /// Button hit soft-dip duration (1 ms ticks). Short so dense hits still blink
@@ -181,31 +185,79 @@ fn pulses_from_fader(v: u16, len: u8) -> u8 {
 }
 
 fn extent_from_fader(v: u16) -> u8 {
-    ((v as u32 * EXTENT_MAX_SEMIS as u32) / 4095) as u8
+    ((v as u32 * EXTENT_MAX_DEGREES as u32) / 4095) as u8
 }
 
 fn interval_from_fader(v: u16) -> u8 {
-    ((v as u32 * INTERVAL_MAX_SEMIS as u32) / 4095) as u8
+    ((v as u32 * INTERVAL_MAX_DEGREES as u32) / 4095) as u8
 }
 
-/// Map clock step through length_a into 0..=extent semitones (monotone if extent=0).
-fn melody_semis(step: u32, len: u8, extent: u8) -> u8 {
+/// Pitch-class offsets from tonic (0 = tonic), MSB layout via [`Key::as_u16_key`].
+fn scale_pcs(key: Key) -> Vec<u8, 12> {
+    let mask = if key == Key::Off {
+        Key::Chromatic.as_u16_key()
+    } else {
+        key.as_u16_key()
+    };
+    let mut out = Vec::new();
+    for i in 0..12u8 {
+        if (mask >> (11 - i)) & 1 != 0 {
+            let _ = out.push(i);
+        }
+    }
+    if out.is_empty() {
+        let _ = out.push(0);
+    }
+    out
+}
+
+/// Semitone offset from tonic for absolute scale degree `d` (0 = tonic).
+fn degree_semis(pcs: &[u8], d: u16) -> u16 {
+    let n = pcs.len().max(1) as u16;
+    let oct = d / n;
+    let i = (d % n) as usize;
+    oct * 12 + u16::from(pcs[i])
+}
+
+/// Note A as degree 0; climb `degree` steps in the device key (shape from tonic = Note A).
+fn midi_at_degree(root: MidiNote, pcs: &[u8], degree: u16) -> MidiNote {
+    let root_u = u7::from(root).as_int();
+    let off0 = degree_semis(pcs, 0);
+    let off = degree_semis(pcs, degree);
+    let midi = (u16::from(root_u) + off.saturating_sub(off0)).min(127) as u8;
+    MidiNote::from(midi)
+}
+
+/// Arch contour through Length-A into 0..=extent scale degrees (flat if extent=0).
+fn melody_degree(step: u32, len: u8, extent: u8) -> u8 {
     if extent == 0 || len <= 1 {
         return 0;
     }
+    let last = (len as u32 - 1).max(1);
     let phase = step % len as u32;
-    ((phase * extent as u32) / (len as u32 - 1)) as u8
+    // Rise to midpoint, fall back — Contura-style arch (contour 0).
+    let half = last / 2;
+    let t = if half == 0 {
+        0
+    } else if phase <= half {
+        (phase * extent as u32) / half
+    } else {
+        let down = phase - half;
+        let rem = (last - half).max(1);
+        extent as u32 - (down * extent as u32) / rem
+    };
+    t.min(extent as u32) as u8
 }
 
 fn extent_meter_bright(extent: u8) -> u8 {
     let span = (255u16 - LAYER_LED_FLOOR as u16).max(1);
-    let t = ((extent as u16 * span) / EXTENT_MAX_SEMIS as u16).min(span);
+    let t = ((extent as u16 * span) / EXTENT_MAX_DEGREES as u16).min(span);
     (LAYER_LED_FLOOR as u16 + t) as u8
 }
 
 fn interval_meter_bright(interval: u8) -> u8 {
     let span = (255u16 - LAYER_LED_FLOOR as u16).max(1);
-    let t = ((interval as u16 * span) / INTERVAL_MAX_SEMIS as u16).min(span);
+    let t = ((interval as u16 * span) / INTERVAL_MAX_DEGREES as u16).min(span);
     (LAYER_LED_FLOOR as u16 + t) as u8
 }
 
@@ -230,7 +282,7 @@ fn len_meter_bright(len: u8) -> u8 {
 
 pub static CONFIG: Config<PARAMS> = Config::new(
     "Venn",
-    "Dual Euclidean layers with generative melody (Extent / Interval)",
+    "Dual Euclidean layers with scale-aware melody (Extent / Interval)",
     Color::Cyan,
     AppIcon::Euclid,
 )
@@ -521,7 +573,7 @@ pub async fn run(
         glob_muted.set(muted);
     }
     // Host-facing Interval B (configurator / presets) wins on spawn & param reload.
-    interval_glob.set(interval_b.min(INTERVAL_MAX_SEMIS as usize) as u8);
+    interval_glob.set(interval_b.min(INTERVAL_MAX_DEGREES as usize) as u8);
 
     // Initial button LEDs
     leds.set(
@@ -598,9 +650,11 @@ pub async fn run(
                             }
                         }
 
-                        // Melodic line from Length-A phase; Ch2 = line + Interval.
-                        let line = note_a + MidiNote::from(melody_semis(step, len_a, extent));
-                        let line_b = line + MidiNote::from(interval);
+                        // Scale-degree arch from Length-A; Ch2 = line + diatonic Interval.
+                        let pcs = scale_pcs(get_global_config().quantizer.key);
+                        let deg = u16::from(melody_degree(step, len_a, extent));
+                        let line = midi_at_degree(note_a, &pcs, deg);
+                        let line_b = midi_at_degree(note_a, &pcs, deg + u16::from(interval));
 
                         if !muted {
                             if out0 {

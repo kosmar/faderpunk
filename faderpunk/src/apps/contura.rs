@@ -1042,16 +1042,26 @@ pub async fn run(
                     let steps_left = phrase_len.saturating_sub(phrase_step).max(1);
                     // Cached at rebuild / phrase wrap — avoid GlobalConfig copy per note.
                     let tonic_pc = cached_tonic;
-                    if phrase_step == 0 || steps_left <= 2 {
-                        if r < 2800 {
+                    // Cadence grammar: last 1–2 slots resolve harder toward tonic
+                    // (Vamp-like tension→release without new params).
+                    let cadence = steps_left <= 2;
+                    let pull = if cadence {
+                        feel.tonic_pull.saturating_add(1200).min(4095)
+                    } else if phrase_step == 0 {
+                        feel.tonic_pull.saturating_add(400).min(4095)
+                    } else {
+                        feel.tonic_pull
+                    };
+                    if phrase_step == 0 || cadence {
+                        if cadence || r < 2800 {
                             idx = idx.saturating_sub(max_step.min(idx));
                         }
-                        if (r & 0xfff) < feel.tonic_pull {
+                        if (r & 0xfff) < pull || (cadence && steps_left == 1 && r < 2800) {
                             idx = nearest_tonic_index(pool.as_slice(), idx, tonic_pc);
                         }
                     } else {
                         idx = pick_next_index(&die, idx, plen, max_step, express, rising, feel);
-                        if (r >> 2) < feel.tonic_pull / 2 {
+                        if (r >> 2) < pull / 2 {
                             idx = nearest_tonic_index(pool.as_slice(), idx, tonic_pc);
                         }
                     }

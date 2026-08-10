@@ -11,8 +11,8 @@ use libfp::{
     latch::LatchLayer,
     quantizer::Pitch,
     utils::attenuate_bipolar,
-    AppIcon, Brightness, ClockDivision, Color, Config, MidiChannel, MidiNote, MidiOut, Note, Param,
-    Range, Value, VoltPerOct, APP_MAX_PARAMS,
+    AppIcon, Brightness, ClockDivision, Color, Config, Key, MidiChannel, MidiNote, MidiOut, Note,
+    Param, Range, Value, VoltPerOct, APP_MAX_PARAMS,
 };
 use midly::num::u7;
 
@@ -20,6 +20,7 @@ use crate::{
     app::{
         App, AppParams, AppStorage, ClockEvent, Die, Led, ManagedStorage, ParamStore, SceneEvent,
     },
+    tasks::global_config::get_global_config,
     tasks::leds::LedMode,
 };
 
@@ -44,10 +45,12 @@ const MIN_PHRASE: usize = 4;
 const MAX_PHRASE: usize = 16;
 /// Ticks per 16th at 24 PPQN.
 const STEP_DIV: u32 = 6;
-/// Local Lévy table (semitones): almost only tiny steps at α min.
-const LEVY_LOCAL: [i8; 16] = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3];
-/// Wild Lévy table: large leaps dominate at α max (up to 4 octaves).
-const LEVY_WILD: [i8; 16] = [7, 8, 10, 12, 14, 17, 19, 24, 24, 29, 31, 36, 36, 41, 48, 48];
+/// Local Lévy table (**scale degrees**): sticky stepwise motion at α min.
+const LEVY_LOCAL_DEG: [i8; 16] = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3];
+/// Wild Lévy table (**scale degrees**): larger leaps at α max (~2 octaves in heptatonic).
+const LEVY_WILD_DEG: [i8; 16] = [3, 4, 5, 5, 7, 7, 8, 9, 10, 11, 12, 12, 14, 14, 16, 16];
+/// Chance (0..=4095) to snap a mutated slot toward the phrase tonic (Contura-ish).
+const TONIC_PULL: u16 = 900;
 /// Pull α toward 0 / 4095 so Third-layer extremes read clearly (< 1 = stronger).
 const ALPHA_LEAN_CURVE: f32 = 0.5;
 
@@ -359,23 +362,67 @@ fn clamp_note(n: i16) -> u8 {
     n.clamp(0, 127) as u8
 }
 
-/// α (0..=4095) blends Local→Wild: probability of sampling the wild table.
-/// Ends are pushed outward so min stays sticky-local and max is jump-heavy.
-fn levy_delta(die: &Die, alpha: u16) -> i8 {
+/// α (0..=4095) blends Local→Wild degree leaps.
+fn levy_degree_delta(die: &Die, alpha: u16) -> i8 {
     let t = alpha as f32 / 4095.0;
     let centered = (t - 0.5) * 2.0;
     let lean = libm::copysignf(libm::powf(centered.abs(), ALPHA_LEAN_CURVE), centered);
     let eff = ((0.5 + lean * 0.5) * 4095.0) as u16;
     let mag = if die.roll() < eff {
-        LEVY_WILD[(die.roll() as usize) % LEVY_WILD.len()]
+        LEVY_WILD_DEG[(die.roll() as usize) % LEVY_WILD_DEG.len()]
     } else {
-        LEVY_LOCAL[(die.roll() as usize) % LEVY_LOCAL.len()]
+        LEVY_LOCAL_DEG[(die.roll() as usize) % LEVY_LOCAL_DEG.len()]
     };
     if die.roll() & 1 == 0 {
         mag
     } else {
         -mag
     }
+}
+
+fn scale_pcs(key: Key) -> Vec<u8, 12> {
+    let mask = if key == Key::Off {
+        Key::Chromatic.as_u16_key()
+    } else {
+        key.as_u16_key()
+    };
+    let mut out = Vec::new();
+    for i in 0..12u8 {
+        if (mask >> (11 - i)) & 1 != 0 {
+            let _ = out.push(i);
+        }
+    }
+    if out.is_empty() {
+        let _ = out.push(0);
+    }
+    out
+}
+
+/// Nearest scale degree index for `note` relative to `tonic` pitch-class.
+fn note_to_degree(note: u8, tonic: u8, pcs: &[u8]) -> i16 {
+    let n = pcs.len().max(1) as i16;
+    let pc = ((note as i16 - tonic as i16).rem_euclid(12)) as u8;
+    let mut best_i = 0i16;
+    let mut best_d = 12u8;
+    for (i, &p) in pcs.iter().enumerate() {
+        let d = (p as i16 - pc as i16).unsigned_abs() as u8;
+        let d = d.min(12 - d);
+        if d < best_d {
+            best_d = d;
+            best_i = i as i16;
+        }
+    }
+    let oct = (note as i16 - tonic as i16).div_euclid(12);
+    oct * n + best_i
+}
+
+fn degree_to_note(degree: i16, tonic: u8, pcs: &[u8]) -> u8 {
+    let n = pcs.len().max(1) as i16;
+    let d = degree.rem_euclid(n * 16); // keep in a wide window before clamp
+    let oct = d.div_euclid(n);
+    let i = d.rem_euclid(n) as usize;
+    let semi = tonic as i16 + oct * 12 + pcs[i] as i16;
+    semi.clamp(0, 127) as u8
 }
 
 fn mutate_pool(
@@ -385,23 +432,63 @@ fn mutate_pool(
     hi: u8,
     alpha: u16,
     die: &Die,
+    tonic_midi: u8,
 ) {
     if phrase_len == 0 {
         return;
     }
+    let key = get_global_config().quantizer.key;
+    let pcs = scale_pcs(key);
+    let tonic = tonic_midi % 12;
     let i = (die.roll() as usize) % phrase_len;
-    let next = clamp_note(pool[i] as i16 + levy_delta(die, alpha) as i16);
-    pool[i] = next.clamp(lo, hi);
+    let deg = note_to_degree(pool[i], tonic, &pcs);
+    let delta = i16::from(levy_degree_delta(die, alpha));
+    let mut next_deg = deg + delta;
+    // Mild Contura-style tonic pull: nudge toward base after leaps.
+    if delta.abs() >= 3 && die.roll() < TONIC_PULL {
+        let pull_deg = note_to_degree(tonic_midi.clamp(lo, hi), tonic, &pcs);
+        if next_deg > pull_deg {
+            next_deg -= 1;
+        } else if next_deg < pull_deg {
+            next_deg += 1;
+        }
+    }
+    pool[i] = degree_to_note(next_deg, tonic, &pcs).clamp(lo, hi);
 }
 
-fn reroll_pool(pool: &mut [u8; POOL_CAP], phrase_len: usize, lo: u8, hi: u8, die: &Die) {
-    let span = (hi - lo).max(1) as u16;
+fn reroll_pool(
+    pool: &mut [u8; POOL_CAP],
+    phrase_len: usize,
+    lo: u8,
+    hi: u8,
+    die: &Die,
+    tonic_midi: u8,
+) {
+    let key = get_global_config().quantizer.key;
+    let pcs = scale_pcs(key);
+    let tonic = tonic_midi % 12;
+    let base_deg = note_to_degree(tonic_midi.clamp(lo, hi), tonic, &pcs);
+    let span_deg = ((hi - lo) as i16 / 2).max(4);
     for (i, slot) in pool.iter_mut().enumerate() {
         if i < phrase_len {
-            *slot = lo + ((die.roll() * span / 4095) as u8);
+            let wobble = (die.roll() as i16 * span_deg / 4095) - span_deg / 2;
+            *slot = degree_to_note(base_deg + wobble, tonic, &pcs).clamp(lo, hi);
         } else {
             *slot = lo;
         }
+    }
+}
+
+/// At phrase cadence (last slot), bias playback toward tonic for resolution.
+fn cadence_note(raw: u8, step: usize, phrase_len: usize, tonic_midi: u8, die: &Die) -> u8 {
+    if phrase_len == 0 {
+        return raw;
+    }
+    let last = phrase_len - 1;
+    if step % phrase_len == last && die.roll() < 2400 {
+        tonic_midi
+    } else {
+        raw
     }
 }
 
@@ -651,7 +738,7 @@ pub async fn run(
 
                     if glob_reroll.get() {
                         glob_reroll.set(false);
-                        reroll_pool(&mut pool, phrase_len, lo, hi, &die);
+                        reroll_pool(&mut pool, phrase_len, lo, hi, &die, lo);
                         // Short/CV reroll also picks a new expression depth.
                         let expression = die.roll();
                         glob_expression.set(expression);
@@ -705,7 +792,7 @@ pub async fn run(
                             // Number of mutations scales with fader (0 = freeze).
                             while mutation > 0 {
                                 if die.roll() < mutation {
-                                    mutate_pool(&mut pool, phrase_len, lo, hi, alpha, &die);
+                                    mutate_pool(&mut pool, phrase_len, lo, hi, alpha, &die, lo);
                                     changed = true;
                                 }
                                 mutation = mutation.saturating_sub(1024);
@@ -720,7 +807,13 @@ pub async fn run(
 
                         let reversed = glob_reversed.get();
                         let idx = pool_index(step, phrase_len, reversed);
-                        let raw = pool[idx].clamp(lo, hi);
+                        let raw = cadence_note(
+                            pool[idx].clamp(lo, hi),
+                            step,
+                            phrase_len,
+                            lo,
+                            &die,
+                        );
 
                         // Density: rest if roll >= density threshold.
                         let hit = die.roll() < density && !glob_muted.get();

@@ -6,7 +6,7 @@ Checks:
   - required fields present
   - id/name/slug consistent with directory name
   - for WIP ids in docs/wip-app-ids.md: fragment or legacy HTML exists
-  - pilot apps (32, 38, 40) must be fragment-backed (not legacy-only)
+  - pilot apps (32, 37, 38, 40, 41, 42) must be fragment-backed (not legacy-only)
   - CONFIG::new("Name") matches manual.json name when the module file exists
 """
 
@@ -22,7 +22,7 @@ APPS_DIR = ROOT / "docs" / "apps"
 LEGACY_DIR = ROOT / "docs" / "cheatsheet" / "legacy"
 IDS_MD = ROOT / "docs" / "wip-app-ids.md"
 MOD_RS = ROOT / "faderpunk" / "src" / "apps" / "mod.rs"
-PILOTS = {32, 38, 40}
+PILOTS = {32, 37, 38, 40, 41, 42}
 
 
 def claimed_wip() -> list[tuple[int, str]]:

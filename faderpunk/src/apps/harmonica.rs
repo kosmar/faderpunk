@@ -39,7 +39,7 @@ pub const PARAMS: usize = 11;
 const LED_BRIGHTNESS: Brightness = Brightness::Mid;
 /// Mid→Low button duck on each harmony trigger — same length as Heat Pump / Grooves.
 const BUTTON_DUCK_MS: u16 = 25;
-const NUM_CHORD_TYPES: usize = 7;
+const NUM_CHORD_TYPES: usize = 10;
 const MAX_VOICES: usize = 4;
 /// Held MIDI keys for last-note root priority. Input is mono (one root); output
 /// is still a multi-voice chord. Gate stays high while any key is held.
@@ -94,14 +94,19 @@ enum CvVoice {
 }
 
 /// Semitone offsets from root (index 0 is always the root).
+/// Fader maps across these; new types are appended so wire indices for the
+/// original seven stay in the same relative order (bucket widths change).
 const CHORD_TEMPLATES: &[&[i8]] = &[
-    &[0],           // Unison
-    &[0, 7],        // Power
-    &[0, 3, 7],     // Minor
-    &[0, 4, 7],     // Major
-    &[0, 5, 7],     // Sus4
-    &[0, 3, 7, 10], // Min7
-    &[0, 4, 7, 10], // Dom7
+    &[0],            // Unison
+    &[0, 7],         // Power
+    &[0, 3, 7],      // Minor
+    &[0, 4, 7],      // Major
+    &[0, 5, 7],      // Sus4
+    &[0, 3, 7, 10],  // Min7
+    &[0, 4, 7, 10],  // Dom7
+    &[0, 4, 7, 11],  // Maj7
+    &[0, 3, 7, 10, 14], // Min9 (cap to MAX_VOICES below)
+    &[0, 4, 7, 14],  // Add9
 ];
 
 pub static CONFIG: Config<PARAMS> = Config::new(
@@ -213,8 +218,8 @@ fn gate_time_ms(mode: usize) -> Option<u16> {
 }
 
 /// Voicing presets stepped with Alt+long press: (spread step, harmony octave
-/// index, strum ms). Ordered from tight/dry to wide/slow so walking the list
-/// is a gradual opening rather than a jump between unrelated characters.
+/// index, strum ms). Spread steps 0–2 = root / 1st / 2nd inversion; 3 = open.
+/// Ordered from tight/dry to wide/slow so walking the list is a gradual opening.
 const PRESETS: [(usize, u8, u16); NUM_PRESETS] = [
     (0, 1, 0),   // Close — block chord, no strum
     (0, 0, 0),   // Close Low
@@ -365,7 +370,24 @@ struct VoiceParams {
     bypass: bool,
 }
 
+/// Classic inversion: lift the bottom voice an octave `inv` times.
+fn invert_voicing(notes: &mut Vec<u8, MAX_VOICES>, inv: usize) {
+    let n = notes.len();
+    if n <= 1 || inv == 0 {
+        return;
+    }
+    let inv = inv.min(n - 1);
+    for _ in 0..inv {
+        let low = notes[0];
+        for i in 0..n - 1 {
+            notes[i] = notes[i + 1];
+        }
+        notes[n - 1] = low.saturating_add(12).min(127);
+    }
+}
+
 /// Chromatic chord template from a single root, then snap non-root tones to scale.
+/// Alt spread: steps 0–2 = root / 1st / 2nd inversion; step 3 = open (top + octave).
 async fn build_voices(quantizer: &Quantizer, p: VoiceParams) -> Vec<u8, MAX_VOICES> {
     let mut out: Vec<u8, MAX_VOICES> = Vec::new();
     if p.muted {
@@ -375,25 +397,45 @@ async fn build_voices(quantizer: &Quantizer, p: VoiceParams) -> Vec<u8, MAX_VOIC
     unique_push(&mut out, p.root);
 
     let template = CHORD_TEMPLATES[p.chord_type.min(NUM_CHORD_TYPES - 1)];
-    let spread_steps = value_to_index(p.spread, SPREAD_STEPS) as i16;
+    let spread_steps = value_to_index(p.spread, SPREAD_STEPS);
     let harm_oct = octave_from_idx(p.octave_idx) as i16 * 12;
 
-    let top_voice = template.len().saturating_sub(1);
-
-    for (vi, &semis) in template.iter().enumerate() {
+    for &semis in template.iter() {
         if semis == 0 {
             continue;
+        }
+        if out.len() >= MAX_VOICES {
+            break;
         }
         let mut note = (p.root as i16 + semis as i16).clamp(0, 127) as u8;
         if !p.bypass {
             let counts = midi_to_pitch(note).as_counts(p.range, p.vpo);
             note = midi_u8(quantizer.get_quantized_note(counts).await.as_midi());
         }
-        // Open the voicing by lifting only the top voice. Stacking every
-        // voice cumulatively (× voice index) pushed 7th chords ~4 octaves up.
-        let spread_oct = if vi == top_voice { 12 * spread_steps } else { 0 };
-        note = (note as i16 + harm_oct + spread_oct).clamp(0, 127) as u8;
+        note = (note as i16 + harm_oct).clamp(0, 127) as u8;
         unique_push(&mut out, note);
+    }
+
+    // Sort ascending so inversion rotates true bass→tenor→alto.
+    for i in 1..out.len() {
+        let mut j = i;
+        while j > 0 && out[j] < out[j - 1] {
+            out.swap(j, j - 1);
+            j -= 1;
+        }
+    }
+
+    let open = spread_steps >= SPREAD_STEPS.saturating_sub(1);
+    let inv = if open {
+        0
+    } else {
+        spread_steps.min(out.len().saturating_sub(1))
+    };
+    invert_voicing(&mut out, inv);
+    if open {
+        if let Some(top) = out.last_mut() {
+            *top = (*top as u16 + 12).min(127) as u8;
+        }
     }
     out
 }

@@ -29,7 +29,8 @@ underscores as hyphens (`loop_de_cay` → `loop-de-cay`).
 
 ## Pilots
 
-Currently fragment-backed: **32 Super LFO**, **38 Loop de Cay**, **40 Venn**.
+Currently fragment-backed: **32 Super LFO**, **37 Harmonica**, **38 Loop de Cay**,
+**40 Venn**, **41 Bassment**, **42 Contura**.
 Other WIP apps still live as HTML under `docs/cheatsheet/legacy/` until migrated.
 
 ## Build

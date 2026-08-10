@@ -19,7 +19,7 @@ use libfp::{
 use crate::app::{
     App, AppParams, AppStorage, Die, Led, ManagedStorage, ParamStore, SceneEvent,
 };
-use crate::apps::genre_palette::{genre_fader_center, GENRE_NAMES, NUM_GENRES};
+use crate::apps::genre_palette::{genre_fader_center, GENRE_NAMES, GENRE_PROG_8, NUM_GENRES};
 use crate::apps::groove::{swing_bias, swing_delay_ticks};
 use crate::apps::led_fx::{genre_pair, lerp_u8, spectrum_color};
 
@@ -403,7 +403,7 @@ impl GenrePreset {
 const GENRES: [GenrePreset; NUM_GENRES] = [
     // Dub — i–IV–i–V; half-time 4-chord statement, long space
     GenrePreset {
-        progression: &[0, 3, 0, 4, 0, 3, 0, 4],
+        progression: &GENRE_PROG_8[0],
         markov: &[
             [4, 1, 1, 6, 5, 2, 2],
             [3, 2, 1, 2, 3, 2, 1],
@@ -417,7 +417,7 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
     },
     // Disco — I–vi–IV–V; busy 2-bar vamp, shorter breaks
     GenrePreset {
-        progression: &[0, 5, 3, 4, 0, 5, 3, 4],
+        progression: &GENRE_PROG_8[1],
         markov: &[
             [2, 1, 1, 4, 5, 6, 1],
             [2, 2, 2, 2, 3, 2, 2],
@@ -431,7 +431,7 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
     },
     // House — i–VII–VI–VII; pump through the loop, uneven breaks
     GenrePreset {
-        progression: &[0, 6, 5, 6, 0, 6, 5, 6],
+        progression: &GENRE_PROG_8[2],
         markov: &[
             [3, 1, 1, 2, 2, 4, 6],
             [2, 2, 2, 2, 2, 3, 2],
@@ -445,7 +445,7 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
     },
     // Techno — static/minimal; long holds across the statement, rare deep drop
     GenrePreset {
-        progression: &[0, 0, 0, 4, 0, 0, 0, 4],
+        progression: &GENRE_PROG_8[3],
         markov: &[
             [8, 1, 1, 2, 4, 2, 3],
             [4, 2, 1, 1, 2, 1, 1],
@@ -459,7 +459,7 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
     },
     // Trip-Hop — i–VII–VI–v; sparse but still a short progression, then void
     GenrePreset {
-        progression: &[0, 6, 5, 4, 0, 6, 5, 4],
+        progression: &GENRE_PROG_8[4],
         markov: &[
             [3, 1, 2, 2, 4, 4, 5],
             [2, 2, 2, 2, 2, 3, 2],
@@ -473,7 +473,7 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
     },
     // Hip-Hop — i–VI–III–VII; boom-bap phrase then wide open
     GenrePreset {
-        progression: &[0, 5, 2, 6, 0, 5, 2, 6],
+        progression: &GENRE_PROG_8[5],
         markov: &[
             [3, 1, 4, 2, 2, 5, 4],
             [2, 2, 2, 2, 2, 3, 2],
@@ -487,7 +487,7 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
     },
     // Jungle — i–VII–VI–III; choppy amen energy, short hits then drop
     GenrePreset {
-        progression: &[0, 6, 5, 2, 0, 6, 5, 2],
+        progression: &GENRE_PROG_8[6],
         markov: &[
             [3, 1, 5, 2, 2, 4, 5],
             [2, 2, 3, 2, 2, 3, 2],
@@ -501,7 +501,7 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
     },
     // UK Garage — i–III–VI–VII; choppy 2-bar then break
     GenrePreset {
-        progression: &[0, 2, 5, 6, 0, 2, 5, 6],
+        progression: &GENRE_PROG_8[7],
         markov: &[
             [3, 1, 5, 2, 2, 4, 4],
             [2, 2, 3, 2, 2, 3, 2],
@@ -515,7 +515,7 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
     },
     // Dubstep — i–i–VI–VII; half-time progression, wide gaps
     GenrePreset {
-        progression: &[0, 0, 5, 6, 0, 0, 5, 6],
+        progression: &GENRE_PROG_8[8],
         markov: &[
             [6, 1, 1, 2, 2, 5, 5],
             [3, 2, 1, 1, 2, 2, 2],

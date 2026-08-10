@@ -1,6 +1,11 @@
 Two independent Euclidean masks combined with boolean logic — the OXI GEN
-dual-layer idea without pitch. Color sets Layer A; Layer B LEDs use a fixed
-complement (always the same pairs). Btn1 shows logic mode, not Color. Different
+dual-layer idea with a scale-aware melodic line. Color sets Layer A; Layer B
+LEDs use a fixed complement. Btn1 shows logic mode, not Color. Different
 lengths per layer enable polyrhythmic XOR/AND patterns Euclid cannot make alone.
+
+Melody: Note A is degree 0 of the device quantizer key. Extent is the arch span
+in scale degrees through Length-A; Interval B is diatonic steps above that line
+for Ch2 (wire indices 0–12 unchanged). Extent 0 = monotone Note A.
+
 Needs clock. Prob % < 100 adds optional flakiness; 100 is fully deterministic.
 No pitch CV (use GenSeq for that).

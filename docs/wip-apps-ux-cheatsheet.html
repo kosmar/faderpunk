@@ -531,8 +531,8 @@
       <div>
         <h3>Faders</h3>
         <ul>
-          <li><strong>Main</strong> — Chord type</li>
-          <li><strong>Alt</strong> — Spread / voicing width</li>
+          <li><strong>Main</strong> — Chord type (Unison · Power · Min · Maj · Sus4 · Min7 · Dom7 · Maj7 · Min9 · Add9)</li>
+          <li><strong>Alt</strong> — Inversion (0–2) / open (top + octave)</li>
           <li><strong>Third</strong> — Velocity</li>
         </ul>
       </div>
@@ -545,18 +545,18 @@
         </ul>
       </div>
       <div>
-        <h3>Params</h3>
+        <h3>Params / LEDs</h3>
         <ul>
-          <li>I/O: MIDI / CV root; MIDI In/Out CH</li>
+          <li>I/O: MIDI→MIDI · MIDI→CV · CV→MIDI; MIDI In/Out CH</li>
           <li>CV Gate: Sustain · ms · clock divisions</li>
-          <li>Strum (ms), Color, Range, V/Oct</li>
+          <li>Strum (ms), Color, Range, V/Oct, Bypass quantizer</li>
           <li>Near-0V CV = rest; unpatched stays silent until stable pitch</li>
           <li>LEDs: IR→UV spectrum per layer; mute = red; preset flash on Alt+Long</li>
         </ul>
       </div>
     </div>
     <div class="manual">
-      <p><strong>Manual.</strong> One root (last MIDI note or pitch CV) picks the chord root; fader picks chord type; up to four MIDI voices (MIDI→CV follows highest). Not a polyphonic keyboard. Mute is a short tap; use Third (button+fader) for velocity so mute and vel don’t collide. Alt+Long walks voicing presets.</p>
+      <p><strong>Manual.</strong> One root (last MIDI note or pitch CV) picks the chord root; the fader picks chord type (Unison · Power · Min · Maj · Sus4 · Min7 · Dom7 · Maj7 · Min9 · Add9); up to four MIDI voices sound (MIDI→CV follows the highest). Alt sets inversion (0–2) or open top. Not a polyphonic keyboard input. Mute is a short tap — use Third (button+fader) for velocity so mute and vel don’t collide. Alt+Short cycles harmony octave; Alt+Long walks voicing presets (tight/dry → wide/slow). CV Gate: Sustain, fixed ms, or clock divisions. Near-0V CV = rest; unpatched float stays silent until a stable pitch.</p>
     </div>
   </div>
 </section>
@@ -650,7 +650,7 @@
   <div class="app-head">
     <span class="id">ID 40</span>
     <h2>Venn <span class="tag ready">ready</span></h2>
-    <span class="desc">Dual Euclidean layers + boolean logic; generative melody via Extent</span>
+    <span class="desc">Dual Euclidean layers + boolean logic; scale-aware melody via Extent</span>
   </div>
   <div class="app-body">
     <div class="cols">
@@ -658,7 +658,7 @@
         <h3>Faders</h3>
         <ul>
           <li><strong>Main</strong> — F0 pulses A · F1 pulses B (density; absolute pulse count, Bjorklund redistributes)</li>
-          <li><strong>Alt</strong> (Shift) — F0 Extent (melodic span 0–24 st from Note A) · F1 Interval (0–12 st above the line for Ch2)</li>
+          <li><strong>Alt</strong> (Shift) — F0 Extent (scale-degree span 0–24 from Note A) · F1 Interval (0–12 diatonic steps above the line for Ch2)</li>
           <li><strong>Third</strong> (Btn1 or Btn2 hold) — F0 length A · F1 length B (2–32; independent)</li>
           <li>Rotation fixed at 0 (slots freed for Extent / Interval)</li>
           <li><strong>Division</strong> (config) — note values 4/1 … 1/32T (default 1/16)</li>
@@ -676,8 +676,8 @@
       <div>
         <h3>Melody / LEDs</h3>
         <ul>
-          <li>Note A (config) = root; each Length-A step maps into 0…Extent semitones; Ch2 = same line + Interval</li>
-          <li>Extent 0 = monotone Note A; higher = wider ascending line through the A cycle</li>
+          <li>Note A (config) = degree 0 of the device quantizer key; Length-A walks an arch through 0…Extent scale degrees; Ch2 = same line + diatonic Interval</li>
+          <li>Extent 0 = monotone Note A; higher = wider arch through the A cycle (device key)</li>
           <li>Division (note values), GATE %, Prob %, Humanize (Vel jitter; 0 = fixed max), MIDI CH / Note A / Interval B / Out, Color</li>
           <li>Color = App Color on Btn1; Btn0 = Logic hue; Top A/B = App Color / complement (layer hits)</li>
           <li>Main Btn: logic / app color · density bright · soft hit dip</li>
@@ -688,7 +688,7 @@
       </div>
     </div>
     <div class="manual">
-      <p><strong>Manual.</strong> Two independent Euclidean masks combined with boolean logic — the OXI GEN dual-layer idea without pitch. Color sets Layer A; Layer B LEDs use a fixed complement (always the same pairs). Btn1 shows logic mode, not Color. Different lengths per layer enable polyrhythmic XOR/AND patterns Euclid cannot make alone. Needs clock. Prob % &lt; 100 adds optional flakiness; 100 is fully deterministic. No pitch CV (use GenSeq for that).</p>
+      <p><strong>Manual.</strong> Two independent Euclidean masks combined with boolean logic — the OXI GEN dual-layer idea with a scale-aware melodic line. Color sets Layer A; Layer B LEDs use a fixed complement. Btn1 shows logic mode, not Color. Different lengths per layer enable polyrhythmic XOR/AND patterns Euclid cannot make alone. Melody: Note A is degree 0 of the device quantizer key. Extent is the arch span in scale degrees through Length-A; Interval B is diatonic steps above that line for Ch2 (wire indices 0–12 unchanged). Extent 0 = monotone Note A. Needs clock. Prob % &lt; 100 adds optional flakiness; 100 is fully deterministic. No pitch CV (use GenSeq for that).</p>
     </div>
   </div>
 </section>
@@ -747,7 +747,7 @@
       </div>
     </div>
     <div class="manual">
-      <p><strong>Manual.</strong> Genre MIDI bass on the global clock (9 shared genres with Grooves / Chord Vamp). Density reveals fill hits and freer scale degrees; Alt scrubs genre on the shared spectrum axis; Third is Feel / Groove (swing, microtiming, velocity contrast, ghost drag, gate character — depth capped by Groove max %). Notes sustain across empty 16ths until the next hit (legato when the pitch repeats). Phrases are 8 bars in AA B A′ form: the rhythmic motif repeats, harmony walks the tropes, bars 5–6 answer (shifted), bar 7 ornaments, bar 8 breathes. Shift+Long cycles bassist Voice personas in historical era order (Mingus → Jamerson → Bootsy → Jaco → Robbie → Flabba → Flea → Claypool; button flash = voice color). Short resets to the downbeat; Long mutes. CV Out is pitch (V/Oct); CV In modulates Density / Feel or triggers Reset. MIDI note-ons fire outside the clock subscriber (`pending_*` isolate), same pattern as Grooves.</p>
+      <p><strong>Manual.</strong> Genre MIDI bass on the global clock (9 shared genres with Grooves / Chord Vamp — tropes live in `genre_palette::GENRE_PROG_8`). Density reveals fill hits and freer scale degrees; Alt scrubs genre on the shared spectrum axis; Third is Feel / Groove (swing, microtiming, velocity contrast, ghost drag, gate character — depth capped by Groove max %). Notes sustain across empty 16ths until the next hit (legato when the pitch repeats). Phrases are 8 bars in AA B A′ form: the rhythmic motif repeats, harmony walks the tropes, bars 5–6 answer (shifted, more approaches), bar 7 ornaments, bar 8 breathes (no ghosts/approaches). At higher Feel the line leaves “lock” mode: live Dice mix with the step-hash for approaches, ghosts, octave punches, and accent rake; pickups appear before downbeats, soft cores get dropped for air, ghosts can become dead notes, and approaches may be chromatic or scale-neighbor. Voice × genre soft-bias: pocket players stay sparse in Jungle/UKG; busy voices thin in Dub/Techno. Shift+Long cycles bassist Voice personas in historical era order (Mingus → Jamerson → Bootsy → Jaco → Robbie → Flabba → Flea → Claypool; button flash = voice color). Short resets to the downbeat; Long mutes. CV Out is pitch (V/Oct); CV In modulates Density / Feel or triggers Reset. MIDI note-ons fire outside the clock subscriber (`pending_*` isolate), same pattern as Grooves.</p>
     </div>
   </div>
 </section>
@@ -789,7 +789,7 @@
       </div>
     </div>
     <div class="manual">
-      <p><strong>Manual.</strong> # Contura Generates melodic contour phrases over selectable 12-TET pitch-class sets, anchored to the device quantizer tonic. Scale-set names are conventional labels for interval patterns (Western modes and other named collections on equal footing). They are not claims about living musical practice or authentic intonation. Needs a running clock. Pitch CV on the channel jack; gates via MIDI note on/off. Phrases mix short, medium, and longer note lengths.</p>
+      <p><strong>Manual.</strong> Generates melodic contour phrases over selectable 12-TET pitch-class sets, anchored to the device quantizer tonic. Phrase starts and endings pull harder toward the tonic (cadence grammar); mid-phrase follows each set’s ScaleFeel. Scale-set names are conventional labels for interval patterns (Western modes and other named collections on equal footing). They are not claims about living musical practice or authentic intonation. Needs a running clock. Pitch CV on the channel jack; gates via MIDI note on/off. Phrases mix short, medium, and longer note lengths.</p>
     </div>
   </div>
 </section>

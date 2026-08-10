@@ -4,7 +4,7 @@
   "name": "Venn",
   "status": "wip",
   "tag": "ready",
-  "description": "Dual Euclidean layers + boolean logic; generative melody via Extent",
+  "description": "Dual Euclidean layers + boolean logic; scale-aware melody via Extent",
   "color": "Cyan",
   "icon": "Euclid",
   "channels_count": 2,
@@ -38,7 +38,7 @@
           "heading": "Faders",
           "items": [
             "<strong>Main</strong> — F0 pulses A · F1 pulses B (density; absolute pulse count, Bjorklund redistributes)",
-            "<strong>Alt</strong> (Shift) — F0 Extent (melodic span 0–24 st from Note A) · F1 Interval (0–12 st above the line for Ch2)",
+            "<strong>Alt</strong> (Shift) — F0 Extent (scale-degree span 0–24 from Note A) · F1 Interval (0–12 diatonic steps above the line for Ch2)",
             "<strong>Third</strong> (Btn1 or Btn2 hold) — F0 length A · F1 length B (2–32; independent)",
             "Rotation fixed at 0 (slots freed for Extent / Interval)",
             "<strong>Division</strong> (config) — note values 4/1 … 1/32T (default 1/16)"
@@ -64,8 +64,8 @@
         {
           "heading": "Melody / LEDs",
           "items": [
-            "Note A (config) = root; each Length-A step maps into 0…Extent semitones; Ch2 = same line + Interval",
-            "Extent 0 = monotone Note A; higher = wider ascending line through the A cycle",
+            "Note A (config) = degree 0 of the device quantizer key; Length-A walks an arch through 0…Extent scale degrees; Ch2 = same line + diatonic Interval",
+            "Extent 0 = monotone Note A; higher = wider arch through the A cycle (device key)",
             "Division (note values), GATE %, Prob %, Humanize (Vel jitter; 0 = fixed max), MIDI CH / Note A / Interval B / Out, Color",
             "Color = App Color on Btn1; Btn0 = Logic hue; Top A/B = App Color / complement (layer hits)",
             "Main Btn: logic / app color · density bright · soft hit dip",
@@ -80,11 +80,11 @@
   "channels": [
     {
       "jackTitle": "Logic out",
-      "jackDescription": "Gate + melodic MIDI (Note A + step→Extent) for the primary boolean result",
+      "jackDescription": "Gate + scale-aware melodic MIDI (Note A + degree arch) for the primary boolean result",
       "faderTitle": "Pulses A",
       "faderDescription": "Number of pulses in Euclidean layer A (density)",
       "faderPlusShiftTitle": "Extent",
-      "faderPlusShiftDescription": "Melodic span above Note A (0–24 semitones)",
+      "faderPlusShiftDescription": "Scale-degree span above Note A (0–24 degrees, device key)",
       "faderPlusFnTitle": "Length A",
       "faderPlusFnDescription": "Cycle length for layer A and melody phase (2–32)",
       "fnTitle": "Third / Logic",
@@ -94,11 +94,11 @@
     },
     {
       "jackTitle": "Coupled out",
-      "jackDescription": "Secondary gate + same melodic line + Interval",
+      "jackDescription": "Secondary gate + same melodic line + diatonic Interval",
       "faderTitle": "Pulses B",
       "faderDescription": "Number of pulses in Euclidean layer B (density)",
       "faderPlusShiftTitle": "Interval",
-      "faderPlusShiftDescription": "Semitones above the melodic line for Ch2 (0–12)",
+      "faderPlusShiftDescription": "Diatonic steps above the melodic line for Ch2 (0–12)",
       "faderPlusFnTitle": "Length B",
       "faderPlusFnDescription": "Cycle length for layer B (2–32)",
       "fnTitle": "Mute / Invert",
