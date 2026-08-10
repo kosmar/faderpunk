@@ -55,10 +55,9 @@ const LAYER_LED_FLOOR: u8 = 40;
 /// Ignore tiny fader noise when deciding Btn2 tap-mute vs Third scrub.
 const FADER_MOVE_THRESH: u16 = 64;
 const RESOLUTION: [u32; 12] = [384, 192, 96, 48, 24, 16, 12, 8, 6, 4, 3, 2];
-/// Labels for `RESOLUTION` (24 PPQN): index 0 = 1/1 … 11 = 1/192.
+/// Labels for `RESOLUTION` (24 PPQN, bar = 96 ticks): index 0 = 4/1 … 11 = 1/32T.
 const DIVISION_VARIANTS: &[&str] = &[
-    "1/1", "1/2", "1/4", "1/8", "1/16", "1/16T", "1/32", "1/32T", "1/64", "1/96", "1/128",
-    "1/192",
+    "4/1", "2/1", "1/1", "1/2", "1/4", "1/4T", "1/8", "1/8T", "1/16", "1/16T", "1/32", "1/32T",
 ];
 
 /// Boolean combine modes for the two Euclidean layers.
@@ -301,7 +300,7 @@ impl Default for Params {
             note_a: MidiNote::from(32),
             interval_b: 1,
             midi_out: MidiOut::default(),
-            division: 4, // 1/16
+            division: 8, // 1/16
             gatel: 50,
             prob: 100,
             vel: 0,

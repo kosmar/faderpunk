@@ -41,7 +41,7 @@
             "<strong>Alt</strong> (Shift) — F0 Extent (melodic span 0–24 st from Note A) · F1 Interval (0–12 st above the line for Ch2)",
             "<strong>Third</strong> (Btn1 or Btn2 hold) — F0 length A · F1 length B (2–32; independent)",
             "Rotation fixed at 0 (slots freed for Extent / Interval)",
-            "<strong>Division</strong> (config) — note values 1/1 … 1/192 (default 1/16)"
+            "<strong>Division</strong> (config) — note values 4/1 … 1/32T (default 1/16)"
           ]
         }
       ]

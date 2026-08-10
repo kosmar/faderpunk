@@ -88,7 +88,7 @@
 <body>
 
 <h1>Faderpunk WIP Apps — UX Cheatsheet</h1>
-<p class="sub">Synced to <code>test/playground</code> (IDs 29–42) · 9 Aug 2026 · A4 print</p>
+<p class="sub">Synced to <code>test/playground</code> (IDs 29–42) · 10 Aug 2026 · A4 print</p>
 
 <div class="legend">
   <div><strong>Main</strong> — Fader alone</div>
@@ -182,9 +182,9 @@
       <div>
         <h3>Buttons</h3>
         <ul>
-          <li><strong>Short</strong> — Reset to downbeat</li>
-          <li><strong>Long</strong> — Mute (notes off)</li>
+          <li><strong>Short</strong> — Mute (notes off)</li>
           <li><strong>Shift+Short</strong> — Reverse swing</li>
+          <li><strong>Long</strong> — Reset to downbeat</li>
           <li><strong>Shift+Long</strong> — Toggle jack Any ↔ Stacked (yellow/violet flash)</li>
         </ul>
         <h3>Jack params</h3>
@@ -206,7 +206,7 @@
       </div>
     </div>
     <div class="manual">
-      <p><strong>Manual.</strong> Genre MIDI drums on the global clock (9 shared genres with Chord Vamp, including Jungle). Density reveals hits; Shift+Fader scrubs genre on the shared axis — button hue follows the latched genre (meters show live fader until pickup); Button+Fader = Swing (capped by Swing max %). Watch the button: Main density ramps genre hue from half→full saturation with bar lightness; hits dim by voice (kick −50%, snare −30%, hats −10%) — not a clock blink. MIDI fires outside the clock subscriber (pending_* isolate). Third swing blends White→app→Red. Shift+Long toggles CV Out Any↔Stacked. Jack=CV In modulates Density/Swing or triggers Reset — set CV Dest in the Configurator only. CV Att scales input.</p>
+      <p><strong>Manual.</strong> Genre MIDI drums on the global clock (9 shared genres with Chord Vamp, including Jungle). Density reveals hits; Shift+Fader scrubs genre on the shared axis — button hue follows the latched genre (meters show live fader until pickup); Button+Fader = Swing (capped by Swing max %). Watch the button: Main density ramps genre hue from half→full saturation with bar lightness; hits dim by voice (kick −50%, snare −30%, hats −10%) — not a clock blink. MIDI fires outside the clock subscriber (pending_* isolate). Third swing blends White→app→Red. Long resets to the downbeat; Shift+Long toggles CV Out Any↔Stacked. Jack=CV In modulates Density/Swing or triggers Reset — set CV Dest in the Configurator only. CV Att scales input.</p>
     </div>
   </div>
 </section>
@@ -453,7 +453,7 @@
           <li><strong>Shift+Short (Perform)</strong> — Capture last N bars → Auto+Play</li>
           <li><strong>Shift+Short (Auto)</strong> — Return to Perform</li>
           <li><strong>Auto Long</strong> — Clear clip, reseed genre phrase</li>
-          <li><strong>Shift+Long (Auto)</strong> — Panic</li>
+          <li><strong>Shift+Long</strong> — Panic (both modes)</li>
         </ul>
       </div>
       <div>
@@ -474,7 +474,7 @@
       </div>
     </div>
     <div class="manual">
-      <p><strong>Manual.</strong> MIDI chord vamp with optional CV jack. Shared 9-genre axis with Grooves (Dub→…→Jungle→…→Dubstep). <strong>Perform</strong>: fader = genre-unique degrees ascending across ~3 octaves; hold plays the chord (blue = pitch). <strong>Shift+Short</strong> captures recent harmony (starts quantized to 16ths, lead-in cropped to first hit; hold lengths free) into a timed clip and arms Auto. <strong>Auto</strong>: genre rhythm phrase loops — multi-chord statement (~1–2 bars) then multi-bar rest; harmony Repeat or Meander; Feel sets short stab gate (rests fixed); Swing (scene, genre-seeded) delays odd 16ths on Auto + Capture. Short = play/pause; Long clears clip / reseeds; Shift+Short → Perform. Alt = genre (+ Capture slot). CV Macro = scrub/tension; Panic from CV optional.</p>
+      <p><strong>Manual.</strong> MIDI chord vamp with optional CV jack. Shared 9-genre axis with Grooves (Dub→…→Jungle→…→Dubstep). <strong>Perform</strong>: fader = genre-unique degrees ascending across ~3 octaves; hold plays the chord (blue = pitch). <strong>Shift+Short</strong> captures recent harmony (starts quantized to 16ths, lead-in cropped to first hit; hold lengths free) into a timed clip and arms Auto. <strong>Auto</strong>: genre rhythm phrase loops — multi-chord statement (~1–2 bars) then multi-bar rest; harmony Repeat or Meander; Feel sets short stab gate (rests fixed); Swing (scene, genre-seeded) delays odd 16ths on Auto + Capture. Short = play/pause; Long clears clip / reseeds; Shift+Short → Perform; Shift+Long = Panic in either mode. Alt = genre (+ Capture slot). CV Macro = scrub/tension; Panic from CV optional.</p>
     </div>
   </div>
 </section>
@@ -661,7 +661,7 @@
           <li><strong>Alt</strong> (Shift) — F0 Extent (melodic span 0–24 st from Note A) · F1 Interval (0–12 st above the line for Ch2)</li>
           <li><strong>Third</strong> (Btn1 or Btn2 hold) — F0 length A · F1 length B (2–32; independent)</li>
           <li>Rotation fixed at 0 (slots freed for Extent / Interval)</li>
-          <li><strong>Division</strong> (config) — note values 1/1 … 1/192 (default 1/16)</li>
+          <li><strong>Division</strong> (config) — note values 4/1 … 1/32T (default 1/16)</li>
         </ul>
       </div>
       <div>
@@ -718,15 +718,15 @@
       <div>
         <h3>Buttons</h3>
         <ul>
-          <li><strong>Short</strong> — Reset to downbeat</li>
-          <li><strong>Long</strong> — Mute (notes off)</li>
+          <li><strong>Short</strong> — Mute (notes off)</li>
           <li><strong>Shift+Short</strong> — Reverse swing</li>
-          <li><strong>Shift+Long</strong> — Cycle Voice (historical era order; flash = voice color)</li>
+          <li><strong>Long</strong> — Next Voice (flash = voice color)</li>
+          <li><strong>Shift+Long</strong> — Previous Voice</li>
         </ul>
         <h3>Jack params</h3>
         <ul>
           <li>Jack: CV Out (pitch V/Oct) / CV In</li>
-          <li>CV Dest: Density · Feel · Reset (Configurator)</li>
+          <li>CV Dest: Density · Feel · Reset (Configurator) — Reset now lives here only</li>
           <li>Range, V/Oct, CV Att</li>
         </ul>
       </div>
@@ -742,7 +742,7 @@
           <li><strong>Flabba</strong> Lime — roots walk, roomy gates</li>
           <li><strong>Flea</strong> Red — staccato + aggressive jumps</li>
           <li><strong>Claypool</strong> Yellow — quirky leaps + chromatic nudges</li>
-          <li>Button: genre hue in play; Shift+Long flash = voice color; hits duck Mid→Low</li>
+          <li>Button: genre hue in play; Long / Shift+Long flash = voice color; hits duck Mid→Low</li>
         </ul>
       </div>
     </div>
@@ -773,9 +773,9 @@
         <h3>Buttons</h3>
         <ul>
           <li><strong>Short</strong> — mute / unmute</li>
-          <li><strong>Shift+short</strong> — previous scale set</li>
+          <li><strong>Shift+Short</strong> — octave span 1→2→3→4</li>
           <li><strong>Long</strong> — next scale set</li>
-          <li><strong>Shift+long</strong> — octave span 1→2→3→4</li>
+          <li><strong>Shift+Long</strong> — previous scale set</li>
         </ul>
       </div>
       <div>
@@ -784,7 +784,7 @@
           <li>Flat list of named 12-TET sets (Ionian…Folk) — conventional interval-pattern labels, not cultural claims</li>
           <li>Follow device tonic (default on); Follow device scale uses the global Key mask instead of the selected set</li>
           <li>Per-set melodic feel (contour / leap / sustain) — expressivity is not a fader</li>
-          <li>Button hue cycles by scale index · Top = gate · Bottom = pitch height · Division via config (default 1/16)</li>
+          <li>Button hue cycles by scale index · Top = gate · Bottom = pitch height · Division via config (default 1/8)</li>
         </ul>
       </div>
     </div>
