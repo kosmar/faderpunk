@@ -38,9 +38,12 @@ const POOL_CAP: usize = 48;
 
 /// Clock divisions (24 PPQN ticks). Index matches Division param.
 /// Labels are bar-relative in 4/4 (bar = 96 ticks): 1/1 = whole bar, etc.
-const RESOLUTION: [u32; 12] = [384, 192, 96, 48, 24, 16, 12, 8, 6, 4, 3, 2];
+/// One tick is the floor: a straight 1/64 would need 1.5 ticks, so the finest
+/// step the internal clock can express is the 1/64 triplet.
+const RESOLUTION: [u32; 13] = [384, 192, 96, 48, 24, 16, 12, 8, 6, 4, 3, 2, 1];
 const DIV_LABELS: &[&str] = &[
     "4/1", "2/1", "1/1", "1/2", "1/4", "1/4T", "1/8", "1/8T", "1/16", "1/16T", "1/32", "1/32T",
+    "1/64T",
 ];
 
 const OCT_COLORS: [Color; 4] = [Color::Blue, Color::Cyan, Color::Yellow, Color::Red];
