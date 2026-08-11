@@ -15,7 +15,7 @@ use libfp::{
 };
 
 use crate::app::{
-    App, AppParams, AppStorage, Led, ManagedStorage, ParamStore, SceneEvent,
+    App, AppParams, AppStorage, Die, Led, ManagedStorage, ParamStore, SceneEvent,
 };
 use crate::apps::genre_palette::{genre_fader_center, GENRE_NAMES, NUM_GENRES};
 use crate::apps::groove::{
@@ -24,11 +24,9 @@ use crate::apps::groove::{
 use crate::apps::led_fx::{genre_nearest, genre_pair, lerp_i32, lerp_u8, spectrum_color};
 
 pub const CHANNELS: usize = 1;
-pub const PARAMS: usize = 14;
+pub const PARAMS: usize = 16;
 
 const LED_BRIGHTNESS: Brightness = Brightness::Mid;
-/// Reverse-swing LED feedback (white↔off), same as Heat Pump / Golden Gate.
-const REVERSE_FADE_MS: u16 = 500;
 /// Mid→Low button duck on each hit — same length as Heat Pump metronome duck.
 const BUTTON_DUCK_MS: u16 = 25;
 /// Ignore tiny ADC noise when deciding "button+fader scrub" vs long-press mute.
@@ -307,6 +305,14 @@ pub static CONFIG: Config<PARAMS> = Config::new(
     name: "CV Att",
     min: 0,
     max: 100,
+})
+.add_param(Param::Enum {
+    name: "Jack Mode",
+    variants: &["Any", "Stacked"],
+})
+.add_param(Param::Enum {
+    name: "Swing Dir",
+    variants: &["Normal", "Reverse"],
 });
 
 pub struct Params {
@@ -324,13 +330,20 @@ pub struct Params {
     range: Range,
     cv_dest: usize,
     cv_att: i32,
+    /// CV Out activity: Any (OR) vs Stacked (level by voice count).
+    jack_mode: usize,
+    /// Swing direction: Normal (offbeats late) vs Reverse (offbeats early).
+    swing_dir: usize,
 }
 
 impl AppParams for Params {
     fn from_values(values: &[Value]) -> Option<Self> {
-        // Layout without Color (current): [0..=8 core] [9 midi_out] [10..=13 cv…]
-        // Legacy with Color at [9]:       [0..=8 core] [9 color] [10 midi_out] [11..=14 cv…]
-        let legacy_color = values.len() == 11 || values.len() >= 15;
+        // Layout without Color (current): [0..=8 core] [9 midi_out] [10..=13 cv…] [14 jack_mode]
+        // Legacy with Color at [9]:       [0..=8 core] [9 color] [10 midi_out] [11..=14 cv…] [15 jack_mode]
+        // Pre-jack-mode lists omit the final enum and default to Any.
+        // Length 15 is ambiguous (old color layout vs new + jack_mode) — discriminate on values[9].
+        let legacy_color =
+            values.len() == 11 || matches!(values.get(9), Some(Value::Color(_)));
         let midi_i = if legacy_color { 10 } else { 9 };
         let cv_i = midi_i + 1;
         if values.len() < midi_i + 1 {
@@ -345,6 +358,18 @@ impl AppParams for Params {
             )
         } else {
             (CV_JACK_OUT, Range::_0_10V, DEST_DENSITY, 100)
+        };
+        let jack_mode_i = cv_i + 4;
+        let jack_mode = if values.len() > jack_mode_i {
+            usize::from_value(values[jack_mode_i]).min(1)
+        } else {
+            JACK_ANY as usize
+        };
+        let swing_dir_i = jack_mode_i + 1;
+        let swing_dir = if values.len() > swing_dir_i {
+            usize::from_value(values[swing_dir_i]).min(1)
+        } else {
+            0
         };
         Some(Self {
             note_kick: MidiNote::from_value(values[0]),
@@ -361,6 +386,8 @@ impl AppParams for Params {
             range,
             cv_dest,
             cv_att,
+            jack_mode,
+            swing_dir,
         })
     }
 
@@ -380,6 +407,8 @@ impl AppParams for Params {
         vec.push(self.range.into()).unwrap();
         vec.push(self.cv_dest.into()).unwrap();
         vec.push(self.cv_att.into()).unwrap();
+        vec.push(self.jack_mode.into()).unwrap();
+        vec.push(self.swing_dir.into()).unwrap();
         vec
     }
 }
@@ -400,6 +429,8 @@ pub struct Storage {
     /// Groove density: progressively reveals extra kick/snare/hat hits
     /// across the whole pattern (not just hats) as this rises.
     density: u16,
+    /// Legacy scene fields — Jack Mode and swing direction now live in Params;
+    /// kept for FRAM shape.
     jack_mode: u8,
     reversed: bool,
     muted: bool,
@@ -462,6 +493,463 @@ fn fill_reveal(fill: u16, density: u16, step: u32) -> Option<u8> {
 /// revealed) and `full` (fully faded in) as `frac` (0..=255) rises.
 fn ghost_vel_pct(frac: u8, quiet: u16, full: u16) -> u16 {
     quiet + ((full - quiet) as u32 * frac as u32 / 255) as u16
+}
+
+/// A full-bar fill / break figure. Bit N = 16th step N, same layout as
+/// [`Pattern`]. Held gestures play whatever slice of the bar they cover, so the
+/// figures are written to build toward the downbeat.
+struct Fill {
+    kick: u16,
+    snare: u16,
+    hats: u16,
+}
+
+const FILL_VARIANTS: usize = 3;
+
+/// Dedicated fill bars per genre. These are deliberately *not* the density
+/// `*_fill` masks: those only add whatever the reveal has not consumed yet, so a
+/// fill could land silent with the Density fader parked at either end.
+const FILLS: [[Fill; FILL_VARIANTS]; NUM_GENRES] = [
+    // 0 Dub — dubby space, snare answers late
+    [
+        Fill { kick: 0b0000_0100_0000_0001, snare: 0b1001_0000_0001_0000, hats: 0b0100_0000_0100_0100 },
+        Fill { kick: 0b1000_0001_0000_0001, snare: 0b0011_0000_0001_0000, hats: 0b0100_0000_0100_0000 },
+        Fill { kick: 0b0001_0000_0000_0001, snare: 0b1100_0000_0001_0000, hats: 0b1010_0100_0100_0100 },
+    ],
+    // 1 Disco — snare roll over a surviving four-on-floor
+    [
+        Fill { kick: 0b0001_0001_0001_0001, snare: 0b1111_0000_0001_0000, hats: 0b1111_0101_0101_0101 },
+        Fill { kick: 0b0101_0001_0001_0001, snare: 0b1011_0000_0001_0000, hats: 0b1111_0100_0100_0100 },
+        Fill { kick: 0b0001_0001_0001_0001, snare: 0b1111_0000_0001_0000, hats: 0b1000_0000_0000_0000 },
+    ],
+    // 2 House — clap/snare interplay, driving kick
+    [
+        Fill { kick: 0b0101_0001_0001_0001, snare: 0b1011_0000_0001_0000, hats: 0b1111_0101_0101_0101 },
+        Fill { kick: 0b0001_0001_0001_0001, snare: 0b1111_0000_0001_0000, hats: 0b1111_0100_0100_0100 },
+        Fill { kick: 0b1001_0001_0001_0001, snare: 0b0110_0000_0001_0000, hats: 0b1010_0100_0100_0100 },
+    ],
+    // 3 Techno — machine-gun, straight
+    [
+        Fill { kick: 0b1111_0001_0001_0001, snare: 0b0000_0000_0000_0000, hats: 0b1111_1111_1111_1111 },
+        Fill { kick: 0b0101_0001_0001_0001, snare: 0b1010_0000_0000_0000, hats: 0b1111_0101_0101_0101 },
+        Fill { kick: 0b0001_0001_0001_0001, snare: 0b1110_0000_0000_0000, hats: 0b1111_1111_1111_1111 },
+    ],
+    // 4 Trip-Hop — dragging, half-speed figures
+    [
+        Fill { kick: 0b0000_0100_0000_0001, snare: 0b1011_0000_0001_0000, hats: 0b0100_0000_0100_0000 },
+        Fill { kick: 0b0000_0001_0000_0001, snare: 0b1101_0000_0001_0000, hats: 0b1010_0100_0100_0100 },
+        Fill { kick: 0b0101_0100_0000_0001, snare: 0b1000_0000_0001_0000, hats: 0b0010_0000_0100_0000 },
+    ],
+    // 5 Hip-Hop — boom-bap snare roll
+    [
+        Fill { kick: 0b0001_0001_0000_1001, snare: 0b1111_0000_0001_0000, hats: 0b1111_0101_0101_0101 },
+        Fill { kick: 0b0100_0100_0000_1001, snare: 0b1011_0000_0001_0000, hats: 0b1010_0100_0100_0100 },
+        Fill { kick: 0b0000_0001_0000_0001, snare: 0b1111_0000_0001_0000, hats: 0b0101_0001_0001_0001 },
+    ],
+    // 6 Jungle — amen chop, busy interleave
+    [
+        Fill { kick: 0b0010_1001_0000_1001, snare: 0b1101_0100_0001_0000, hats: 0b1111_1111_1111_1111 },
+        Fill { kick: 0b0100_0100_0100_0001, snare: 0b1011_0001_0001_0000, hats: 0b1111_1111_1111_1111 },
+        Fill { kick: 0b0001_0000_0000_0001, snare: 0b1111_0100_0001_0000, hats: 0b1010_0100_0100_0100 },
+    ],
+    // 7 UK Garage — skippy, syncopated
+    [
+        Fill { kick: 0b0101_0100_0100_0001, snare: 0b1010_0000_0001_0000, hats: 0b1111_1111_1111_1111 },
+        Fill { kick: 0b0011_0000_0100_0001, snare: 0b1100_0000_0001_0000, hats: 0b1100_1101_0100_1101 },
+        Fill { kick: 0b0110_0000_0100_0001, snare: 0b1001_0000_0001_0000, hats: 0b1111_1111_1111_1111 },
+    ],
+    // 8 Dubstep — half-time, few but heavy
+    [
+        Fill { kick: 0b0010_0000_0000_0001, snare: 0b1000_0001_0000_0000, hats: 0b0101_0000_0100_0100 },
+        Fill { kick: 0b0001_0000_0000_0001, snare: 0b1100_0001_0000_0000, hats: 0b1010_0000_0100_0000 },
+        Fill { kick: 0b0100_0000_0000_0001, snare: 0b1010_0001_0000_0000, hats: 0b0001_0000_0000_0000 },
+    ],
+];
+
+/// One bar of a held solo. Bit N = 16th step N (same layout as [`Pattern`]); the
+/// `*_acc` masks mark where the weight lands. Density alone reads as a machine
+/// gun, so every figure keeps rests, trades kick against snare instead of
+/// stacking them, and carries its own accent architecture.
+struct Solo {
+    kick: u16,
+    snare: u16,
+    hats: u16,
+    kick_acc: u16,
+    snare_acc: u16,
+    hats_acc: u16,
+}
+
+/// Intensity tiers a held gesture walks through: open build → busier → peak.
+const SOLO_TIERS: usize = 3;
+
+/// Bars per solo phrase: the three tiers, then a turnaround bar that falls back
+/// to the end-weighted [`FILLS`] figure so the phrase breathes and resolves onto
+/// the one instead of sitting at peak intensity forever.
+const SOLO_PHRASE_BARS: u32 = 4;
+
+const SOLOS: [[Solo; SOLO_TIERS]; NUM_GENRES] = [
+    // 0 Dub — echo answers around a wide-open bar
+    [
+        Solo {
+            kick: 0b0001_0001_1000_0001,
+            snare: 0b0101_0000_0001_0000,
+            hats: 0b0100_0100_0100_0100,
+            kick_acc: 0b0000_0001_0000_0001,
+            snare_acc: 0b0001_0000_0001_0000,
+            hats_acc: 0b0100_0000_0100_0000,
+        },
+        Solo {
+            kick: 0b0001_0001_1000_1001,
+            snare: 0b0101_0100_0001_0000,
+            hats: 0b0101_0100_0101_0100,
+            kick_acc: 0b0000_0001_0000_0001,
+            snare_acc: 0b0001_0000_0001_0000,
+            hats_acc: 0b0100_0000_0100_0000,
+        },
+        Solo {
+            kick: 0b0010_1001_0100_1001,
+            snare: 0b1001_0100_0001_0000,
+            hats: 0b0101_0101_0101_0100,
+            kick_acc: 0b0000_0001_0000_0001,
+            snare_acc: 0b0001_0000_0001_0000,
+            hats_acc: 0b0100_0000_0100_0000,
+        },
+    ],
+    // 1 Disco — snare bursts over a surviving four-on-floor
+    [
+        Solo {
+            kick: 0b0001_0001_0001_0001,
+            snare: 0b1001_0000_1001_0000,
+            hats: 0b0100_0100_0100_0100,
+            kick_acc: 0b0001_0001_0001_0001,
+            snare_acc: 0b0001_0000_0001_0000,
+            hats_acc: 0b0100_0000_0100_0000,
+        },
+        Solo {
+            kick: 0b0101_0001_0001_0001,
+            snare: 0b1011_0000_1001_0000,
+            hats: 0b0101_0101_0101_0100,
+            kick_acc: 0b0001_0001_0001_0001,
+            snare_acc: 0b0001_0000_0001_0000,
+            hats_acc: 0b0100_0000_0100_0000,
+        },
+        Solo {
+            kick: 0b0101_0001_0001_0001,
+            snare: 0b1001_1000_1001_1000,
+            hats: 0b0011_0101_0011_0101,
+            kick_acc: 0b0001_0001_0001_0001,
+            snare_acc: 0b0001_0000_0001_0000,
+            hats_acc: 0b0001_0000_0001_0000,
+        },
+    ],
+    // 2 House — clap answers, kick never leaves the floor
+    [
+        Solo {
+            kick: 0b0001_0001_0001_0001,
+            snare: 0b0001_1000_0001_0000,
+            hats: 0b0100_0100_0100_0100,
+            kick_acc: 0b0001_0001_0001_0001,
+            snare_acc: 0b0001_0000_0001_0000,
+            hats_acc: 0b0100_0000_0100_0000,
+        },
+        Solo {
+            kick: 0b0001_0001_1001_0001,
+            snare: 0b1001_0100_0001_0000,
+            hats: 0b0101_0101_0101_0100,
+            kick_acc: 0b0001_0001_0001_0001,
+            snare_acc: 0b0001_0000_0001_0000,
+            hats_acc: 0b0100_0000_0100_0000,
+        },
+        Solo {
+            kick: 0b1001_0001_1001_0001,
+            snare: 0b0101_0100_0001_1000,
+            hats: 0b1101_0101_1101_0101,
+            kick_acc: 0b0001_0001_0001_0001,
+            snare_acc: 0b0001_0000_0001_0000,
+            hats_acc: 0b0100_0000_0100_0000,
+        },
+    ],
+    // 3 Techno — 16th kick bursts trading with clap stabs
+    [
+        Solo {
+            kick: 0b0001_0001_0001_0001,
+            snare: 0b0001_0000_0000_0000,
+            hats: 0b0101_0101_0101_0101,
+            kick_acc: 0b0001_0001_0001_0001,
+            snare_acc: 0b0001_0000_0000_0000,
+            hats_acc: 0b0100_0000_0100_0000,
+        },
+        Solo {
+            kick: 0b0001_0001_0000_1111,
+            snare: 0b0001_0000_0001_0000,
+            hats: 0b1111_0101_0101_0101,
+            kick_acc: 0b0001_0001_0000_0001,
+            snare_acc: 0b0001_0000_0001_0000,
+            hats_acc: 0b0100_0000_0100_0000,
+        },
+        Solo {
+            kick: 0b0000_1111_0000_1111,
+            snare: 0b0111_0000_0001_0000,
+            hats: 0b0101_0101_0101_0101,
+            kick_acc: 0b0000_0001_0000_0001,
+            snare_acc: 0b0001_0000_0001_0000,
+            hats_acc: 0b0100_0000_0100_0000,
+        },
+    ],
+    // 4 Trip-Hop — half-speed drag, ghosts behind the beat
+    [
+        Solo {
+            kick: 0b0000_0100_0000_0001,
+            snare: 0b0001_0000_0001_0000,
+            hats: 0b0100_0000_0100_0000,
+            kick_acc: 0b0000_0000_0000_0001,
+            snare_acc: 0b0001_0000_0001_0000,
+            hats_acc: 0b0100_0000_0100_0000,
+        },
+        Solo {
+            kick: 0b0000_0100_0000_1001,
+            snare: 0b0101_0000_0001_0000,
+            hats: 0b0100_0100_0100_0100,
+            kick_acc: 0b0000_0000_0000_0001,
+            snare_acc: 0b0001_0000_0001_0000,
+            hats_acc: 0b0100_0000_0100_0000,
+        },
+        Solo {
+            kick: 0b0010_0100_0000_1001,
+            snare: 0b0101_0000_1001_0000,
+            hats: 0b0100_0101_0100_0100,
+            kick_acc: 0b0000_0000_0000_0001,
+            snare_acc: 0b0001_0000_0001_0000,
+            hats_acc: 0b0100_0000_0100_0000,
+        },
+    ],
+    // 5 Hip-Hop — boom-bap, snare rolls out of the gap
+    [
+        Solo {
+            kick: 0b0000_0001_0000_1001,
+            snare: 0b0001_0000_0001_0000,
+            hats: 0b0100_0100_0100_0100,
+            kick_acc: 0b0000_0001_0000_0001,
+            snare_acc: 0b0001_0000_0001_0000,
+            hats_acc: 0b0100_0000_0100_0000,
+        },
+        Solo {
+            kick: 0b0000_1001_0000_1001,
+            snare: 0b1001_0000_1001_0000,
+            hats: 0b0101_0101_0101_0101,
+            kick_acc: 0b0000_0001_0000_0001,
+            snare_acc: 0b0001_0000_0001_0000,
+            hats_acc: 0b0100_0000_0100_0000,
+        },
+        Solo {
+            kick: 0b0100_1001_0000_1001,
+            snare: 0b1011_0000_0011_0000,
+            hats: 0b0100_0100_0100_0100,
+            kick_acc: 0b0000_0001_0000_0001,
+            snare_acc: 0b0001_0000_0001_0000,
+            hats_acc: 0b0100_0000_0100_0000,
+        },
+    ],
+    // 6 Jungle — amen chop: kick on 1 and 3e, snare answers on the e
+    [
+        Solo {
+            kick: 0b0000_0100_0000_0001,
+            snare: 0b1001_0000_1001_0000,
+            hats: 0b0100_0100_0100_0100,
+            kick_acc: 0b0000_0100_0000_0001,
+            snare_acc: 0b0001_0000_0001_0000,
+            hats_acc: 0b0100_0000_0100_0000,
+        },
+        Solo {
+            kick: 0b0000_0100_0000_1001,
+            snare: 0b1001_1000_1001_0000,
+            hats: 0b0101_0100_0101_0100,
+            kick_acc: 0b0000_0100_0000_0001,
+            snare_acc: 0b0001_0000_0001_0000,
+            hats_acc: 0b0100_0000_0100_0000,
+        },
+        Solo {
+            kick: 0b0000_0101_0000_1001,
+            snare: 0b1101_1000_1011_0000,
+            hats: 0b0101_0100_0101_0101,
+            kick_acc: 0b0000_0100_0000_0001,
+            snare_acc: 0b0001_0000_0001_0000,
+            hats_acc: 0b0100_0000_0100_0000,
+        },
+    ],
+    // 7 UK Garage — 2-step skip, snare shuffles around the backbeat
+    [
+        Solo {
+            kick: 0b0000_0100_0100_0001,
+            snare: 0b0001_0000_0001_0000,
+            hats: 0b0100_0100_0100_0100,
+            kick_acc: 0b0000_0000_0000_0001,
+            snare_acc: 0b0001_0000_0001_0000,
+            hats_acc: 0b0100_0000_0100_0000,
+        },
+        Solo {
+            kick: 0b0100_0100_0100_0001,
+            snare: 0b0001_1000_0001_1000,
+            hats: 0b0101_0101_0101_0100,
+            kick_acc: 0b0000_0000_0000_0001,
+            snare_acc: 0b0001_0000_0001_0000,
+            hats_acc: 0b0100_0000_0100_0000,
+        },
+        Solo {
+            kick: 0b0100_0101_0100_0001,
+            snare: 0b1001_1000_1001_1000,
+            hats: 0b0101_0101_0101_0101,
+            kick_acc: 0b0000_0000_0000_0001,
+            snare_acc: 0b0001_0000_0001_0000,
+            hats_acc: 0b0100_0000_0100_0000,
+        },
+    ],
+    // 8 Dubstep — half-time anchor, syncopation around the weight
+    [
+        Solo {
+            kick: 0b0000_0000_0100_0001,
+            snare: 0b0000_0001_0000_0000,
+            hats: 0b0100_0100_0100_0100,
+            kick_acc: 0b0000_0000_0000_0001,
+            snare_acc: 0b0000_0001_0000_0000,
+            hats_acc: 0b0100_0000_0100_0000,
+        },
+        Solo {
+            kick: 0b0000_0100_0100_0001,
+            snare: 0b1000_0001_0000_0000,
+            hats: 0b0101_0100_0100_0100,
+            kick_acc: 0b0000_0000_0000_0001,
+            snare_acc: 0b0000_0001_0000_0000,
+            hats_acc: 0b0100_0000_0100_0000,
+        },
+        Solo {
+            kick: 0b0010_0100_0100_0001,
+            snare: 0b1001_0001_0000_0000,
+            hats: 0b0101_0100_0101_0100,
+            kick_acc: 0b0000_0000_0000_0001,
+            snare_acc: 0b0000_0001_0000_0000,
+            hats_acc: 0b0100_0000_0100_0000,
+        },
+    ],
+];
+
+/// Break bars: the same gesture read subtractively. Chosen once the groove is
+/// already dense, where piling on more hits reads as mush — pulling the floor
+/// away and resolving on the downbeat is the louder move.
+const BREAKS: [[Fill; FILL_VARIANTS]; NUM_GENRES] = [
+    // 0 Dub — near-total silence
+    [
+        Fill { kick: 0b0000_0000_0000_0000, snare: 0b1000_0000_0000_0000, hats: 0b0000_0000_0000_0000 },
+        Fill { kick: 0b0000_0000_0000_0000, snare: 0b1100_0000_0000_0000, hats: 0b0000_0000_0000_0000 },
+        Fill { kick: 0b0001_0000_0000_0000, snare: 0b1000_0000_0000_0000, hats: 0b0000_0000_0000_0000 },
+    ],
+    // 1 Disco — drop to the kick, then answer
+    [
+        Fill { kick: 0b0001_0001_0001_0001, snare: 0b1000_0000_0000_0000, hats: 0b0000_0000_0000_0000 },
+        Fill { kick: 0b0000_0000_0000_0000, snare: 0b1000_0000_0000_0000, hats: 0b0100_0100_0100_0100 },
+        Fill { kick: 0b0000_0000_0000_0000, snare: 0b1100_0000_0000_0000, hats: 0b0000_0000_0000_0000 },
+    ],
+    // 2 House — filter-break hats
+    [
+        Fill { kick: 0b0000_0000_0000_0000, snare: 0b1000_0000_0000_0000, hats: 0b0100_0100_0100_0100 },
+        Fill { kick: 0b0001_0001_0001_0001, snare: 0b1000_0000_0000_0000, hats: 0b0000_0000_0000_0000 },
+        Fill { kick: 0b0000_0000_0000_0000, snare: 0b1000_0000_0000_0000, hats: 0b0000_0000_0000_0000 },
+    ],
+    // 3 Techno — kick-only drop
+    [
+        Fill { kick: 0b0001_0001_0001_0001, snare: 0b1000_0000_0000_0000, hats: 0b0000_0000_0000_0000 },
+        Fill { kick: 0b0000_0001_0000_0001, snare: 0b0000_0000_0000_0000, hats: 0b1100_0000_0000_0000 },
+        Fill { kick: 0b0000_0000_0000_0000, snare: 0b1000_0000_0000_0000, hats: 0b0101_0101_0101_0101 },
+    ],
+    // 4 Trip-Hop — hang back, late answer
+    [
+        Fill { kick: 0b0000_0000_0000_0000, snare: 0b1100_0000_0000_0000, hats: 0b0000_0000_0000_0000 },
+        Fill { kick: 0b0000_0000_0000_0000, snare: 0b1000_0000_0000_0000, hats: 0b0000_0000_0000_0000 },
+        Fill { kick: 0b0000_0001_0000_0000, snare: 0b1000_0000_0000_0000, hats: 0b0000_0000_0000_0000 },
+    ],
+    // 5 Hip-Hop — snare pickup out of the gap
+    [
+        Fill { kick: 0b0000_0000_0000_0000, snare: 0b1110_0000_0000_0000, hats: 0b0000_0000_0000_0000 },
+        Fill { kick: 0b0000_0001_0000_0000, snare: 0b1000_0000_0000_0000, hats: 0b0000_0000_0000_0000 },
+        Fill { kick: 0b0000_0000_0000_0000, snare: 0b1100_0000_0000_0000, hats: 0b0000_0000_0000_0000 },
+    ],
+    // 6 Jungle — chopped silence
+    [
+        Fill { kick: 0b0000_0000_0000_0000, snare: 0b1100_0000_0000_0000, hats: 0b0000_0000_0000_0000 },
+        Fill { kick: 0b0001_0000_0000_0000, snare: 0b1000_0000_0000_0000, hats: 0b0000_0000_0000_0000 },
+        Fill { kick: 0b0000_0000_0000_0000, snare: 0b1001_0000_0000_0000, hats: 0b0000_0000_0000_0000 },
+    ],
+    // 7 UK Garage — skippy stub
+    [
+        Fill { kick: 0b0000_0000_0100_0001, snare: 0b1000_0000_0000_0000, hats: 0b0000_0000_0000_0000 },
+        Fill { kick: 0b0000_0000_0000_0000, snare: 0b1100_0000_0000_0000, hats: 0b0000_0000_0000_0000 },
+        Fill { kick: 0b0000_0000_0000_0000, snare: 0b1000_0000_0000_0000, hats: 0b0100_0100_0000_0000 },
+    ],
+    // 8 Dubstep — maximum air
+    [
+        Fill { kick: 0b0000_0000_0000_0000, snare: 0b1000_0000_0000_0000, hats: 0b0000_0000_0000_0000 },
+        Fill { kick: 0b0000_0000_0000_0000, snare: 0b1100_0000_0000_0000, hats: 0b0000_0000_0000_0000 },
+        Fill { kick: 0b0000_0000_0000_0001, snare: 0b1000_0000_0000_0000, hats: 0b0000_0000_0000_0000 },
+    ],
+];
+
+/// Density at which the gesture flips from additive fill to subtractive break.
+const BREAK_DENSITY: u16 = 2400;
+
+/// Deterministic 0..99 hash so low Feel keeps one signature figure per genre.
+fn fill_hash(genre: usize) -> u8 {
+    let x = (genre as u32)
+        .wrapping_mul(2_654_435_761)
+        .wrapping_add(0x9E37_79B9);
+    ((x >> 9) % 100) as u8
+}
+
+/// Feel-weighted variant roll: low Feel stays hash-locked, high Feel leans on the
+/// live Die — same groove-weighted mix Bassment uses for its ghosts.
+fn fill_variant(die: &Die, genre: usize, feel: u16) -> usize {
+    let hashed = u32::from(fill_hash(genre));
+    let live = u32::from(die.roll() % 100);
+    // Cap the live mix at ~80% so the genre's own figure still peeks through.
+    let w = (u32::from(feel_curve(feel)) * 4) / 5;
+    let roll = (hashed * (4095 - w) + live * w) / 4095;
+    ((roll as usize * FILL_VARIANTS) / 100).min(FILL_VARIANTS - 1)
+}
+
+/// Fill velocity: crescendo from `base` toward `accent` across the bar so a
+/// figure drives into the downbeat instead of ghosting under the groove.
+fn fill_vel_pct(base: u8, accent: u8, step: u32) -> u16 {
+    let b = u16::from(base);
+    let a = u16::from(accent).max(b);
+    let idx = (step % STEPS_PER_BAR) as u16;
+    b + ((a - b) * idx) / (STEPS_PER_BAR as u16 - 1)
+}
+
+/// Solo velocity: the figure's own accent mask decides the weight — that accent
+/// architecture *is* the groove, so Feel only adds human jitter around it rather
+/// than randomising the dynamics. Ghost fill-ins sit well under the written hits.
+fn solo_vel_pct(base: u8, accent: u8, acc: bool, ghost: bool, die: &Die, feel: u16) -> u16 {
+    let b = u16::from(base);
+    let a = u16::from(accent).max(b);
+    let weight = if acc { a } else { b };
+    let target = if ghost { (weight * 2) / 5 } else { weight };
+    let jitter = (u32::from(feel_curve(feel)) * 12) / 4095;
+    let off = u32::from(die.roll()) % (2 * jitter + 1);
+    (u32::from(target) + off)
+        .saturating_sub(jitter)
+        .clamp(1, 100) as u16
+}
+
+/// Ghost fill-ins while soloing. Only fires on the step right after that voice
+/// already hit, so it reads as a drag/flam off the written figure instead of a
+/// random extra note. Salt keeps the three voices from ghosting in lockstep.
+fn solo_ghost(die: &Die, feel: u16, prev_hit: bool, salt: u8) -> bool {
+    if !prev_hit {
+        return false;
+    }
+    let open = u32::from(feel_curve(feel));
+    // ~4% at Feel=0 … ~20% at Feel=max.
+    let chance = 4 + (open * 16) / 4095;
+    u32::from((die.roll() ^ u16::from(salt)) % 100) < chance
 }
 
 /// Extra micro-timing push for ghost-only steps (no core hit landing on the
@@ -569,6 +1057,8 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
             range: Range::_0_10V,
             cv_dest: DEST_DENSITY,
             cv_att: 100,
+            jack_mode: JACK_ANY as usize,
+            swing_dir: 0,
         },
     );
     let storage = ManagedStorage::<Storage>::new(app.app_id, app.layout_id);
@@ -612,6 +1102,8 @@ pub async fn run(
         range,
         cv_dest,
         cv_att,
+        jack_mode,
+        swing_dir,
     ) = params.query(|p| {
         (
             p.midi_out,
@@ -628,6 +1120,8 @@ pub async fn run(
             p.range,
             p.cv_dest.min(DEST_COUNT - 1),
             att_from_pct(p.cv_att),
+            (p.jack_mode.min(1) as u8),
+            p.swing_dir == 1,
         )
     });
 
@@ -636,6 +1130,7 @@ pub async fn run(
     let faders = app.use_faders();
     let buttons = app.use_buttons();
     let leds = app.use_leds();
+    let die = app.use_die();
     let midi_kick = app.use_midi_output(midi_out, midi_channel_kick, false);
     let midi_snare = app.use_midi_output(midi_out, midi_channel_snare, false);
     let midi_hats = app.use_midi_output(midi_out, midi_channel_hats, false);
@@ -653,14 +1148,14 @@ pub async fn run(
         jack.set_value(pulse_idle(range));
     }
 
-    let (feel, density, jack_mode, reversed, muted) =
-        storage.query(|s| (s.feel, s.density, s.jack_mode, s.reversed, s.muted));
+    let (feel, density, muted) = storage.query(|s| (s.feel, s.density, s.muted));
 
     let glob_feel = app.make_global(feel);
     let glob_swing_max = app.make_global(swing_max_pct);
     let glob_density = app.make_global(density);
+    // Jack Mode and swing direction are Config params — scenes no longer own them.
     let glob_jack_mode = app.make_global(jack_mode);
-    let glob_reversed = app.make_global(reversed);
+    let glob_reversed = app.make_global(swing_dir);
     let glob_genre = app.make_global(genre);
     // Continuous Alt-layer fader value (not reconstructed from genre index).
     let glob_genre_fader = app.make_global(genre_fader_center(genre, NUM_GENRES));
@@ -676,9 +1171,15 @@ pub async fn run(
     // while saver_task may borrow_mut (RefCell panic under ADC noise / mute).
     let glob_storage_dirty = app.make_global(false);
     let glob_latch_layer = app.make_global(LatchLayer::Main);
-    let glob_reverse_fade = app.make_global(0u16);
-    let glob_reverse_fade_up = app.make_global(false);
-    let glob_jack_flash = app.make_global(0u16);
+    // Fill/break/solo gesture: Shift tap = genre fill (or break at high density)
+    // until the next downbeat. Shift hold escalates to a denser solo thunderstorm
+    // that re-rolls each bar; release keeps it open until the one so it resolves.
+    let glob_fill_armed = app.make_global(false);
+    let glob_fill_held = app.make_global(false);
+    let glob_fill_start = app.make_global(false);
+    let glob_fill_variant = app.make_global(0usize);
+    let glob_fill_break = app.make_global(false);
+    let glob_fill_solo = app.make_global(false);
     let glob_button_duck = app.make_global(0u16);
     // Clock watch → voice engine (never await MIDI inside the clock subscriber).
     // Same isolation as Chord Vamp / Arp — keeps Harmonica / Note Fader MIDI
@@ -726,6 +1227,12 @@ pub async fn run(
 
         let mut last_tick = ticks();
         let mut stall_ms = 0u16;
+        // Slot the current fill/break gesture started on, so the release resolves
+        // on the *next* downbeat rather than the one it may have started on.
+        let mut fill_start_slot = 0u32;
+        // Bars elapsed in the current solo, walking SOLO_PHRASE_BARS.
+        let mut solo_bar = 0u32;
+        let mut was_solo = false;
 
         loop {
             app.delay_millis(1).await;
@@ -765,6 +1272,10 @@ pub async fn run(
                     origin_set = false;
                     last_fired_slot = u32::MAX;
                     glob_reset.set(false);
+                    glob_fill_armed.set(false);
+                    glob_fill_start.set(false);
+                    glob_fill_solo.set(false);
+                    fill_start_slot = 0;
                     if glob_muted.get() {
                         leds.unset(0, Led::Top);
                         leds.unset(0, Led::Bottom);
@@ -790,6 +1301,10 @@ pub async fn run(
                         origin_set = true;
                         last_fired_slot = u32::MAX;
                         glob_reset.set(false);
+                        glob_fill_armed.set(false);
+                        glob_fill_start.set(false);
+                        glob_fill_solo.set(false);
+                        fill_start_slot = 0;
                     }
 
                     let pos = clkn.wrapping_sub(origin);
@@ -797,6 +1312,7 @@ pub async fn run(
                     let slot = pos / SIXTEENTH;
                     let step = (pos / SIXTEENTH) % STEPS_PER_BAR;
                     let phase = pos % SIXTEENTH;
+
                     let feel_val = if cv_jack == CV_JACK_IN && cv_dest == DEST_FEEL {
                         mod_u16(glob_feel.get(), glob_cv_val.get())
                     } else {
@@ -807,6 +1323,49 @@ pub async fn run(
                     let pat = &PATTERNS[near];
                     let pat_lo = &PATTERNS[g_lo];
                     let pat_hi = &PATTERNS[g_hi];
+
+                    let density = if cv_jack == CV_JACK_IN && cv_dest == DEST_DENSITY {
+                        mod_u16(glob_density.get(), glob_cv_val.get())
+                    } else {
+                        glob_density.get()
+                    };
+
+                    // Fill/break/solo gesture. Figure and additive-vs-subtractive
+                    // reading lock in at press so a tap stays one phrase. Holding
+                    // across a bar line escalates into the solo, which then walks
+                    // its phrase instead of looping one end-of-bar fill. Arm
+                    // outlives the release until the bar wraps so it resolves.
+                    if glob_fill_start.get() {
+                        glob_fill_start.set(false);
+                        glob_fill_variant.set(fill_variant(&die, near, feel_val));
+                        glob_fill_break.set(density >= BREAK_DENSITY);
+                        glob_fill_solo.set(false);
+                        glob_fill_armed.set(true);
+                        fill_start_slot = slot;
+                    } else if glob_fill_armed.get() && step == 0 && slot > fill_start_slot {
+                        if glob_fill_held.get() {
+                            // Still holding past a bar line → solo, one bar
+                            // further into the phrase each time round.
+                            if glob_fill_solo.get() {
+                                solo_bar = solo_bar.wrapping_add(1);
+                            } else {
+                                glob_fill_solo.set(true);
+                                solo_bar = 0;
+                            }
+                            glob_fill_variant.set(fill_variant(&die, near, feel_val));
+                            fill_start_slot = slot;
+                        } else {
+                            glob_fill_armed.set(false);
+                            glob_fill_solo.set(false);
+                        }
+                    }
+                    // A long press escalates mid-bar; start its phrase there.
+                    let solo_now = glob_fill_armed.get() && glob_fill_solo.get();
+                    if solo_now && !was_solo {
+                        solo_bar = 0;
+                    }
+                    was_solo = solo_now;
+
                     let bias = lerp_u8(swing_bias(g_lo), swing_bias(g_hi), g_frac);
                     let swing_pct = feel_swing_pct(bias, feel_val, glob_swing_max.get());
                     let timing_char = lerp_i32(
@@ -844,22 +1403,90 @@ pub async fn run(
                     // Fire-once guard: a feel/density change mid-window
                     // can't skip a step or fire it twice.
                     if slot != last_fired_slot && !glob_muted.get() {
-                        let density = if cv_jack == CV_JACK_IN && cv_dest == DEST_DENSITY {
-                            mod_u16(glob_density.get(), glob_cv_val.get())
+                        // While armed the figure replaces the groove outright —
+                        // density reveal plays no part, so the gesture reads the
+                        // same at any fader position. A held gesture walks the
+                        // solo tiers; the phrase's turnaround bar and the release
+                        // both fall back to the end-weighted FILLS so the solo
+                        // breathes and lands on the one.
+                        let tier = (solo_bar % SOLO_PHRASE_BARS) as usize;
+                        let solo_fig = if glob_fill_armed.get()
+                            && glob_fill_solo.get()
+                            && glob_fill_held.get()
+                            && tier < SOLO_TIERS
+                        {
+                            Some(&SOLOS[near][tier])
                         } else {
-                            glob_density.get()
+                            None
                         };
+                        let fill_fig = if glob_fill_armed.get() && solo_fig.is_none() {
+                            let v = glob_fill_variant.get().min(FILL_VARIANTS - 1);
+                            Some(if glob_fill_break.get() && !glob_fill_solo.get() {
+                                &BREAKS[near][v]
+                            } else {
+                                &FILLS[near][v]
+                            })
+                        } else {
+                            None
+                        };
+                        let gesture = solo_fig.is_some() || fill_fig.is_some();
 
-                        let kick_core = bit_set(pat.kick, step);
-                        let snare_core = bit_set(pat.snare, step);
-                        let hats_core = bit_set(pat.hats, step);
+                        let mut kick_acc_hit = false;
+                        let mut snare_acc_hit = false;
+                        let mut hats_acc_hit = false;
+                        let mut kick_gh = false;
+                        let mut snare_gh = false;
+                        let mut hats_gh = false;
+
+                        let (kick_core, snare_core, hats_core) = if let Some(f) = solo_fig {
+                            kick_acc_hit = bit_set(f.kick_acc, step);
+                            snare_acc_hit = bit_set(f.snare_acc, step);
+                            hats_acc_hit = bit_set(f.hats_acc, step);
+                            let mut k = bit_set(f.kick, step);
+                            let mut s = bit_set(f.snare, step);
+                            let mut h = bit_set(f.hats, step);
+                            // Drag off the written hits, bar-cyclic so step 0
+                            // answers step 15.
+                            let prev = (step + STEPS_PER_BAR - 1) % STEPS_PER_BAR;
+                            if !k && solo_ghost(&die, feel_val, bit_set(f.kick, prev), 0x11) {
+                                k = true;
+                                kick_gh = true;
+                            }
+                            if !s && solo_ghost(&die, feel_val, bit_set(f.snare, prev), 0x22) {
+                                s = true;
+                                snare_gh = true;
+                            }
+                            if !h && solo_ghost(&die, feel_val, bit_set(f.hats, prev), 0x33) {
+                                h = true;
+                                hats_gh = true;
+                            }
+                            (k, s, h)
+                        } else if let Some(f) = fill_fig {
+                            (
+                                bit_set(f.kick, step),
+                                bit_set(f.snare, step),
+                                bit_set(f.hats, step),
+                            )
+                        } else {
+                            (
+                                bit_set(pat.kick, step),
+                                bit_set(pat.snare, step),
+                                bit_set(pat.hats, step),
+                            )
+                        };
                         // `Some(frac)`: this step's fill bit for that voice is
                         // being progressively revealed by the density fader —
                         // frac (0..=255) is how far in it's faded (continuum,
                         // no hard zone jumps).
-                        let kick_ghost = fill_reveal(pat.kick_fill, density, step);
-                        let snare_ghost = fill_reveal(pat.snare_fill, density, step);
-                        let hats_ghost = fill_reveal(pat.hats_fill, density, step);
+                        let (kick_ghost, snare_ghost, hats_ghost) = if gesture {
+                            (None, None, None)
+                        } else {
+                            (
+                                fill_reveal(pat.kick_fill, density, step),
+                                fill_reveal(pat.snare_fill, density, step),
+                                fill_reveal(pat.hats_fill, density, step),
+                            )
+                        };
 
                         let core_hit = kick_core || snare_core || hats_core;
                         let any_ghost =
@@ -899,54 +1526,109 @@ pub async fn run(
                             }
 
                             if do_kick {
-                                let v = match kick_ghost {
-                                    Some(frac) if !kick_core => {
-                                        let g = ghost_vel_pct(frac, 18, 35);
-                                        feel_lerp_u16(FLAT_VEL, g, feel_val)
-                                    }
-                                    _ => core_vel_pct(
+                                let v = if solo_fig.is_some() {
+                                    solo_vel_pct(
                                         lerp_u8(pat_lo.kick_base, pat_hi.kick_base, g_frac),
                                         lerp_u8(pat_lo.kick_accent, pat_hi.kick_accent, g_frac),
-                                        pat.kick_acc_mask,
-                                        step,
+                                        kick_acc_hit,
+                                        kick_gh,
+                                        &die,
                                         feel_val,
-                                    ),
+                                    )
+                                } else if fill_fig.is_some() {
+                                    fill_vel_pct(
+                                        lerp_u8(pat_lo.kick_base, pat_hi.kick_base, g_frac),
+                                        lerp_u8(pat_lo.kick_accent, pat_hi.kick_accent, g_frac),
+                                        step,
+                                    )
+                                } else {
+                                    match kick_ghost {
+                                        Some(frac) if !kick_core => {
+                                            let g = ghost_vel_pct(frac, 18, 35);
+                                            feel_lerp_u16(FLAT_VEL, g, feel_val)
+                                        }
+                                        _ => core_vel_pct(
+                                            lerp_u8(pat_lo.kick_base, pat_hi.kick_base, g_frac),
+                                            lerp_u8(pat_lo.kick_accent, pat_hi.kick_accent, g_frac),
+                                            pat.kick_acc_mask,
+                                            step,
+                                            feel_val,
+                                        ),
+                                    }
                                 };
                                 pending_kick_vel.set(midi_vel(v));
                                 pending_kick.set(true);
                                 kick_on = true;
                             }
                             if do_snare {
-                                let v = match snare_ghost {
-                                    Some(frac) if !snare_core => {
-                                        let g = ghost_vel_pct(frac, 15, 32);
-                                        feel_lerp_u16(FLAT_VEL, g, feel_val)
-                                    }
-                                    _ => core_vel_pct(
+                                let v = if solo_fig.is_some() {
+                                    solo_vel_pct(
                                         lerp_u8(pat_lo.snare_base, pat_hi.snare_base, g_frac),
                                         lerp_u8(pat_lo.snare_accent, pat_hi.snare_accent, g_frac),
-                                        pat.snare_acc_mask,
-                                        step,
+                                        snare_acc_hit,
+                                        snare_gh,
+                                        &die,
                                         feel_val,
-                                    ),
+                                    )
+                                } else if fill_fig.is_some() {
+                                    fill_vel_pct(
+                                        lerp_u8(pat_lo.snare_base, pat_hi.snare_base, g_frac),
+                                        lerp_u8(pat_lo.snare_accent, pat_hi.snare_accent, g_frac),
+                                        step,
+                                    )
+                                } else {
+                                    match snare_ghost {
+                                        Some(frac) if !snare_core => {
+                                            let g = ghost_vel_pct(frac, 15, 32);
+                                            feel_lerp_u16(FLAT_VEL, g, feel_val)
+                                        }
+                                        _ => core_vel_pct(
+                                            lerp_u8(pat_lo.snare_base, pat_hi.snare_base, g_frac),
+                                            lerp_u8(
+                                                pat_lo.snare_accent,
+                                                pat_hi.snare_accent,
+                                                g_frac,
+                                            ),
+                                            pat.snare_acc_mask,
+                                            step,
+                                            feel_val,
+                                        ),
+                                    }
                                 };
                                 pending_snare_vel.set(midi_vel(v));
                                 pending_snare.set(true);
                                 snare_on = true;
                             }
                             if do_hats {
-                                let v = match hats_ghost {
-                                    Some(frac) if !hats_core => {
-                                        let g = ghost_vel_pct(frac, 12, 28);
-                                        feel_lerp_u16(FLAT_VEL, g, feel_val)
-                                    }
-                                    _ => core_vel_pct(
+                                let v = if solo_fig.is_some() {
+                                    solo_vel_pct(
                                         lerp_u8(pat_lo.hats_base, pat_hi.hats_base, g_frac),
                                         lerp_u8(pat_lo.hats_accent, pat_hi.hats_accent, g_frac),
-                                        pat.hats_acc_mask,
-                                        step,
+                                        hats_acc_hit,
+                                        hats_gh,
+                                        &die,
                                         feel_val,
-                                    ),
+                                    )
+                                } else if fill_fig.is_some() {
+                                    fill_vel_pct(
+                                        lerp_u8(pat_lo.hats_base, pat_hi.hats_base, g_frac),
+                                        lerp_u8(pat_lo.hats_accent, pat_hi.hats_accent, g_frac),
+                                        step,
+                                    )
+                                } else {
+                                    match hats_ghost {
+                                        Some(frac) if !hats_core => {
+                                            let g = ghost_vel_pct(frac, 12, 28);
+                                            feel_lerp_u16(FLAT_VEL, g, feel_val)
+                                        }
+                                        _ => core_vel_pct(
+                                            lerp_u8(pat_lo.hats_base, pat_hi.hats_base, g_frac),
+                                            lerp_u8(pat_lo.hats_accent, pat_hi.hats_accent, g_frac),
+                                            pat.hats_acc_mask,
+                                            step,
+                                            feel_val,
+                                        ),
+                                    }
                                 };
                                 pending_hats_vel.set(midi_vel(v));
                                 pending_hats.set(true);
@@ -1074,21 +1756,20 @@ pub async fn run(
             buttons.wait_for_any_down().await;
             if buttons.is_shift_pressed() {
                 long_press_fired.set(false);
+                // Shift+tap: genre fill (or break) until the next downbeat.
+                // Shift+hold across a bar: escalates to a solo thunderstorm.
+                // Clock keeps either gesture open past release until the one.
+                glob_fill_held.set(true);
+                glob_fill_start.set(true);
                 buttons.wait_for_up(0).await;
-                if !long_press_fired.get() {
-                    // Shift + short: reverse swing
-                    let reversed = glob_reversed.toggle();
-                    glob_storage_dirty.set(true);
-                    glob_reverse_fade_up.set(!reversed);
-                    glob_reverse_fade.set(REVERSE_FADE_MS);
-                }
+                glob_fill_held.set(false);
             } else {
                 long_press_fired.set(false);
                 glob_fader_moved.set(false);
                 glob_fader_at_down.set(faders.get_value());
                 buttons.wait_for_up(0).await;
-                // Short: mute — same as Contura / Bassment. Reset moved to
-                // Shift+Long (and stays on CV Dest: Reset).
+                // Short: mute — same as Contura / Bassment. Reset stays on Long
+                // (and on CV Dest: Reset).
                 if !long_press_fired.get() && !glob_fader_moved.get() {
                     let muted = glob_muted.toggle();
                     glob_storage_dirty.set(true);
@@ -1115,29 +1796,17 @@ pub async fn run(
             let (_, is_shift) = buttons.wait_for_any_long_press().await;
             long_press_fired.set(true);
             if is_shift {
-                // Shift+long: toggle CV Out jack activity mode (Any ↔ Stacked).
-                // Grooves has no multi-entry selector, so the long pair carries
-                // reset and jack mode instead of a forward/backward cycle.
-                let next = if glob_jack_mode.get() == JACK_STACKED {
-                    JACK_ANY
-                } else {
-                    JACK_STACKED
-                };
-                glob_jack_mode.set(next);
-                glob_storage_dirty.set(true);
-                glob_jack_flash.set(300);
-                if !glob_muted.get() {
-                    let color = if next == JACK_STACKED {
-                        Color::Violet
-                    } else {
-                        Color::Yellow
-                    };
-                    leds.set(0, Led::Button, color, Brightness::High);
+                // Shift held long enough → escalate fill into solo thunderstorm.
+                if glob_fill_armed.get() || glob_fill_start.get() || glob_fill_held.get() {
+                    glob_fill_solo.set(true);
                 }
             } else if !glob_fader_moved.get() {
                 // Long: reset to downbeat. Button+fader is the Swing scrub and
                 // must not reset.
                 glob_reset.set(true);
+                glob_fill_armed.set(false);
+                glob_fill_start.set(false);
+                glob_fill_solo.set(false);
             }
         }
     };
@@ -1194,17 +1863,23 @@ pub async fn run(
             match app.wait_for_scene_event().await {
                 SceneEvent::LoadScene(scene) => {
                     storage.load_from_scene(scene).await;
-                    let (feel, density, jack_mode, reversed, muted) =
-                        storage.query(|s| (s.feel, s.density, s.jack_mode, s.reversed, s.muted));
+                    let (feel, density, muted) = storage.query(|s| (s.feel, s.density, s.muted));
                     glob_feel.set(feel);
                     glob_density.set(density);
-                    glob_jack_mode.set(jack_mode);
-                    glob_reversed.set(reversed);
                     glob_muted.set(muted);
+                    glob_fill_armed.set(false);
+                    glob_fill_start.set(false);
+                    glob_fill_solo.set(false);
                     // Genre lives in params (Configurator); refresh from there.
                     let g = params.query(|p| p.genre.min(NUM_GENRES - 1));
                     glob_genre.set(g);
                     glob_genre_fader.set(genre_fader_center(g, NUM_GENRES));
+                    // Jack Mode and swing direction are Config params — keep the
+                    // live param values.
+                    let (jm, sd) =
+                        params.query(|p| (p.jack_mode.min(1) as u8, p.swing_dir == 1));
+                    glob_jack_mode.set(jm);
+                    glob_reversed.set(sd);
                     if muted {
                         leds.unset(0, Led::Button);
                     } else {
@@ -1217,6 +1892,7 @@ pub async fn run(
     };
 
     let shift = async {
+        let mut fill_led_prev = false;
         let mut prev_gate_high = false;
         let mut last_seen_ticks: u32 = ticks() as u32;
         let mut stall_ms: u16 = CLOCK_STALL_MS; // start idle until ticks move
@@ -1273,7 +1949,7 @@ pub async fn run(
                     let led = split_unsigned_value(fader_now);
                     leds.set(0, Led::Top, color, Brightness::Custom(led[0]));
                     leds.set(0, Led::Bottom, color, Brightness::Custom(led[1]));
-                    if glob_reverse_fade.get() == 0 && glob_jack_flash.get() == 0 {
+                    if !glob_fill_armed.get() {
                         leds.set(0, Led::Button, color, Brightness::High);
                     }
                 }
@@ -1294,50 +1970,31 @@ pub async fn run(
                 }
             }
 
-            // Reverse fade overrides button LED
-            let fade_left = glob_reverse_fade.get();
-            if fade_left > 0 {
-                let elapsed = REVERSE_FADE_MS.saturating_sub(fade_left);
-                let bright = if glob_reverse_fade_up.get() {
-                    ((elapsed as u32 * 255) / REVERSE_FADE_MS as u32) as u8
+            // Fill/solo/break takes over the button LED for the whole gesture:
+            // bright white while piling hits on (fill or solo), dim while breaking.
+            let fill_led = glob_fill_armed.get();
+            if fill_led && !glob_muted.get() {
+                let bright = if glob_fill_break.get() && !glob_fill_solo.get() {
+                    Brightness::Low
                 } else {
-                    (((REVERSE_FADE_MS - elapsed) as u32 * 255) / REVERSE_FADE_MS as u32) as u8
+                    Brightness::High
                 };
-                leds.set(0, Led::Button, Color::White, Brightness::Custom(bright));
-                glob_reverse_fade.set(fade_left.saturating_sub(1));
-                if fade_left == 1 {
-                    // Don't leave the LED stuck white when muted.
-                    if glob_muted.get() {
-                        leds.unset(0, Led::Button);
-                    } else {
-                        leds.set(0, Led::Button, spectrum_color(glob_genre_fader.get()), LED_BRIGHTNESS);
-                    }
+                leds.set(0, Led::Button, Color::White, bright);
+            } else if fill_led_prev {
+                if glob_muted.get() {
+                    leds.unset(0, Led::Button);
+                } else {
+                    leds.set(0, Led::Button, spectrum_color(glob_genre_fader.get()), LED_BRIGHTNESS);
                 }
             }
+            fill_led_prev = fill_led;
 
-            // Jack-mode flash counts down independently of the reverse fade so it
-            // can't stall behind it; the restore is skipped while a fade is
-            // still animating (the fade's own end handler restores the LED).
-            let flash_left = glob_jack_flash.get();
-            if flash_left > 0 {
-                let left = flash_left.saturating_sub(1);
-                glob_jack_flash.set(left);
-                if left == 0 && glob_reverse_fade.get() == 0 {
-                    if glob_muted.get() {
-                        leds.unset(0, Led::Button);
-                    } else {
-                        leds.set(0, Led::Button, spectrum_color(glob_genre_fader.get()), LED_BRIGHTNESS);
-                    }
-                }
-            }
-
-            // Mid→Low duck on hits (yields to mute / reverse fade / jack flash / genre scrub).
+            // Mid→Low duck on hits (yields to mute / fill / genre scrub).
             let duck = glob_button_duck.get();
             if duck > 0 {
                 glob_button_duck.set(duck.saturating_sub(1));
             }
-            if fade_left == 0
-                && flash_left == 0
+            if !fill_led
                 && !glob_muted.get()
                 && latch_active_layer != LatchLayer::Alt
             {
@@ -1368,8 +2025,6 @@ pub async fn run(
                 storage.modify_and_save(|s| {
                     s.feel = glob_feel.get();
                     s.density = glob_density.get();
-                    s.jack_mode = glob_jack_mode.get();
-                    s.reversed = glob_reversed.get();
                     s.muted = glob_muted.get();
                 });
             }

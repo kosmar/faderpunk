@@ -11,28 +11,30 @@
         <h3>Faders</h3>
         <ul>
           <li><strong>Main</strong> — Density (extra hits)</li>
-          <li><strong>Alt</strong> — Genre scrub (same colors as Chord Vamp)</li>
+          <li><strong>Alt</strong> — Genre scrub (shared axis with Chord Vamp)</li>
           <li><strong>Third</strong> — Swing (capped by Swing max %)</li>
         </ul>
         <h3>Genres</h3>
         <ul>
           <li>Dub → Disco → House → Techno → Trip-Hop → Hip-Hop → Jungle → UK Garage → Dubstep</li>
-          <li>Colors (shared w/ Vamp): Orange · Yellow · Pink · Cyan · Violet · Red · Lime · Green · Blue</li>
-          <li>Alt scrub LEDs: continuous IR→UV spectrum (not discrete genre chrome)</li>
+          <li>LEDs: continuous open red→yellow→green→cyan→blue spectrum (same as Chord Vamp)</li>
+          <li>Sound morphs continuously between neighboring genres along the axis</li>
         </ul>
       </div>
       <div>
         <h3>Buttons</h3>
         <ul>
           <li><strong>Short</strong> — Mute (notes off)</li>
-          <li><strong>Shift+Short</strong> — Reverse swing</li>
+          <li><strong>Shift+Tap</strong> — Genre fill until next downbeat (break at high density)</li>
+          <li><strong>Shift+Hold</strong> — Drum solo while held: 4-bar phrase (build → busier → peak → turnaround); resolves on release</li>
           <li><strong>Long</strong> — Reset to downbeat</li>
-          <li><strong>Shift+Long</strong> — Toggle jack Any ↔ Stacked (yellow/violet flash)</li>
         </ul>
         <h3>Jack params</h3>
         <ul>
           <li>Jack: CV Out / CV In</li>
-          <li>CV Dest: Density · Swing · Reset (Configurator only)</li>
+          <li>Jack Mode: Any · Stacked (Configurator)</li>
+          <li>Swing Dir: Normal · Reverse (Configurator)</li>
+          <li>CV Dest: Density · Feel · Reset (Configurator only)</li>
           <li>Range, CV Att</li>
         </ul>
       </div>
@@ -40,7 +42,7 @@
         <h3>Params / LEDs</h3>
         <ul>
           <li>Kick / Snare / Hats: note + channel</li>
-          <li>Groove, Swing max %, GATE %, Color, MIDI Out</li>
+          <li>Groove, Swing max %, GATE %, MIDI Out, Jack Mode, Swing Dir</li>
           <li><strong>Button</strong> Main: genre hue sat half→full (density) + bar lightness; hit dips kick −50% / snare −30% / hats −10%</li>
           <li><strong>Button</strong> Third: White→Color→Red (swing); same voice-weighted hit dips</li>
           <li><strong>Button</strong> Alt: committed genre hue (Top/Bottom = live fader meters; color changes only after latch pickup)</li>
@@ -48,8 +50,7 @@
       </div>
     </div>
     <div class="manual">
-      <p><strong>Manual.</strong> Genre MIDI drums on the global clock (9 shared genres with Chord Vamp, including Jungle). Density reveals hits; Shift+Fader scrubs genre on the shared axis — button hue follows the latched genre (meters show live fader until pickup); Button+Fader = Swing (capped by Swing max %). Watch the button: Main density ramps genre hue from half→full saturation with bar lightness; hits dim by voice (kick −50%, snare −30%, hats −10%) — not a clock blink. MIDI fires outside the clock subscriber (pending_* isolate). Third swing blends White→app→Red. Long resets to the downbeat; Shift+Long toggles CV Out Any↔Stacked. Jack=CV In modulates Density/Swing or triggers Reset — set CV Dest in the Configurator only. CV Att scales input.</p>
+      <p><strong>Manual.</strong> Genre MIDI drums on the global clock (9 shared genres with Chord Vamp, including Jungle). Density reveals hits; Shift+Fader scrubs genre on the shared red→blue spectrum — button hue follows the latched genre (meters show live fader until pickup) while neighboring genres morph continuously; Button+Fader = Swing (capped by Swing max %). Shift+Tap plays a dedicated genre fill (or break at high density) that resolves on the next downbeat — Techno machine-guns, Hip-Hop and Jungle roll the snare, Dub and Dubstep answer sparsely — with velocity crescendoing toward the bar line, independent of the Density fader. Shift+Hold escalates into a drum solo that plays a four-bar phrase rather than looping the fill: an open build, a busier bar, a peak, then a turnaround that drops back to the sparse end-weighted figure and breathes. Each solo bar carries its own accent mask — the weight sits on the one and the backbeat, Feel only adds human jitter around it instead of randomising the dynamics — and every figure keeps rests and trades kick against snare rather than stacking them. Feel also opens ghost drags on the step right after a hit, so the fill-ins read as flams off the figure. Genre character stays intact: Techno rolls 16th kick bursts against clap stabs, Jungle chops the amen skeleton (kick on 1 and 3e, snare answering on the e), Dubstep keeps its half-time anchor, Dub and Trip-Hop stay wide open. Letting go drops straight into the end-weighted fill for the rest of the bar, so the solo always lands on the one. Releasing keeps either gesture running to the next downbeat so it always resolves. Above roughly 60 % density the same gesture reads subtractively and plays a break instead — the floor drops out (Techno keeps the kick, House the hats, Dub goes near-silent) and a late snare pickup hands the groove back on the one. Each genre carries three fill, three break, and three solo figures; low Feel locks to one, higher Feel rolls between them (same Die mix as Bassment). The button shows the gesture: bright white while filling, dim white while breaking. Watch the button: Main density ramps genre hue from half→full saturation with bar lightness; hits dim by voice (kick −50%, snare −30%, hats −10%) — not a clock blink. MIDI fires outside the clock subscriber (pending_* isolate). Third swing blends White→app→Red. Long resets to the downbeat. Jack Mode (Any/Stacked) and Swing Dir (Normal/Reverse) are Configurator-only. Jack=CV In modulates Density/Feel or triggers Reset — set CV Dest in the Configurator only. CV Att scales input.</p>
     </div>
   </div>
 </section>
-
