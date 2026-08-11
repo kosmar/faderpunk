@@ -24,7 +24,7 @@ use crate::apps::groove::{swing_bias, swing_delay_ticks};
 use crate::apps::led_fx::{genre_pair, lerp_u8, spectrum_color};
 
 pub const CHANNELS: usize = 1;
-pub const PARAMS: usize = 16;
+pub const PARAMS: usize = 15;
 
 const LED_BRIGHTNESS: Brightness = Brightness::Mid;
 /// Mid→Low button duck on each chord — same length as Heat Pump metronome duck.
@@ -46,8 +46,12 @@ const PERFORM_CAP: usize = NUM_DEGREES * PERFORM_OCTAVES;
 const CAPTURE_SLOT: usize = NUM_GENRES;
 const CAPTURE_COLOR: Color = Color::Rose;
 
-const CV_JACK_OUT: usize = 0;
-const CV_JACK_IN: usize = 1;
+/// Jack duty and its CV In destination in one param, as in Grooves: they were
+/// never live at the same time, and the freed slot is what lets Vamp grow.
+const JACK_OUT: usize = 0;
+const JACK_IN_MACRO: usize = 1;
+const JACK_IN_PANIC: usize = 2;
+const JACK_COUNT: usize = 3;
 /// Perform hold: engine frames (~1 ms) between palette-index steps while gliding.
 const PERFORM_GLIDE_FRAMES: u16 = 35;
 
@@ -71,9 +75,6 @@ const VOICING_NAMES: &[&str] = &["Triads", "7ths", "9ths", "Spread"];
 const AUTO_STYLE_NAMES: &[&str] = &["Repeat", "Meander"];
 const START_MODE_NAMES: &[&str] = &["Perform", "Auto"];
 
-const DEST_MACRO: usize = 0;
-const DEST_PANIC: usize = 1;
-const DEST_COUNT: usize = 2;
 const TRIG_HIGH: u16 = 2458;
 
 fn att_from_pct(pct: i32) -> u16 {
@@ -226,17 +227,13 @@ pub static CONFIG: Config<PARAMS> = Config::new(
 })
 .add_param(Param::Enum {
     name: "Jack",
-    variants: &["CV Out", "CV In"],
+    variants: &["CV Out", "CV In Macro", "CV In Panic"],
 })
 .add_param(Param::Range {
     name: "Range",
     variants: &[Range::_0_10V, Range::_Neg5_5V],
 })
 .add_param(Param::VoltPerOct)
-.add_param(Param::Enum {
-    name: "CV Dest",
-    variants: &["Macro", "Panic"],
-})
 .add_param(Param::i32 {
     name: "CV Att",
     min: 0,
@@ -255,10 +252,9 @@ pub struct Params {
     start_mode: usize,
     capture_len: usize,
     color: Color,
-    cv_jack: usize,
+    jack: usize,
     range: Range,
     vpo: VoltPerOct,
-    cv_dest: usize,
     cv_att: i32,
 }
 
@@ -267,25 +263,34 @@ impl AppParams for Params {
         if values.len() < 11 {
             return None;
         }
-        // Legacy (≤13): always CV In. (16): jack pack.
-        let (cv_jack, range, vpo, cv_dest, cv_att) = if values.len() >= 16 {
+        // Three layouts have existed: 16 with a separate Jack and CV Dest, 13
+        // with CV Dest only and CV In implied, and today's 15 with the two
+        // merged. Both older ones fold their pair into the merged enum.
+        let (jack, range, vpo, cv_att) = if values.len() >= 16 {
+            let out = usize::from_value(values[11]).min(1) == 0;
+            let dest = usize::from_value(values[14]).min(1);
             (
-                usize::from_value(values[11]).min(1),
+                if out { JACK_OUT } else { JACK_IN_MACRO + dest },
                 Range::from_value(values[12]),
                 VoltPerOct::from_value(values[13]),
-                usize::from_value(values[14]).min(DEST_COUNT - 1),
                 i32::from_value(values[15]).clamp(0, 100),
+            )
+        } else if values.len() >= 15 {
+            (
+                usize::from_value(values[11]).min(JACK_COUNT - 1),
+                Range::from_value(values[12]),
+                VoltPerOct::from_value(values[13]),
+                i32::from_value(values[14]).clamp(0, 100),
             )
         } else if values.len() >= 13 {
             (
-                CV_JACK_IN,
+                JACK_IN_MACRO + usize::from_value(values[11]).min(1),
                 Range::_Neg5_5V,
                 VoltPerOct::Standard,
-                usize::from_value(values[11]).min(DEST_COUNT - 1),
                 i32::from_value(values[12]).clamp(0, 100),
             )
         } else {
-            (CV_JACK_IN, Range::_Neg5_5V, VoltPerOct::Standard, DEST_MACRO, 100)
+            (JACK_IN_MACRO, Range::_Neg5_5V, VoltPerOct::Standard, 100)
         };
         Some(Self {
             midi_out: MidiOut::from_value(values[0]),
@@ -299,10 +304,9 @@ impl AppParams for Params {
             start_mode: usize::from_value(values[8]),
             capture_len: usize::from_value(values[9]).min(CAPTURE_BARS.len() - 1),
             color: Color::from_value(values[10]),
-            cv_jack,
+            jack,
             range,
             vpo,
-            cv_dest,
             cv_att,
         })
     }
@@ -320,10 +324,9 @@ impl AppParams for Params {
         vec.push(self.start_mode.into()).unwrap();
         vec.push(self.capture_len.into()).unwrap();
         vec.push(self.color.into()).unwrap();
-        vec.push(self.cv_jack.into()).unwrap();
+        vec.push(self.jack.into()).unwrap();
         vec.push(self.range.into()).unwrap();
         vec.push(self.vpo.into()).unwrap();
-        vec.push(self.cv_dest.into()).unwrap();
         vec.push(self.cv_att.into()).unwrap();
         vec
     }
@@ -878,10 +881,9 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
             start_mode: 0,
             capture_len: 1, // 8 bars
             color: Color::Violet,
-            cv_jack: CV_JACK_IN,
+            jack: JACK_IN_MACRO,
             range: Range::_0_10V,
             vpo: VoltPerOct::Standard,
-            cv_dest: DEST_MACRO,
             cv_att: 100,
         },
     );
@@ -923,10 +925,9 @@ pub async fn run(
         start_mode,
         capture_len,
         led_color,
-        cv_jack,
+        jack_param,
         range,
         vpo,
-        cv_dest,
         cv_att,
     ) = params.query(|p| {
         (
@@ -941,10 +942,9 @@ pub async fn run(
             p.start_mode,
             p.capture_len.min(CAPTURE_BARS.len() - 1),
             p.color,
-            p.cv_jack.min(1),
+            p.jack.min(JACK_COUNT - 1),
             p.range,
             p.vpo,
-            p.cv_dest.min(DEST_COUNT - 1),
             att_from_pct(p.cv_att),
         )
     });
@@ -960,12 +960,12 @@ pub async fn run(
     let ticks = app.clock_ticker();
     let die = app.use_die();
     let midi = app.use_midi_output(midi_out_cfg, midi_chan, false);
-    let out_jack = if cv_jack == CV_JACK_OUT {
+    let out_jack = if jack_param == JACK_OUT {
         Some(app.make_out_jack(0, range).await)
     } else {
         None
     };
-    let in_jack = if cv_jack == CV_JACK_IN {
+    let in_jack = if jack_param != JACK_OUT {
         Some(app.make_in_jack(0, Range::_Neg5_5V).await)
     } else {
         None
@@ -1333,7 +1333,7 @@ pub async fn run(
 
                         if !is_rhythm_rest(weight) {
                             let degree = if glob_meander.get() {
-                                let tension = if cv_dest == DEST_MACRO {
+                                let tension = if jack_param == JACK_IN_MACRO {
                                     mod_u16(glob_tension.get(), glob_cv_val.get())
                                 } else {
                                     glob_tension.get()
@@ -1837,7 +1837,7 @@ pub async fn run(
             if let Some(ref jack) = in_jack {
                 let in_val = attenuate_bipolar(jack.get_value(), cv_att);
                 glob_cv_val.set(in_val);
-                if cv_dest == DEST_PANIC {
+                if jack_param == JACK_IN_PANIC {
                     let high = in_val >= TRIG_HIGH;
                     if high && !prev_gate_high {
                         panic_flag.set(true);

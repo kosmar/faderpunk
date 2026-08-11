@@ -21,14 +21,11 @@
     "Jack",
     "Range",
     "V/Oct",
-    "CV Dest",
-    "CV Att",
-    "Swing Dir"
+    "CV Att"
   ],
   "storage": [
     "Feel",
     "Density",
-    "Reversed",
     "Muted",
     "Voice"
   ],
@@ -61,16 +58,16 @@
             "<strong>Shift+Tap</strong> — Bass fill into next bar’s chord (pedal break at high Density); white button LED",
             "<strong>Shift+Hold</strong> — Bass solo (+1–2 oct), re-rolls each bar; resolves on the next downbeat",
             "<strong>Long</strong> — Next Voice (flash = voice color)",
-            "Previous Voice / Swing Dir: Configurator only"
+            "Previous Voice: Configurator only"
           ]
         },
         {
           "heading": "Jack params",
           "items": [
-            "Jack: CV Out (pitch V/Oct) / CV In",
-            "CV Dest: Density · Feel · Reset (Configurator) — Reset now lives here only",
+            "Jack: CV Out (pitch V/Oct) · CV In Density · CV In Feel · CV In Reset",
+            "One enum — a CV In destination and CV Out were never live at once",
             "Range, V/Oct, CV Att",
-            "Swing Dir: Normal / Reverse (Configurator)"
+            "Groove max % carries the swing direction in its sign — negative swings the offbeats early"
           ]
         }
       ]

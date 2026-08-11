@@ -189,18 +189,18 @@
         </ul>
         <h3>Jack params</h3>
         <ul>
-          <li>Jack: CV Out / CV In</li>
-          <li>Jack Mode: Any · Stacked (Configurator)</li>
-          <li>Swing Dir: Normal · Reverse (Configurator)</li>
-          <li>CV Dest: Density · Feel · Reset (Configurator only)</li>
+          <li>Jack: CV Out Any · CV Out Stacked · CV In Density · CV In Feel · CV In Reset</li>
+          <li>Stacked sums families — hats 1, snare 2, kick 4 of 10 units; Open Hat counts as hats, Clap as snare, toms as kick</li>
+          <li>The jack follows the groove, so it still pulses with every note switched off</li>
           <li>Range, CV Att</li>
         </ul>
       </div>
       <div>
         <h3>Params / LEDs</h3>
         <ul>
-          <li>Kick / Snare / Hats: note + channel</li>
-          <li>Groove, Swing max %, GATE %, MIDI Out, Jack Mode, Swing Dir</li>
+          <li>Notes: Kick, Snare, Hats, Open Hat, Low Tom, High Tom, Clap — note 0 switches a voice off</li>
+          <li>MIDI Ch is the base for all seven; Ch Map overrides it per voice (7 packed nibbles, 0 = follow base)</li>
+          <li>Groove, Swing max % (negative = reverse swing), GATE %, MIDI Out</li>
           <li><strong>Button</strong> Main: genre hue sat half→full (density) + bar lightness; hit dips kick −50% / snare −30% / hats −10%</li>
           <li><strong>Button</strong> Third: White→Color→Red (swing); same voice-weighted hit dips</li>
           <li><strong>Button</strong> Alt: committed genre hue (Top/Bottom = live fader meters; color changes only after latch pickup)</li>
@@ -208,7 +208,7 @@
       </div>
     </div>
     <div class="manual">
-      <p><strong>Manual.</strong> Genre MIDI drums on the global clock (9 shared genres with Chord Vamp, including Jungle). Density reveals hits; Shift+Fader scrubs genre on the shared red→blue spectrum — button hue follows the latched genre (meters show live fader until pickup) while neighboring genres morph continuously; Button+Fader = Swing (capped by Swing max %). Shift+Tap plays a dedicated genre fill (or break at high density) that resolves on the next downbeat — Techno machine-guns, Hip-Hop and Jungle roll the snare, Dub and Dubstep answer sparsely — with velocity crescendoing toward the bar line, independent of the Density fader. Shift+Hold escalates into a drum solo that plays a four-bar phrase rather than looping the fill: an open build, a busier bar, a peak, then a turnaround that drops back to the sparse end-weighted figure and breathes. Each solo bar carries its own accent mask — the weight sits on the one and the backbeat, Feel only adds human jitter around it instead of randomising the dynamics — and every figure keeps rests and trades kick against snare rather than stacking them. Feel also opens ghost drags on the step right after a hit, so the fill-ins read as flams off the figure. Genre character stays intact: Techno rolls 16th kick bursts against clap stabs, Jungle chops the amen skeleton (kick on 1 and 3e, snare answering on the e), Dubstep keeps its half-time anchor, Dub and Trip-Hop stay wide open. Letting go drops straight into the end-weighted fill for the rest of the bar, so the solo always lands on the one. Releasing keeps either gesture running to the next downbeat so it always resolves. Above roughly 60 % density the same gesture reads subtractively and plays a break instead — the floor drops out (Techno keeps the kick, House the hats, Dub goes near-silent) and a late snare pickup hands the groove back on the one. Each genre carries three fill, three break, and three solo figures; low Feel locks to one, higher Feel rolls between them (same Die mix as Bassment). The button shows the gesture: bright white while filling, dim white while breaking. Watch the button: Main density ramps genre hue from half→full saturation with bar lightness; hits dim by voice (kick −50%, snare −30%, hats −10%) — not a clock blink. MIDI fires outside the clock subscriber (pending_* isolate). Third swing blends White→app→Red. Long resets to the downbeat. Jack Mode (Any/Stacked) and Swing Dir (Normal/Reverse) are Configurator-only. Jack=CV In modulates Density/Feel or triggers Reset — set CV Dest in the Configurator only. CV Att scales input.</p>
+      <p><strong>Manual.</strong> Genre MIDI drums on the global clock (9 shared genres with Chord Vamp, including Jungle). Density reveals hits; Shift+Fader scrubs genre on the shared red→blue spectrum — button hue follows the latched genre (meters show live fader until pickup) while neighboring genres morph continuously; Button+Fader = Swing (capped by Swing max %). Shift+Tap plays a dedicated genre fill (or break at high density) that resolves on the next downbeat — Techno machine-guns, Hip-Hop and Jungle roll the snare, Dub and Dubstep answer sparsely — with velocity crescendoing toward the bar line, independent of the Density fader. Shift+Hold escalates into a drum solo that plays a four-bar phrase rather than looping the fill: an open build, a busier bar, a peak, then a turnaround that drops back to the sparse end-weighted figure and breathes. Each solo bar carries its own accent mask — the weight sits on the one and the backbeat, Feel only adds human jitter around it instead of randomising the dynamics — and every figure keeps rests and trades kick against snare rather than stacking them. Feel also opens ghost drags on the step right after a hit, so the fill-ins read as flams off the figure. Genre character stays intact: Techno rolls 16th kick bursts against clap stabs, Jungle chops the amen skeleton (kick on 1 and 3e, snare answering on the e), Dubstep keeps its half-time anchor, Dub and Trip-Hop stay wide open. Letting go drops straight into the end-weighted fill for the rest of the bar, so the solo always lands on the one. Releasing keeps either gesture running to the next downbeat so it always resolves. Above roughly 60 % density the same gesture reads subtractively and plays a break instead — the floor drops out (Techno keeps the kick, House the hats, Dub goes near-silent) and a late snare pickup hands the groove back on the one. Each genre carries three fill, three break, and three solo figures; low Feel locks to one, higher Feel rolls between them (same Die mix as Bassment). The button shows the gesture: bright white while filling, dim white while breaking. Watch the button: Main density ramps genre hue from half→full saturation with bar lightness; hits dim by voice (kick −50%, snare −30%, hats −10%) — not a clock blink. MIDI fires outside the clock subscriber (pending_* isolate). Third swing blends White→app→Red. Long resets to the downbeat. Four optional voices sit on top of the three written ones and cost no pattern data — each is derived from a hit the groove already plays, and each stays silent until you give it a note (note 0 = off, which is how they ship). Clap layers under the accented snare the way house and disco stack the two. Open Hat takes over an accented hat off the beat, muting the closed hat on that step rather than smearing both transients. The toms only appear inside a fill, break or solo, and only in the back half of the bar, where they lift the snare figure into the descending run that makes a fill read as a fill — High Tom through the third beat, Low Tom to land it. With all four off, Grooves plays exactly as it did before they existed. All seven voices share the base MIDI Ch unless Ch Map is non-zero; Ch Map packs one channel per voice into seven nibbles (voice order Kick, Snare, Hats, Open Hat, Low Tom, High Tom, Clap; nibble + 1 = channel), so drum machines that expect a channel per voice can be addressed without spending a param each. Swing max % carries the direction in its sign — negative swings the offbeats early. Jack folds the old Jack, Jack Mode and CV Dest into one enum, since a CV In destination and a CV Out level shape were never live at the same time. CV In modulates Density/Feel or triggers Reset; CV Att scales input.</p>
     </div>
   </div>
 </section>
@@ -442,8 +442,8 @@
         </ul>
         <h3>Jack params</h3>
         <ul>
-          <li>Jack: CV Out / CV In</li>
-          <li>CV Dest: Macro · Panic</li>
+          <li>Jack: CV Out · CV In Macro · CV In Panic</li>
+          <li>One enum — a CV In destination and CV Out were never live at once, and the freed slot is what lets Vamp grow</li>
           <li>Range, V/Oct, CV Att</li>
         </ul>
       </div>
@@ -724,14 +724,14 @@
           <li><strong>Shift+Tap</strong> — Bass fill into next bar’s chord (pedal break at high Density); white button LED</li>
           <li><strong>Shift+Hold</strong> — Bass solo (+1–2 oct), re-rolls each bar; resolves on the next downbeat</li>
           <li><strong>Long</strong> — Next Voice (flash = voice color)</li>
-          <li>Previous Voice / Swing Dir: Configurator only</li>
+          <li>Previous Voice: Configurator only</li>
         </ul>
         <h3>Jack params</h3>
         <ul>
-          <li>Jack: CV Out (pitch V/Oct) / CV In</li>
-          <li>CV Dest: Density · Feel · Reset (Configurator) — Reset now lives here only</li>
+          <li>Jack: CV Out (pitch V/Oct) · CV In Density · CV In Feel · CV In Reset</li>
+          <li>One enum — a CV In destination and CV Out were never live at once</li>
           <li>Range, V/Oct, CV Att</li>
-          <li>Swing Dir: Normal / Reverse (Configurator)</li>
+          <li>Groove max % carries the swing direction in its sign — negative swings the offbeats early</li>
         </ul>
       </div>
       <div>
@@ -789,7 +789,7 @@
           <li>Follow device tonic (default on); Follow device scale uses the global Key mask instead of the selected set</li>
           <li>Per-set melodic feel (contour / leap / sustain) — expressivity is not a fader</li>
           <li>Button hue cycles by scale index · Top = gate · Bottom = pitch height · Division via config (default 1/8)</li>
-          <li>Jack = CV Out (pitch) or CV In — Dest Density / Interval / Reset (Configurator); CV Att scales input</li>
+          <li>Jack = CV Out (pitch) · CV In Density · CV In Interval · CV In Reset — one enum, since a CV In destination and CV Out were never live at once; CV Att scales input</li>
         </ul>
       </div>
     </div>

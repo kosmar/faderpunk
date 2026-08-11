@@ -103,7 +103,11 @@ rg -q 'is_config_sysex_packet' faderpunk/src/tasks/midi.rs && ok "is_config_syse
 rg -q 'PERF_CABLE' faderpunk/src/tasks/configure.rs && ok "configure PERF_CABLE TX" || bad "configure PERF_CABLE TX"
 rg -q 'Dedicated high-priority queue for MIDI realtime' faderpunk/src/tasks/midi.rs \
   && ok "MIDI realtime queue" || bad "MIDI realtime queue"
-rg -q 'pending_kick' faderpunk/src/apps/grooves.rs && ok "Grooves pending_kick" || bad "Grooves pending_kick"
+# Guard the mechanism, not the old field names: the clock side may only stage
+# hits for `fut_voice`, which is the only place allowed to send MIDI.
+rg -q 'Clock watch → voice engine' faderpunk/src/apps/grooves.rs \
+  && rg -q 'pending_hits' faderpunk/src/apps/grooves.rs \
+  && ok "Grooves voice isolate" || bad "Grooves voice isolate"
 rg -q 'Clock watch → voice engine' faderpunk/src/apps/vamp.rs && ok "Vamp clock isolate" || bad "Vamp clock isolate"
 rg -q 'Clock watch → voice engine' faderpunk/src/apps/arp_de_levy.rs && ok "Arp clock isolate" || bad "Arp clock isolate"
 rg -q 'clock_ticker' faderpunk/src/apps/harmonica.rs && ok "Harmonica clock_ticker" || bad "Harmonica clock_ticker"

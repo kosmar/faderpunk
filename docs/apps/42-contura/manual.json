@@ -21,7 +21,6 @@
     "Scale set",
     "Division",
     "Jack",
-    "CV Dest",
     "CV Att"
   ],
   "storage": [
@@ -67,7 +66,7 @@
             "Follow device tonic (default on); Follow device scale uses the global Key mask instead of the selected set",
             "Per-set melodic feel (contour / leap / sustain) — expressivity is not a fader",
             "Button hue cycles by scale index · Top = gate · Bottom = pitch height · Division via config (default 1/8)",
-            "Jack = CV Out (pitch) or CV In — Dest Density / Interval / Reset (Configurator); CV Att scales input"
+            "Jack = CV Out (pitch) · CV In Density · CV In Interval · CV In Reset — one enum, since a CV In destination and CV Out were never live at once; CV Att scales input"
           ]
         }
       ]

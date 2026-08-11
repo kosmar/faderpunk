@@ -31,7 +31,7 @@ use crate::apps::groove::{
 use crate::apps::led_fx::{genre_nearest, genre_pair, lerp_i32, lerp_u8, spectrum_color};
 
 pub const CHANNELS: usize = 1;
-pub const PARAMS: usize = 14;
+pub const PARAMS: usize = 12;
 
 const LED_BRIGHTNESS: Brightness = Brightness::Mid;
 const BUTTON_DUCK_MS: u16 = 25;
@@ -41,13 +41,13 @@ const VOICE_FLASH_MS: u16 = 300;
 
 const STEPS_PER_BAR: u32 = 16;
 
-const CV_JACK_OUT: usize = 0;
-const CV_JACK_IN: usize = 1;
-
-const DEST_DENSITY: usize = 0;
-const DEST_FEEL: usize = 1;
-const DEST_RESET: usize = 2;
-const DEST_COUNT: usize = 3;
+/// Jack duty and its modifier in one param, as in Grooves: a CV In destination
+/// and CV Out are mutually exclusive, so they share a single enum.
+const JACK_OUT: usize = 0;
+const JACK_IN_DENSITY: usize = 1;
+const JACK_IN_FEEL: usize = 2;
+const JACK_IN_RESET: usize = 3;
+const JACK_COUNT: usize = 4;
 
 const TRIG_HIGH: u16 = 2458;
 
@@ -701,9 +701,10 @@ pub static CONFIG: Config<PARAMS> = Config::new(
     name: "MIDI Channel",
 })
 .add_param(Param::MidiOut)
+// A negative cap swings the offbeats early — the sign carries Swing Dir.
 .add_param(Param::i32 {
     name: "Groove max %",
-    min: 10,
+    min: -100,
     max: 100,
 })
 .add_param(Param::i32 {
@@ -713,25 +714,17 @@ pub static CONFIG: Config<PARAMS> = Config::new(
 })
 .add_param(Param::Enum {
     name: "Jack",
-    variants: &["CV Out", "CV In"],
+    variants: &["CV Out", "CV In Density", "CV In Feel", "CV In Reset"],
 })
 .add_param(Param::Range {
     name: "Range",
     variants: &[Range::_0_10V, Range::_Neg5_5V],
 })
 .add_param(Param::VoltPerOct)
-.add_param(Param::Enum {
-    name: "CV Dest",
-    variants: &["Density", "Feel", "Reset"],
-})
 .add_param(Param::i32 {
     name: "CV Att",
     min: 0,
     max: 100,
-})
-.add_param(Param::Enum {
-    name: "Swing Dir",
-    variants: &["Normal", "Reverse"],
 });
 
 pub struct Params {
@@ -742,27 +735,24 @@ pub struct Params {
     midi_channel: MidiChannel,
     midi_out: MidiOut,
     /// Caps Third Feel: swing + microtiming + ghost drag + velocity contrast.
+    /// The sign carries the swing direction, so a negative cap swings early.
     groove_max_pct: i32,
     gatel: i32,
-    cv_jack: usize,
+    jack: usize,
     range: Range,
     vpo: VoltPerOct,
-    cv_dest: usize,
     cv_att: i32,
-    /// Swing direction: Normal (offbeats late) vs Reverse (offbeats early).
-    swing_dir: usize,
 }
 
 impl AppParams for Params {
     fn from_values(values: &[Value]) -> Option<Self> {
-        if values.len() < 13 {
+        if values.len() < PARAMS {
             return None;
         }
-        let swing_dir = if values.len() > 13 {
-            usize::from_value(values[13]).min(1)
-        } else {
-            0
-        };
+        // The pre-merge layout carried the same types in these first twelve
+        // slots and only added CV Dest and Swing Dir after them, so a stored
+        // blob migrates forward on its own: CV Out stays CV Out, and CV In
+        // lands on CV In Density, which was the old default destination.
         Some(Self {
             root: MidiNote::from_value(values[0]),
             scale: usize::from_value(values[1]).min(SCALE_NAMES.len() - 1),
@@ -770,14 +760,12 @@ impl AppParams for Params {
             voice: usize::from_value(values[3]).min(NUM_VOICES - 1),
             midi_channel: MidiChannel::from_value(values[4]),
             midi_out: MidiOut::from_value(values[5]),
-            groove_max_pct: i32::from_value(values[6]).clamp(10, 100),
+            groove_max_pct: i32::from_value(values[6]).clamp(-100, 100),
             gatel: i32::from_value(values[7]).clamp(1, 100),
-            cv_jack: usize::from_value(values[8]).min(1),
+            jack: usize::from_value(values[8]).min(JACK_COUNT - 1),
             range: Range::from_value(values[9]),
             vpo: VoltPerOct::from_value(values[10]),
-            cv_dest: usize::from_value(values[11]).min(DEST_COUNT - 1),
-            cv_att: i32::from_value(values[12]).clamp(0, 100),
-            swing_dir,
+            cv_att: i32::from_value(values[11]).clamp(0, 100),
         })
     }
 
@@ -791,12 +779,10 @@ impl AppParams for Params {
         vec.push(self.midi_out.into()).unwrap();
         vec.push(self.groove_max_pct.into()).unwrap();
         vec.push(self.gatel.into()).unwrap();
-        vec.push(self.cv_jack.into()).unwrap();
+        vec.push(self.jack.into()).unwrap();
         vec.push(self.range.into()).unwrap();
         vec.push(self.vpo.into()).unwrap();
-        vec.push(self.cv_dest.into()).unwrap();
         vec.push(self.cv_att.into()).unwrap();
-        vec.push(self.swing_dir.into()).unwrap();
         vec
     }
 }
@@ -813,7 +799,6 @@ fn mod_u16(base: u16, in_val: u16) -> u16 {
 pub struct Storage {
     feel: u16,
     density: u16,
-    reversed: bool,
     muted: bool,
     voice: u8,
 }
@@ -824,7 +809,6 @@ impl Default for Storage {
             // Mid-high so Third already grooves out of the box.
             feel: 3400,
             density: 2048,
-            reversed: false,
             muted: false,
             voice: 1, // Jamerson
         }
@@ -933,10 +917,14 @@ fn midi_vel(mult: u16) -> u16 {
     ((4095u32 * mult as u32) / 100).min(4095) as u16
 }
 
-/// Effective Feel after Groove max % ceiling (0..=4095).
+/// Effective Feel after Groove max % ceiling (0..=4095). Only the magnitude
+/// caps — the sign of Groove max % picks the swing direction.
+fn groove_cap_pct(groove_max_pct: i32) -> u32 {
+    groove_max_pct.unsigned_abs().min(100)
+}
+
 fn groove_feel(feel: u16, groove_max_pct: i32) -> u16 {
-    let cap = groove_max_pct.clamp(10, 100) as u32;
-    ((u32::from(feel) * cap) / 100).min(4095) as u16
+    ((u32::from(feel) * groove_cap_pct(groove_max_pct)) / 100).min(4095) as u16
 }
 
 /// Swing % from genre bias × curved Feel, capped by Groove max %.
@@ -945,10 +933,10 @@ fn feel_swing_pct(bias: u8, feel: u16, groove_max_pct: i32) -> i32 {
     let f = u32::from(feel_curve(g));
     // Bias is a floor-ish character; at full groove allow up to Groove max.
     let from_bias = (u32::from(bias) * f) / 4095;
-    let toward_max = (groove_max_pct.clamp(10, 100) as u32 * f) / 4095;
+    let toward_max = (groove_cap_pct(groove_max_pct) * f) / 4095;
     // Blend: keep genre DNA but let Groove max open the ceiling.
     let pct = (from_bias * 2 + toward_max) / 3;
-    pct.min(groove_max_pct.clamp(10, 100) as u32) as i32
+    pct.min(groove_cap_pct(groove_max_pct)) as i32
 }
 
 fn midi_u8(note: MidiNote) -> u8 {
@@ -1507,12 +1495,10 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
             midi_out: MidiOut([true, false, false]), // USB only — all-ports floods cable
             groove_max_pct: 80,
             gatel: 100,
-            cv_jack: CV_JACK_OUT,
+            jack: JACK_OUT,
             range: Range::_Neg5_5V,
             vpo: VoltPerOct::Standard,
-            cv_dest: DEST_DENSITY,
             cv_att: 100,
-            swing_dir: 0,
         },
     );
     let storage = ManagedStorage::<Storage>::new(app.app_id, app.layout_id);
@@ -1550,12 +1536,10 @@ pub async fn run(
         voice_param,
         groove_max_pct,
         gatel,
-        cv_jack,
+        jack_param,
         range,
         vpo,
-        cv_dest,
         cv_att,
-        swing_dir,
     ) = params.query(|p| {
         (
             p.midi_out,
@@ -1564,14 +1548,12 @@ pub async fn run(
             p.scale.min(SCALE_NAMES.len() - 1),
             p.genre.min(NUM_GENRES - 1),
             p.voice.min(NUM_VOICES - 1),
-            p.groove_max_pct.clamp(10, 100),
+            p.groove_max_pct.clamp(-100, 100),
             p.gatel.clamp(1, 100),
-            p.cv_jack.min(1),
+            p.jack.min(JACK_COUNT - 1),
             p.range,
             p.vpo,
-            p.cv_dest.min(DEST_COUNT - 1),
             att_from_pct(p.cv_att),
-            p.swing_dir == 1,
         )
     });
 
@@ -1582,12 +1564,12 @@ pub async fn run(
     let leds = app.use_leds();
     let die = app.use_die();
     let midi = app.use_midi_output(midi_out, midi_channel, false);
-    let out_jack = if cv_jack == CV_JACK_OUT {
+    let out_jack = if jack_param == JACK_OUT {
         Some(app.make_out_jack(0, range).await)
     } else {
         None
     };
-    let in_jack = if cv_jack == CV_JACK_IN {
+    let in_jack = if jack_param != JACK_OUT {
         Some(app.make_in_jack(0, Range::_Neg5_5V).await)
     } else {
         None
@@ -1596,8 +1578,8 @@ pub async fn run(
         jack.set_value(0);
     }
 
-    let (feel, density, _stored_reversed, muted, stored_voice) =
-        storage.query(|s| (s.feel, s.density, s.reversed, s.muted, s.voice));
+    let (feel, density, muted, stored_voice) =
+        storage.query(|s| (s.feel, s.density, s.muted, s.voice));
     // Prefer live scene Voice; fall back to Configurator param when unset/default race.
     let initial_voice = if stored_voice as usize > 0 || voice_param == 0 {
         (stored_voice as usize).min(NUM_VOICES - 1)
@@ -1608,8 +1590,8 @@ pub async fn run(
     let glob_feel = app.make_global(feel);
     let glob_groove_max = app.make_global(groove_max_pct);
     let glob_density = app.make_global(density);
-    // Swing Dir is a Config param — scenes no longer own the toggle.
-    let glob_reversed = app.make_global(swing_dir);
+    // Reverse swing rides the sign of Groove max % — scenes never own it.
+    let glob_reversed = app.make_global(groove_max_pct < 0);
     let glob_genre = app.make_global(genre);
     let glob_genre_fader = app.make_global(genre_fader_center(genre, NUM_GENRES));
     let glob_muted = app.make_global(muted);
@@ -1745,7 +1727,7 @@ pub async fn run(
                     let step = (pos / SIXTEENTH) % STEPS_PER_BAR;
                     let bar = slot / STEPS_PER_BAR;
                     let phase = pos % SIXTEENTH;
-                    let feel_val = if cv_jack == CV_JACK_IN && cv_dest == DEST_FEEL {
+                    let feel_val = if jack_param == JACK_IN_FEEL {
                         mod_u16(glob_feel.get(), glob_cv_val.get())
                     } else {
                         glob_feel.get()
@@ -1773,7 +1755,7 @@ pub async fn run(
                         + timing_off)
                         .clamp(0, (SIXTEENTH as i32) - 1) as u32;
 
-                    let mut density = if cv_jack == CV_JACK_IN && cv_dest == DEST_DENSITY {
+                    let mut density = if jack_param == JACK_IN_DENSITY {
                         mod_u16(glob_density.get(), glob_cv_val.get())
                     } else {
                         glob_density.get()
@@ -2169,12 +2151,16 @@ pub async fn run(
                     glob_fill_armed.set(false);
                     glob_fill_start.set(false);
                     glob_fill_solo.set(false);
-                    let (g, sd) = params.query(|p| {
-                        (p.genre.min(NUM_GENRES - 1), p.swing_dir == 1)
+                    let (g, gmax) = params.query(|p| {
+                        (
+                            p.genre.min(NUM_GENRES - 1),
+                            p.groove_max_pct.clamp(-100, 100),
+                        )
                     });
                     glob_genre.set(g);
                     glob_genre_fader.set(genre_fader_center(g, NUM_GENRES));
-                    glob_reversed.set(sd);
+                    glob_groove_max.set(gmax);
+                    glob_reversed.set(gmax < 0);
                     if muted {
                         leds.unset(0, Led::Button);
                     } else {
@@ -2211,7 +2197,7 @@ pub async fn run(
             if let Some(ref input) = in_jack {
                 let in_val = attenuate_bipolar(input.get_value(), cv_att);
                 glob_cv_val.set(in_val);
-                if cv_dest == DEST_RESET {
+                if jack_param == JACK_IN_RESET {
                     let high = in_val >= TRIG_HIGH;
                     if high && !prev_gate_high {
                         glob_reset.set(true);
@@ -2384,7 +2370,6 @@ pub async fn run(
                 storage.modify_and_save(|s| {
                     s.feel = glob_feel.get();
                     s.density = glob_density.get();
-                    s.reversed = glob_reversed.get();
                     s.muted = glob_muted.get();
                     s.voice = glob_voice.get() as u8;
                 });

@@ -29,18 +29,19 @@ use crate::{
 };
 
 pub const CHANNELS: usize = 1;
-pub const PARAMS: usize = 13;
+pub const PARAMS: usize = 12;
 
 const LED_BRIGHTNESS: Brightness = Brightness::Mid;
 const OCTAVE_BLINK_MS: u16 = 250;
 const BUTTON_DUCK_MS: u16 = 25;
 
-const CV_JACK_OUT: usize = 0;
-const CV_JACK_IN: usize = 1;
-const DEST_DENSITY: usize = 0;
-const DEST_INTERVAL: usize = 1;
-const DEST_RESET: usize = 2;
-const DEST_COUNT: usize = 3;
+/// Jack duty and its CV In destination in one param, as in Grooves — a CV In
+/// destination and CV Out were never live at the same time.
+const JACK_OUT: usize = 0;
+const JACK_IN_DENSITY: usize = 1;
+const JACK_IN_INTERVAL: usize = 2;
+const JACK_IN_RESET: usize = 3;
+const JACK_COUNT: usize = 4;
 /// ~+1.5 V on ±5 V jack — same gate threshold as Grooves / Bassment.
 const TRIG_HIGH: u16 = 2458;
 
@@ -423,11 +424,12 @@ pub static CONFIG: Config<PARAMS> = Config::new(
 })
 .add_param(Param::Enum {
     name: "Jack",
-    variants: &["CV Out", "CV In"],
-})
-.add_param(Param::Enum {
-    name: "CV Dest",
-    variants: &["Density", "Interval", "Reset"],
+    variants: &[
+        "CV Out",
+        "CV In Density",
+        "CV In Interval",
+        "CV In Reset",
+    ],
 })
 .add_param(Param::i32 {
     name: "CV Att",
@@ -446,8 +448,7 @@ pub struct Params {
     follow_scale: bool,
     scale_set: usize,
     division: usize,
-    cv_jack: usize,
-    cv_dest: usize,
+    jack: usize,
     cv_att: i32,
 }
 
@@ -464,8 +465,7 @@ impl Default for Params {
             follow_scale: false,
             scale_set: 0, // Ionian
             division: 6,  // 1/8 — quieter default on crowded playground USB
-            cv_jack: CV_JACK_OUT,
-            cv_dest: DEST_DENSITY,
+            jack: JACK_OUT,
             cv_att: 100,
         }
     }
@@ -477,14 +477,22 @@ impl AppParams for Params {
         if values.len() < 10 {
             return None;
         }
-        let (cv_jack, cv_dest, cv_att) = if values.len() >= PARAMS {
+        // The layout before the merge kept Jack and CV Dest apart at 10 and 11;
+        // fold that pair into the merged enum so setups survive.
+        let (jack, cv_att) = if values.len() >= 13 {
+            let out = usize::from_value(values[10]).min(1) == 0;
+            let dest = usize::from_value(values[11]).min(2);
             (
-                usize::from_value(values[10]).min(1),
-                usize::from_value(values[11]).min(DEST_COUNT - 1),
+                if out { JACK_OUT } else { JACK_IN_DENSITY + dest },
                 i32::from_value(values[12]).clamp(0, 100),
             )
+        } else if values.len() >= PARAMS {
+            (
+                usize::from_value(values[10]).min(JACK_COUNT - 1),
+                i32::from_value(values[11]).clamp(0, 100),
+            )
         } else {
-            (CV_JACK_OUT, DEST_DENSITY, 100)
+            (JACK_OUT, 100)
         };
         Some(Self {
             midi_channel: MidiChannel::from_value(values[0]),
@@ -497,8 +505,7 @@ impl AppParams for Params {
             follow_scale: bool::from_value(values[7]),
             scale_set: usize::from_value(values[8]).min(SCALE_COUNT - 1),
             division: usize::from_value(values[9]).min(RESOLUTION.len() - 1),
-            cv_jack,
-            cv_dest,
+            jack,
             cv_att,
         })
     }
@@ -515,8 +522,7 @@ impl AppParams for Params {
         vec.push(self.follow_scale.into()).unwrap();
         vec.push(self.scale_set.into()).unwrap();
         vec.push(self.division.into()).unwrap();
-        vec.push(self.cv_jack.into()).unwrap();
-        vec.push(self.cv_dest.into()).unwrap();
+        vec.push(self.jack.into()).unwrap();
         vec.push(self.cv_att.into()).unwrap();
         vec
     }
@@ -877,8 +883,7 @@ pub async fn run(
         follow_scale,
         scale_param,
         division,
-        cv_jack,
-        cv_dest,
+        jack_param,
         cv_att,
     ) = params.query(|p| {
         (
@@ -892,8 +897,7 @@ pub async fn run(
             p.follow_scale,
             p.scale_set,
             p.division,
-            p.cv_jack.min(1),
-            p.cv_dest.min(DEST_COUNT - 1),
+            p.jack.min(JACK_COUNT - 1),
             att_from_pct(p.cv_att),
         )
     });
@@ -906,12 +910,12 @@ pub async fn run(
     let ticks = app.clock_ticker();
     let die = app.use_die();
     let midi = app.use_midi_output(midi_out, midi_chan, false);
-    let out_jack = if cv_jack == CV_JACK_OUT {
+    let out_jack = if jack_param == JACK_OUT {
         Some(app.make_out_jack(0, range).await)
     } else {
         None
     };
-    let in_jack = if cv_jack == CV_JACK_IN {
+    let in_jack = if jack_param != JACK_OUT {
         Some(app.make_in_jack(0, Range::_Neg5_5V).await)
     } else {
         None
@@ -1015,7 +1019,7 @@ pub async fn run(
             if let Some(ref input) = in_jack {
                 let in_val = attenuate_bipolar(input.get_value(), cv_att);
                 glob_cv_val.set(in_val);
-                if cv_dest == DEST_RESET {
+                if jack_param == JACK_IN_RESET {
                     let high = in_val >= TRIG_HIGH;
                     if high && !prev_gate_high {
                         glob_reset.set(true);
@@ -1063,13 +1067,13 @@ pub async fn run(
             let muted = glob_muted.get();
             let scale_set = glob_scale.get();
             let octaves = glob_octaves.get();
-            let interval = if cv_jack == CV_JACK_IN && cv_dest == DEST_INTERVAL {
+            let interval = if jack_param == JACK_IN_INTERVAL {
                 mod_u16(glob_interval.get(), glob_cv_val.get())
             } else {
                 glob_interval.get()
             };
             let phrase_f = glob_phrase.get();
-            let density_f = if cv_jack == CV_JACK_IN && cv_dest == DEST_DENSITY {
+            let density_f = if jack_param == JACK_IN_DENSITY {
                 mod_u16(glob_density.get(), glob_cv_val.get())
             } else {
                 glob_density.get()

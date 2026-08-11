@@ -1248,9 +1248,9 @@ pub async fn run(
     // storms from stalling CLOCK_PUBSUB and dropping 16ths.
     let pending_silence = app.make_global(false);
     let pending_note_off = app.make_global(false);
-    // One flag and one velocity per voice — the clock side fills these in and
-    // `fut_voice` is the only place that talks to MIDI. Formerly pending_kick /
-    // pending_snare / pending_hats.
+    // Clock watch → voice engine: one flag and one velocity per voice. The clock
+    // side only fills these in, and `fut_voice` is the sole place that talks to
+    // MIDI — sending from the clock subscriber stalls the device clock.
     let pending_hits = app.make_global([false; VOICES]);
     let pending_vels = app.make_global([0u16; VOICES]);
 
