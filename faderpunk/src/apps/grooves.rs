@@ -19,7 +19,8 @@ use crate::app::{
 };
 use crate::apps::genre_palette::{genre_fader_center, GENRE_NAMES, NUM_GENRES};
 use crate::apps::groove::{
-    feel_curve, feel_lerp_i32, feel_lerp_u16, swing_bias, swing_delay_ticks, FLAT_VEL, SIXTEENTH,
+    feel_curve, feel_lerp_i32, feel_lerp_u16, humanize_curve, swing_bias, swing_delay_ms,
+    FLAT_VEL, SIXTEENTH,
 };
 use crate::apps::led_fx::{genre_nearest, genre_pair, lerp_i32, lerp_u8, spectrum_color};
 
@@ -33,6 +34,17 @@ const BUTTON_DUCK_MS: u16 = 25;
 const FADER_MOVE_THRESH: u16 = 64;
 /// No clock tick advance for this long → idle LEDs (genre color on Top).
 const CLOCK_STALL_MS: u16 = 100;
+/// Seeded tick duration in 1/16-ms units (~20.8 ms ≈ 120 BPM).
+const TICK_MS_X16_INIT: u32 = 333;
+/// Reject tick measurements longer than this — a clock that was stopped leaves
+/// a huge gap that would otherwise poison the tempo estimate for a whole bar.
+const TICK_MS_PLAUSIBLE_MAX: u16 = 80;
+/// Shortest gate we hand out. The voice engine polls at 1 ms and drains offs
+/// before ons, so a sub-poll gate could have its note-off consumed before the
+/// note-on was ever sent, leaving the voice stuck on.
+const MIN_GATE_MS: u32 = 4;
+/// Humanized Feel needed before the ghost window starts walking between bars.
+const GHOST_ROTATE_FEEL: u16 = 1024;
 
 /// 16 sixteenths per 4/4 bar.
 const STEPS_PER_BAR: u32 = 16;
@@ -114,8 +126,14 @@ struct Pattern {
     hats_base: u8,
     hats_accent: u8,
     hats_acc_mask: u16,
-    /// Per-16th microtiming in PPQN ticks (−2..=+4 typical at Feel=max).
+    /// Per-16th step character in ms at Feel=max (not swing — odd/even delay
+    /// lives in [`swing_delay_ms`]). Typical −6..=+8.
     timing: [i8; 16],
+    /// Per-family pocket push in ms at Feel=max: [kick, snare, hats].
+    /// Positive = behind the grid. Toms follow kick, clap snare, open hat hats.
+    push_ms: [i8; 3],
+    /// Humanization scale % (jitter width). Techno tight … Trip-Hop loose.
+    tightness: u8,
 }
 
 /// Morph axis — indices match Shift+Fader buckets and Enum param.
@@ -137,7 +155,9 @@ const PATTERNS: [Pattern; NUM_GENRES] = [
         hats_base: 40,
         hats_accent: 70,
         hats_acc_mask: 0b0100_0000_0100_0000,
-        timing: [0, 1, 0, 2, 1, 2, 0, 2, 0, 1, 0, 2, 1, 2, 0, 2],
+        timing: [0, 2, 0, 3, 2, 3, 0, 4, 0, 2, 0, 3, 2, 3, 0, 4],
+        push_ms: [0, 14, 4],
+        tightness: 100,
     },
     // 1 Disco — 4-on-floor, clap 2&4, offbeat hats
     Pattern {
@@ -156,7 +176,9 @@ const PATTERNS: [Pattern; NUM_GENRES] = [
         hats_base: 45,
         hats_accent: 85,
         hats_acc_mask: 0b0100_0100_0100_0100,
-        timing: [0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2],
+        timing: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        push_ms: [0, 2, -4],
+        tightness: 70,
     },
     // 2 House — classic 4-on-floor, clap 2&4
     Pattern {
@@ -175,7 +197,9 @@ const PATTERNS: [Pattern; NUM_GENRES] = [
         hats_base: 45,
         hats_accent: 80,
         hats_acc_mask: 0b0100_0100_0100_0100,
-        timing: [0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2],
+        timing: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        push_ms: [0, 3, -3],
+        tightness: 60,
     },
     // 3 Techno — straight kick; Feel via hat dynamics
     Pattern {
@@ -194,7 +218,9 @@ const PATTERNS: [Pattern; NUM_GENRES] = [
         hats_base: 40,
         hats_accent: 90,
         hats_acc_mask: 0b0001_0001_0001_0001,
-        timing: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1],
+        timing: [0, 0, 0, -1, 0, 0, 0, -1, 0, 0, 0, -1, 0, 0, 0, -2],
+        push_ms: [-2, 0, 0],
+        tightness: 35,
     },
     // 4 Trip-Hop — laid-back, late snare pocket
     Pattern {
@@ -213,7 +239,9 @@ const PATTERNS: [Pattern; NUM_GENRES] = [
         hats_base: 35,
         hats_accent: 65,
         hats_acc_mask: 0b0100_0000_0100_0000,
-        timing: [0, 2, 1, 3, 2, 3, 1, 3, 0, 2, 1, 3, 3, 4, 2, 3],
+        timing: [0, 2, 4, 6, 3, 4, 5, 7, 0, 2, 4, 6, 6, 8, 5, 7],
+        push_ms: [6, 18, 8],
+        tightness: 150,
     },
     // 5 Hip-Hop — boom-bap; strong 1+3 kick accents
     Pattern {
@@ -232,7 +260,9 @@ const PATTERNS: [Pattern; NUM_GENRES] = [
         hats_base: 40,
         hats_accent: 75,
         hats_acc_mask: 0b0001_0001_0001_0001,
-        timing: [0, 2, 1, 3, 0, 2, 1, 3, 0, 2, 1, 3, 1, 3, 2, 4],
+        timing: [0, 3, 2, 5, 0, 3, 2, 5, 0, 3, 2, 5, 2, 5, 4, 7],
+        push_ms: [2, 12, -2],
+        tightness: 130,
     },
     // 6 Jungle — amen-ish breakbeat; busy kick, snare 2&4, rapid hats
     Pattern {
@@ -251,7 +281,9 @@ const PATTERNS: [Pattern; NUM_GENRES] = [
         hats_base: 40,
         hats_accent: 88,
         hats_acc_mask: 0b1010_0000_1010_0000,
-        timing: [0, 3, -1, 2, 1, 3, 0, 4, 0, 3, -1, 2, 1, 3, 0, 4],
+        timing: [0, 4, -3, 2, 2, 4, 0, 5, 0, 4, -3, 2, 2, 4, 0, 6],
+        push_ms: [0, 6, -5],
+        tightness: 110,
     },
     // 7 UK Garage — skippy kick/hats
     Pattern {
@@ -270,7 +302,9 @@ const PATTERNS: [Pattern; NUM_GENRES] = [
         hats_base: 40,
         hats_accent: 85,
         hats_acc_mask: 0b0100_0100_0100_0100,
-        timing: [0, 3, -1, 2, 0, 3, 1, 4, 0, 3, -1, 2, 0, 3, 1, 4],
+        timing: [0, 5, -4, 3, 0, 5, 2, 6, 0, 5, -4, 3, 0, 5, 2, 6],
+        push_ms: [0, 8, -6],
+        tightness: 90,
     },
     // 8 Dubstep — half-time: kick 1, snare 3
     Pattern {
@@ -289,7 +323,9 @@ const PATTERNS: [Pattern; NUM_GENRES] = [
         hats_base: 40,
         hats_accent: 75,
         hats_acc_mask: 0b0100_0000_0000_0100,
-        timing: [0, 1, 0, 2, 1, 2, 0, 2, 0, 1, 0, 2, 1, 2, 0, 2],
+        timing: [0, 2, 0, 3, 2, 3, 0, 4, 0, 2, 0, 3, 2, 3, 0, 4],
+        push_ms: [0, 10, 2],
+        tightness: 80,
     },
 ];
 
@@ -487,7 +523,11 @@ fn bit_set(mask: u16, step: u32) -> bool {
 /// fader crosses this bit's reveal point. Bits are revealed in step order,
 /// one at a time, so every notch of fader movement changes *something* —
 /// no hard density-zone jumps.
-fn fill_reveal(fill: u16, density: u16, step: u32) -> Option<u8> {
+///
+/// `rot` walks the revealed window along the fill mask from bar to bar, so a
+/// held density doesn't ghost the same steps forever. The caller keeps it at 0
+/// while Feel is low — a straight groove has to repeat exactly.
+fn fill_reveal(fill: u16, density: u16, step: u32, rot: u32) -> Option<u8> {
     let bit = 1u16 << (step % STEPS_PER_BAR);
     if fill & bit == 0 {
         return None;
@@ -502,6 +542,7 @@ fn fill_reveal(fill: u16, density: u16, step: u32) -> Option<u8> {
             rank += 1;
         }
     }
+    let rank = (rank + (rot % total.max(1))) % total.max(1);
     // Fixed-point (x256) count of fill bits revealed so far at this density.
     let revealed_scaled = (density as u32) * total * 256 / 4095;
     let revealed_count = revealed_scaled / 256;
@@ -958,7 +999,7 @@ fn solo_vel_pct(base: u8, accent: u8, acc: bool, ghost: bool, die: &Die, feel: u
     let a = u16::from(accent).max(b);
     let weight = if acc { a } else { b };
     let target = if ghost { (weight * 2) / 5 } else { weight };
-    let jitter = (u32::from(feel_curve(feel)) * 12) / 4095;
+    let jitter = (u32::from(humanize_curve(feel)) * 12) / 4095;
     let off = u32::from(die.roll()) % (2 * jitter + 1);
     (u32::from(target) + off)
         .saturating_sub(jitter)
@@ -972,7 +1013,7 @@ fn solo_ghost(die: &Die, feel: u16, prev_hit: bool, salt: u8) -> bool {
     if !prev_hit {
         return false;
     }
-    let open = u32::from(feel_curve(feel));
+    let open = u32::from(humanize_curve(feel));
     // ~4% at Feel=0 … ~20% at Feel=max.
     let chance = 4 + (open * 16) / 4095;
     u32::from((die.roll() ^ u16::from(salt)) % 100) < chance
@@ -980,10 +1021,10 @@ fn solo_ghost(die: &Die, feel: u16, prev_hit: bool, salt: u8) -> bool {
 
 /// Extra micro-timing push for ghost-only steps (no core hit landing on the
 /// same step): as density rises, revealed ghosts drag a little further
-/// behind the grid, like a drummer digging into the pocket. Capped at a
-/// fraction of the swing tick budget so it can never overtake the next step.
-fn ghost_drag_ticks(density: u16) -> u32 {
-    (density as u32 * 2) / 4095
+/// behind the grid, like a drummer digging into the pocket.
+fn ghost_drag_ms(density: u16, feel: u16) -> u32 {
+    let raw = (density as u32 * 4) / 4095;
+    (raw * u32::from(humanize_curve(feel))) / 4095
 }
 
 fn midi_vel(mult: u16) -> u16 {
@@ -991,14 +1032,66 @@ fn midi_vel(mult: u16) -> u16 {
     ((4095u32 * mult as u32) / 100).min(4095) as u16
 }
 
-/// Core-hit velocity % from Pattern DNA, attenuated by Feel.
-fn core_vel_pct(base: u8, accent: u8, acc_mask: u16, step: u32, feel: u16) -> u16 {
+/// Core-hit velocity % from Pattern DNA, attenuated by Feel, plus human jitter
+/// scaled by genre tightness. Lateness softening is applied after due-ms is known.
+fn core_vel_pct(
+    base: u8,
+    accent: u8,
+    acc_mask: u16,
+    step: u32,
+    feel: u16,
+    die: &Die,
+    tightness: u8,
+) -> u16 {
     let character = if bit_set(acc_mask, step) {
         u16::from(accent)
     } else {
         u16::from(base)
     };
-    feel_lerp_u16(FLAT_VEL, character, feel)
+    let mut v = feel_lerp_u16(FLAT_VEL, character, feel);
+    // ±0..=8% jitter × tightness × humanize.
+    let span = (u32::from(humanize_curve(feel)) * 8 * u32::from(tightness)) / (4095 * 100);
+    if span > 0 {
+        let off = u32::from(die.roll()) % (2 * span + 1);
+        v = (u32::from(v) + off)
+            .saturating_sub(span)
+            .clamp(1, 100) as u16;
+    }
+    v
+}
+
+/// Offbeat closed-hat duck: classic loud/soft 16th alternation, Feel-scaled.
+fn hat_offbeat_duck(vel: u16, step: u32, accented: bool, feel: u16) -> u16 {
+    if accented || step.is_multiple_of(2) {
+        return vel;
+    }
+    let cut = (12u32 * u32::from(humanize_curve(feel))) / 4095;
+    vel.saturating_sub(cut as u16).max(1)
+}
+
+/// Four-bar phrase arc: bar-of-phrase lift + pickup crescendo into the one.
+fn phrase_vel_boost(slot: u32, step: u32) -> i16 {
+    let bar = (slot / STEPS_PER_BAR) % 4;
+    let lift: i16 = match bar {
+        0 => 4,
+        1 => 0,
+        2 => 2,
+        _ => -2,
+    };
+    let pickup = if bar == 3 && step >= STEPS_PER_BAR - 4 {
+        6i16 * (step as i16 - (STEPS_PER_BAR as i16 - 5)) / 4
+    } else {
+        0
+    };
+    lift + pickup
+}
+
+/// Feel scales the arc away entirely: at Feel = 0 the groove is a machine and
+/// must not breathe, or Techno stops being straight.
+fn apply_phrase_boost(vel: u16, slot: u32, step: u32, feel: u16) -> u16 {
+    let raw = i32::from(phrase_vel_boost(slot, step));
+    let scaled = (raw * i32::from(humanize_curve(feel))) / 4095;
+    (i32::from(vel) + scaled).clamp(1, 100) as u16
 }
 
 /// Effective swing % from bias × Feel, capped by Swing max %.
@@ -1007,6 +1100,123 @@ fn feel_swing_pct(bias: u8, feel: u16, swing_max_pct: i32) -> i32 {
     let pct = (u32::from(bias) * f) / 4095;
     // Only the magnitude caps the swing — the sign picks the direction.
     pct.min(swing_max_pct.unsigned_abs().min(100)) as i32
+}
+
+/// Which `push_ms` slot a voice reads (clap→snare, open hat→hats, toms→kick).
+fn voice_push_family(voice: usize) -> usize {
+    match voice {
+        V_SNARE | V_CLAP => 1,
+        V_HATS | V_OPEN_HAT => 2,
+        _ => 0,
+    }
+}
+
+/// Gate length as % of `GATE %` for each voice.
+fn gate_factor_pct(voice: usize) -> u32 {
+    match voice {
+        V_HATS => 45,
+        V_OPEN_HAT => 260,
+        V_CLAP => 120,
+        V_LOW_TOM | V_HIGH_TOM => 150,
+        _ => 100,
+    }
+}
+
+/// How far a voice's note may ring past its own 16th. A drummer's limbs are
+/// not chopped at the step boundary, and the voice engine sends note-off
+/// before every re-trigger, so the cap only has to stop a voice outliving the
+/// groove — not protect the grid. The CV pulse keeps its own, shorter window.
+fn gate_span_16ths(voice: usize) -> u32 {
+    match voice {
+        V_HATS => 1,
+        V_OPEN_HAT | V_CLAP | V_LOW_TOM | V_HIGH_TOM => 4,
+        _ => 2,
+    }
+}
+
+/// Half-width of the timing jitter in ms, Feel × tightness scaled. The early
+/// budget reserves this much so the jitter stays symmetric instead of being
+/// truncated against the grid.
+fn jitter_span_ms(feel: u16, tightness: u8) -> i32 {
+    ((1 + (u32::from(humanize_curve(feel)) * 5) / 4095) * u32::from(tightness) / 100) as i32
+}
+
+/// Per-family share of the jitter width. A drummer's foot is steadier than the
+/// hand ornamenting on the hats, so a uniform spread reads as sloppy rather
+/// than loose — the kick has to hold the floor the others lean against.
+fn jitter_family_pct(voice: usize) -> u32 {
+    match voice {
+        V_SNARE | V_CLAP => 75,
+        V_HATS | V_OPEN_HAT => 100,
+        _ => 50,
+    }
+}
+
+/// Signed humanization jitter in ms, Feel × tightness × family scaled.
+fn timing_jitter_ms(die: &Die, feel: u16, tightness: u8, voice: usize) -> i32 {
+    let span = (jitter_span_ms(feel, tightness).max(0) as u32 * jitter_family_pct(voice)) / 100;
+    if span == 0 {
+        return 0;
+    }
+    let roll = u32::from(die.roll() ^ (voice as u16).wrapping_mul(17)) % (2 * span + 1);
+    roll as i32 - span as i32
+}
+
+/// How far ahead of the grid this step could need to fire: the earliest family
+/// push plus the jitter span. Every voice is delayed by this much, which is the
+/// only way to let one voice sit *ahead* of another without a lookahead.
+///
+/// It is derived rather than constant so it collapses to zero at Feel = 0 —
+/// a flat groove then lands on the clock exactly like Bassment / Vamp instead
+/// of trailing them. What lateness remains at high Feel is the unavoidable
+/// price of the pocket itself.
+fn early_budget_ms(pushes: [i32; 3], jitter_span: i32) -> u32 {
+    let earliest = pushes.iter().copied().min().unwrap_or(0).min(0);
+    ((-earliest) + jitter_span.max(0)) as u32
+}
+
+/// Per-voice due delay in ms from slot start, measured from the budget-shifted
+/// grid. Clamped so it never reaches the next 16th.
+fn voice_due_ms(
+    budget: u32,
+    swing: u32,
+    timing_off: i32,
+    push: i32,
+    jitter: i32,
+    ghost_extra: u32,
+    sixteenth_ms: u32,
+) -> u32 {
+    let raw =
+        budget as i32 + swing as i32 + timing_off + push + jitter + ghost_extra as i32;
+    let max = sixteenth_ms.saturating_sub(2).max(1) as i32;
+    raw.clamp(0, max) as u32
+}
+
+/// MIDI note length for one voice.
+fn voice_gate_ms(
+    voice: usize,
+    gate_pct: i32,
+    sixteenth_ms: u32,
+    accented: bool,
+    ghost: bool,
+) -> u32 {
+    let base = (sixteenth_ms * gate_pct.clamp(1, 100) as u32) / 100;
+    let mut len = (base * gate_factor_pct(voice)) / 100;
+    if accented {
+        len = (len * 125) / 100;
+    }
+    if ghost {
+        len = (len * 70) / 100;
+    }
+    let cap = sixteenth_ms.saturating_mul(gate_span_16ths(voice));
+    len.min(cap).max(MIN_GATE_MS)
+}
+
+/// CV pulse length. The jack stays a trigger even when the note it mirrors
+/// rings on: a patched Echolot / envelope wants an edge per hit, not a gate
+/// that happens to be four 16ths long because Open Hat is switched on.
+fn cv_pulse_ms(note_len_ms: u32, room_ms: u32) -> u32 {
+    note_len_ms.min(room_ms).max(1)
 }
 
 /// Resting CV for activity pulses. On ±5V, 0 counts = −5V — use mid (0V) as idle
@@ -1168,8 +1378,6 @@ pub async fn run(
     params: &ParamStore<Params>,
     storage: &ManagedStorage<Storage>,
 ) {
-    app.wait_while_perf_muted().await;
-
     let (midi_out, notes, channels, genre, swing_max_pct, gatel, jack, range, cv_att) = params
         .query(|p| {
             (
@@ -1248,6 +1456,8 @@ pub async fn run(
     // storms from stalling CLOCK_PUBSUB and dropping 16ths.
     let pending_silence = app.make_global(false);
     let pending_note_off = app.make_global(false);
+    // Per-voice note-offs from independent gate lengths (open hat may overhang).
+    let pending_offs = app.make_global([false; VOICES]);
     // Clock watch → voice engine: one flag and one velocity per voice. The clock
     // side only fills these in, and `fut_voice` is the sole place that talks to
     // MIDI — sending from the clock subscriber stalls the device clock.
@@ -1276,16 +1486,22 @@ pub async fn run(
     let fut_clock = async {
         let mut origin: u32 = 0;
         let mut origin_set = false;
-        // Any voice still inside its gate window (they all share one gate).
-        let mut any_on = false;
-        let mut gate_off_at: Option<u32> = None;
-        // Fire-once guard per 16th slot; u32::MAX = nothing fired yet.
-        let mut last_fired_slot = u32::MAX;
-        // GATE % = fraction of a 16th (Euclid/Turing convention). Feel/swing only
-        // move the attack; `room` below still caps so late hits never smear into
-        // the next 16th (that looked like Chord Vamp holds).
-        let gate_len = ((SIXTEENTH as i32 * gatel) / 100)
-            .clamp(1, (SIXTEENTH as i32) - 1) as u32;
+        // Per-voice schedule for the current 16th (u32::MAX = idle).
+        let mut target_ms = [u32::MAX; VOICES];
+        let mut sched_vel = [0u16; VOICES];
+        let mut sched_midi = [false; VOICES];
+        let mut sched_cv = [false; VOICES];
+        let mut sched_acc = [false; VOICES];
+        let mut sched_gh = [false; VOICES];
+        let mut fired = [false; VOICES];
+        let mut gate_off_wall: [Option<u32>; VOICES] = [None; VOICES];
+        // CV runs its own, shorter window so the jack stays a trigger.
+        let mut cv_off_wall: [Option<u32>; VOICES] = [None; VOICES];
+        let mut cv_on = [false; VOICES];
+        let mut scheduled_slot = u32::MAX;
+        let mut wall_ms: u32 = 0;
+        let mut ms_in_tick: u16 = 0;
+        let mut tick_ms_x16: u32 = TICK_MS_X16_INIT;
 
         let mut last_tick = ticks();
         let mut stall_ms = 0u16;
@@ -1298,462 +1514,621 @@ pub async fn run(
 
         loop {
             app.delay_millis(1).await;
+            wall_ms = wall_ms.wrapping_add(1);
+
             let t = ticks();
             let mut do_stop = false;
             if t == last_tick {
                 stall_ms = stall_ms.saturating_add(1);
+                ms_in_tick = ms_in_tick.saturating_add(1);
                 if stall_ms == 250 {
                     do_stop = true;
-                } else {
-                    continue;
                 }
+                // Fall through: ms-resolution dues/gates need every poll.
             } else if t < last_tick {
                 do_stop = true;
                 last_tick = t;
                 stall_ms = 0;
+                ms_in_tick = 0;
             } else {
+                // Only single-tick gaps of a plausible length say anything about
+                // the tempo. The first tick after a stopped clock carries the
+                // whole idle time and would otherwise drag the estimate to the
+                // clamp ceiling for a bar's worth of ticks.
+                if t == last_tick.wrapping_add(1)
+                    && ms_in_tick > 0
+                    && ms_in_tick <= TICK_MS_PLAUSIBLE_MAX
+                {
+                    tick_ms_x16 = (tick_ms_x16 * 3 + (ms_in_tick as u32) * 16) / 4;
+                    // Keep tempo estimate in a sane band (~40–300 BPM).
+                    tick_ms_x16 = tick_ms_x16.clamp(80, 1000);
+                }
+                ms_in_tick = 0;
                 stall_ms = 0;
                 last_tick = t;
             }
 
             if do_stop {
-
-                    // Flag only — voice owns MIDI so we keep draining clock ticks.
-                    pending_hits.set([false; VOICES]);
-                    pending_note_off.set(false);
-                    pending_silence.set(true);
-                    any_on = false;
-                    if let Some(ref jack) = out_jack {
-                        jack.set_value(pulse_idle(range));
-                    }
-                    gate_off_at = None;
-                    origin_set = false;
-                    last_fired_slot = u32::MAX;
-                    glob_reset.set(false);
-                    glob_fill_armed.set(false);
-                    glob_fill_start.set(false);
-                    glob_fill_solo.set(false);
-                    fill_start_slot = 0;
-                    if glob_muted.get() {
-                        leds.unset(0, Led::Top);
-                        leds.unset(0, Led::Bottom);
-                    } else {
-                        // Keep genre color visible while clock is stopped.
-                        leds.set(
-                            0,
-                            Led::Top,
-                            spectrum_color(glob_genre_fader.get()),
-                            LED_BRIGHTNESS,
-                        );
-                        leds.unset(0, Led::Bottom);
-                    }
-                
+                pending_hits.set([false; VOICES]);
+                pending_offs.set([false; VOICES]);
+                pending_note_off.set(false);
+                pending_silence.set(true);
+                if let Some(ref jack) = out_jack {
+                    jack.set_value(pulse_idle(range));
+                }
+                target_ms = [u32::MAX; VOICES];
+                fired = [false; VOICES];
+                gate_off_wall = [None; VOICES];
+                cv_off_wall = [None; VOICES];
+                cv_on = [false; VOICES];
+                scheduled_slot = u32::MAX;
+                origin_set = false;
+                ms_in_tick = 0;
+                glob_reset.set(false);
+                glob_fill_armed.set(false);
+                glob_fill_start.set(false);
+                glob_fill_solo.set(false);
+                fill_start_slot = 0;
+                if glob_muted.get() {
+                    leds.unset(0, Led::Top);
+                    leds.unset(0, Led::Bottom);
+                } else {
+                    leds.set(
+                        0,
+                        Led::Top,
+                        spectrum_color(glob_genre_fader.get()),
+                        LED_BRIGHTNESS,
+                    );
+                    leds.unset(0, Led::Bottom);
+                }
                 continue;
             }
 
+            // Mute abandons any ringing CV window outright. Without this the
+            // recompute below would find a voice still "on" and pull the jack
+            // back up after the button task had already parked it.
+            if glob_muted.get() && cv_on.iter().any(|on| *on) {
+                cv_on = [false; VOICES];
+                cv_off_wall = [None; VOICES];
+                if let Some(ref jack) = out_jack {
+                    jack.set_value(pulse_idle(range));
+                }
+                leds.set(
+                    0,
+                    Led::Bottom,
+                    spectrum_color(glob_genre_fader.get()),
+                    Brightness::Off,
+                );
+            }
 
-                    let clkn = ticks() as u32;
-
-                    if !origin_set || glob_reset.get() {
-                        origin = clkn;
-                        origin_set = true;
-                        last_fired_slot = u32::MAX;
-                        glob_reset.set(false);
-                        glob_fill_armed.set(false);
-                        glob_fill_start.set(false);
-                        glob_fill_solo.set(false);
-                        fill_start_slot = 0;
-                    }
-
-                    let pos = clkn.wrapping_sub(origin);
-                    // Absolute 16th slot since origin (not wrapped) for the fire-once guard.
-                    let slot = pos / SIXTEENTH;
-                    let step = (pos / SIXTEENTH) % STEPS_PER_BAR;
-                    let phase = pos % SIXTEENTH;
-
-                    let feel_val = if jack == JACK_IN_FEEL {
-                        mod_u16(glob_feel.get(), glob_cv_val.get())
-                    } else {
-                        glob_feel.get()
-                    };
-                    let (g_lo, g_hi, g_frac) = genre_pair(glob_genre_fader.get(), NUM_GENRES);
-                    let near = genre_nearest(glob_genre_fader.get(), NUM_GENRES);
-                    let pat = &PATTERNS[near];
-                    let pat_lo = &PATTERNS[g_lo];
-                    let pat_hi = &PATTERNS[g_hi];
-
-                    let density = if jack == JACK_IN_DENSITY {
-                        mod_u16(glob_density.get(), glob_cv_val.get())
-                    } else {
-                        glob_density.get()
-                    };
-
-                    // Fill/break/solo gesture. Figure and additive-vs-subtractive
-                    // reading lock in at press so a tap stays one phrase. Holding
-                    // across a bar line escalates into the solo, which then walks
-                    // its phrase instead of looping one end-of-bar fill. Arm
-                    // outlives the release until the bar wraps so it resolves.
-                    if glob_fill_start.get() {
-                        glob_fill_start.set(false);
-                        glob_fill_variant.set(fill_variant(&die, near, feel_val));
-                        glob_fill_break.set(density >= BREAK_DENSITY);
-                        glob_fill_solo.set(false);
-                        glob_fill_armed.set(true);
-                        fill_start_slot = slot;
-                    } else if glob_fill_armed.get() && step == 0 && slot > fill_start_slot {
-                        if glob_fill_held.get() {
-                            // Still holding past a bar line → solo, one bar
-                            // further into the phrase each time round.
-                            if glob_fill_solo.get() {
-                                solo_bar = solo_bar.wrapping_add(1);
-                            } else {
-                                glob_fill_solo.set(true);
-                                solo_bar = 0;
-                            }
-                            glob_fill_variant.set(fill_variant(&die, near, feel_val));
-                            fill_start_slot = slot;
-                        } else {
-                            glob_fill_armed.set(false);
-                            glob_fill_solo.set(false);
+            // Per-voice note and CV offs (wall clock) — independent lengths.
+            {
+                let mut offs = pending_offs.get();
+                let mut any_off = false;
+                let mut cv_changed = false;
+                for voice in 0..VOICES {
+                    if let Some(off_at) = gate_off_wall[voice] {
+                        if wall_ms >= off_at {
+                            gate_off_wall[voice] = None;
+                            offs[voice] = true;
+                            any_off = true;
                         }
                     }
-                    // A long press escalates mid-bar; start its phrase there.
-                    let solo_now = glob_fill_armed.get() && glob_fill_solo.get();
-                    if solo_now && !was_solo {
-                        solo_bar = 0;
-                    }
-                    was_solo = solo_now;
-
-                    let bias = lerp_u8(swing_bias(g_lo), swing_bias(g_hi), g_frac);
-                    let swing_pct = feel_swing_pct(bias, feel_val, glob_swing_max.get());
-                    let timing_char = lerp_i32(
-                        i32::from(pat_lo.timing[(step % STEPS_PER_BAR) as usize]),
-                        i32::from(pat_hi.timing[(step % STEPS_PER_BAR) as usize]),
-                        g_frac,
-                    );
-                    let timing_off = feel_lerp_i32(0, timing_char, feel_val);
-                    let delay = ((swing_delay_ticks(step, swing_pct, glob_reversed.get()) as i32)
-                        + timing_off)
-                        .clamp(0, (SIXTEENTH as i32) - 1) as u32;
-
-                    // Note / jack off
-                    if let Some(off_at) = gate_off_at {
-                        if clkn >= off_at {
-                            if any_on {
-                                // Cancel any unsent note-ons so a stalled voice
-                                // does not fire a hit after its gate expired.
-                                pending_hits.set([false; VOICES]);
-                                pending_note_off.set(true);
-                                any_on = false;
-                            }
-                            if let Some(ref jack) = out_jack {
-                                jack.set_value(pulse_idle(range));
-                            }
-                            gate_off_at = None;
-                            leds.set(0, Led::Bottom, spectrum_color(glob_genre_fader.get()), Brightness::Off);
+                    if let Some(off_at) = cv_off_wall[voice] {
+                        if wall_ms >= off_at {
+                            cv_off_wall[voice] = None;
+                            cv_on[voice] = false;
+                            cv_changed = true;
                         }
                     }
-
-                    // Fire-once guard: a feel/density change mid-window
-                    // can't skip a step or fire it twice.
-                    if slot != last_fired_slot && !glob_muted.get() {
-                        // While armed the figure replaces the groove outright —
-                        // density reveal plays no part, so the gesture reads the
-                        // same at any fader position. A held gesture walks the
-                        // solo tiers; the phrase's turnaround bar and the release
-                        // both fall back to the end-weighted FILLS so the solo
-                        // breathes and lands on the one.
-                        let tier = (solo_bar % SOLO_PHRASE_BARS) as usize;
-                        let solo_fig = if glob_fill_armed.get()
-                            && glob_fill_solo.get()
-                            && glob_fill_held.get()
-                            && tier < SOLO_TIERS
-                        {
-                            Some(&SOLOS[near][tier])
-                        } else {
-                            None
-                        };
-                        let fill_fig = if glob_fill_armed.get() && solo_fig.is_none() {
-                            let v = glob_fill_variant.get().min(FILL_VARIANTS - 1);
-                            Some(if glob_fill_break.get() && !glob_fill_solo.get() {
-                                &BREAKS[near][v]
+                }
+                if any_off {
+                    pending_offs.set(offs);
+                }
+                if cv_changed {
+                    // Recompute from what is still pulsing — dropping straight to
+                    // idle would misreport the remaining voices, and in Stacked
+                    // mode the level *is* the information.
+                    let still_on = cv_on.iter().any(|on| *on);
+                    if let Some(ref jack) = out_jack {
+                        jack.set_value(if still_on {
+                            if glob_stacked.get() {
+                                stacked_pulse_level(&cv_on, range)
                             } else {
-                                &FILLS[near][v]
-                            })
+                                any_pulse_level(&cv_on, range)
+                            }
                         } else {
-                            None
-                        };
-                        let gesture = solo_fig.is_some() || fill_fig.is_some();
-
-                        let mut kick_acc_hit = false;
-                        let mut snare_acc_hit = false;
-                        let mut hats_acc_hit = false;
-                        let mut kick_gh = false;
-                        let mut snare_gh = false;
-                        let mut hats_gh = false;
-
-                        let (kick_core, snare_core, hats_core) = if let Some(f) = solo_fig {
-                            kick_acc_hit = bit_set(f.kick_acc, step);
-                            snare_acc_hit = bit_set(f.snare_acc, step);
-                            hats_acc_hit = bit_set(f.hats_acc, step);
-                            let mut k = bit_set(f.kick, step);
-                            let mut s = bit_set(f.snare, step);
-                            let mut h = bit_set(f.hats, step);
-                            // Drag off the written hits, bar-cyclic so step 0
-                            // answers step 15.
-                            let prev = (step + STEPS_PER_BAR - 1) % STEPS_PER_BAR;
-                            if !k && solo_ghost(&die, feel_val, bit_set(f.kick, prev), 0x11) {
-                                k = true;
-                                kick_gh = true;
-                            }
-                            if !s && solo_ghost(&die, feel_val, bit_set(f.snare, prev), 0x22) {
-                                s = true;
-                                snare_gh = true;
-                            }
-                            if !h && solo_ghost(&die, feel_val, bit_set(f.hats, prev), 0x33) {
-                                h = true;
-                                hats_gh = true;
-                            }
-                            (k, s, h)
-                        } else if let Some(f) = fill_fig {
-                            (
-                                bit_set(f.kick, step),
-                                bit_set(f.snare, step),
-                                bit_set(f.hats, step),
-                            )
-                        } else {
-                            (
-                                bit_set(pat.kick, step),
-                                bit_set(pat.snare, step),
-                                bit_set(pat.hats, step),
-                            )
-                        };
-                        // `Some(frac)`: this step's fill bit for that voice is
-                        // being progressively revealed by the density fader —
-                        // frac (0..=255) is how far in it's faded (continuum,
-                        // no hard zone jumps).
-                        let (kick_ghost, snare_ghost, hats_ghost) = if gesture {
-                            (None, None, None)
-                        } else {
-                            (
-                                fill_reveal(pat.kick_fill, density, step),
-                                fill_reveal(pat.snare_fill, density, step),
-                                fill_reveal(pat.hats_fill, density, step),
-                            )
-                        };
-
-                        let core_hit = kick_core || snare_core || hats_core;
-                        let any_ghost =
-                            kick_ghost.is_some() || snare_ghost.is_some() || hats_ghost.is_some();
-                        // Ghost-only steps (no core hit) drag a little behind
-                        // the grid as density rises — a looser, more human
-                        // pocket — but never displace a core hit's timing.
-                        // Ghost drag also scales with Feel so low Feel stays straight.
-                        let ghost_extra = feel_lerp_u16(0, ghost_drag_ticks(density) as u16, feel_val)
-                            as u32;
-                        let required_delay = if core_hit || !any_ghost {
-                            delay
-                        } else {
-                            (delay + ghost_extra).min(SIXTEENTH - 1)
-                        };
-
-                        if phase >= required_delay {
-                            last_fired_slot = slot;
-
-                            let do_kick = kick_core || kick_ghost.is_some();
-                            let do_snare = snare_core || snare_ghost.is_some();
-                            let do_hats = hats_core || hats_ghost.is_some();
-
-                            // A late-swung previous hit may still be sounding
-                            // (its gate-off lands after this step's start):
-                            // flush note-offs before re-triggering to avoid
-                            // overlapping note-ons on the same key.
-                            if (do_kick || do_snare || do_hats) && gate_off_at.is_some() {
-                                pending_hits.set([false; VOICES]);
-                                pending_note_off.set(true);
-                                any_on = false;
-                                gate_off_at = None;
-                            }
-
-                            let mut hits = [false; VOICES];
-                            let mut vels = [0u16; VOICES];
-
-                            if do_kick {
-                                let v = if solo_fig.is_some() {
-                                    solo_vel_pct(
-                                        lerp_u8(pat_lo.kick_base, pat_hi.kick_base, g_frac),
-                                        lerp_u8(pat_lo.kick_accent, pat_hi.kick_accent, g_frac),
-                                        kick_acc_hit,
-                                        kick_gh,
-                                        &die,
-                                        feel_val,
-                                    )
-                                } else if fill_fig.is_some() {
-                                    fill_vel_pct(
-                                        lerp_u8(pat_lo.kick_base, pat_hi.kick_base, g_frac),
-                                        lerp_u8(pat_lo.kick_accent, pat_hi.kick_accent, g_frac),
-                                        step,
-                                    )
-                                } else {
-                                    match kick_ghost {
-                                        Some(frac) if !kick_core => {
-                                            let g = ghost_vel_pct(frac, 18, 35);
-                                            feel_lerp_u16(FLAT_VEL, g, feel_val)
-                                        }
-                                        _ => core_vel_pct(
-                                            lerp_u8(pat_lo.kick_base, pat_hi.kick_base, g_frac),
-                                            lerp_u8(pat_lo.kick_accent, pat_hi.kick_accent, g_frac),
-                                            pat.kick_acc_mask,
-                                            step,
-                                            feel_val,
-                                        ),
-                                    }
-                                };
-                                vels[V_KICK] = midi_vel(v);
-                                hits[V_KICK] = true;
-                            }
-                            if do_snare {
-                                let v = if solo_fig.is_some() {
-                                    solo_vel_pct(
-                                        lerp_u8(pat_lo.snare_base, pat_hi.snare_base, g_frac),
-                                        lerp_u8(pat_lo.snare_accent, pat_hi.snare_accent, g_frac),
-                                        snare_acc_hit,
-                                        snare_gh,
-                                        &die,
-                                        feel_val,
-                                    )
-                                } else if fill_fig.is_some() {
-                                    fill_vel_pct(
-                                        lerp_u8(pat_lo.snare_base, pat_hi.snare_base, g_frac),
-                                        lerp_u8(pat_lo.snare_accent, pat_hi.snare_accent, g_frac),
-                                        step,
-                                    )
-                                } else {
-                                    match snare_ghost {
-                                        Some(frac) if !snare_core => {
-                                            let g = ghost_vel_pct(frac, 15, 32);
-                                            feel_lerp_u16(FLAT_VEL, g, feel_val)
-                                        }
-                                        _ => core_vel_pct(
-                                            lerp_u8(pat_lo.snare_base, pat_hi.snare_base, g_frac),
-                                            lerp_u8(
-                                                pat_lo.snare_accent,
-                                                pat_hi.snare_accent,
-                                                g_frac,
-                                            ),
-                                            pat.snare_acc_mask,
-                                            step,
-                                            feel_val,
-                                        ),
-                                    }
-                                };
-                                vels[V_SNARE] = midi_vel(v);
-                                hits[V_SNARE] = true;
-                            }
-                            if do_hats {
-                                let v = if solo_fig.is_some() {
-                                    solo_vel_pct(
-                                        lerp_u8(pat_lo.hats_base, pat_hi.hats_base, g_frac),
-                                        lerp_u8(pat_lo.hats_accent, pat_hi.hats_accent, g_frac),
-                                        hats_acc_hit,
-                                        hats_gh,
-                                        &die,
-                                        feel_val,
-                                    )
-                                } else if fill_fig.is_some() {
-                                    fill_vel_pct(
-                                        lerp_u8(pat_lo.hats_base, pat_hi.hats_base, g_frac),
-                                        lerp_u8(pat_lo.hats_accent, pat_hi.hats_accent, g_frac),
-                                        step,
-                                    )
-                                } else {
-                                    match hats_ghost {
-                                        Some(frac) if !hats_core => {
-                                            let g = ghost_vel_pct(frac, 12, 28);
-                                            feel_lerp_u16(FLAT_VEL, g, feel_val)
-                                        }
-                                        _ => core_vel_pct(
-                                            lerp_u8(pat_lo.hats_base, pat_hi.hats_base, g_frac),
-                                            lerp_u8(pat_lo.hats_accent, pat_hi.hats_accent, g_frac),
-                                            pat.hats_acc_mask,
-                                            step,
-                                            feel_val,
-                                        ),
-                                    }
-                                };
-                                vels[V_HATS] = midi_vel(v);
-                                hits[V_HATS] = true;
-                            }
-
-                            // Accent source follows whatever figure is playing:
-                            // a solo carries its own accent mask, the groove and
-                            // the fills read the genre's.
-                            let snare_accented = if solo_fig.is_some() {
-                                snare_acc_hit
-                            } else {
-                                bit_set(pat.snare_acc_mask, step)
-                            };
-                            let hats_accented = if solo_fig.is_some() {
-                                hats_acc_hit
-                            } else {
-                                bit_set(pat.hats_acc_mask, step)
-                            };
-                            derive_extra_voices(
-                                &mut hits,
-                                &mut vels,
-                                &enabled,
-                                step,
-                                gesture,
-                                snare_accented,
-                                hats_accented,
-                            );
-                            // The jack follows what the groove plays, so a patch
-                            // that only wants CV still pulses with every note
-                            // switched off. MIDI follows what is wired up.
-                            let cv_hits = hits;
-                            for voice in 0..VOICES {
-                                hits[voice] &= enabled[voice];
-                            }
-
-                            if cv_hits.iter().any(|hit| *hit) {
-                                if hits.iter().any(|hit| *hit) {
-                                    pending_vels.set(vels);
-                                    pending_hits.set(hits);
-                                    any_on = true;
-                                }
-
-                                let level = if glob_stacked.get() {
-                                    stacked_pulse_level(&cv_hits, range)
-                                } else {
-                                    any_pulse_level(&cv_hits, range)
-                                };
-                                if let Some(ref jack) = out_jack {
-                                    jack.set_value(level);
-                                }
-                                // Never hold past this 16th — late Feel/swing
-                                // attacks still get a shortened gate, not a smear.
-                                let room = SIXTEENTH.saturating_sub(phase).max(1);
-                                let pulse = gate_len.min(room);
-                                gate_off_at = Some(clkn.wrapping_add(pulse));
-                                leds.set(0, Led::Bottom, spectrum_color(glob_genre_fader.get()), Brightness::High);
-                                glob_button_duck.set(BUTTON_DUCK_MS);
-                            }
-                        }
+                            pulse_idle(range)
+                        });
                     }
-
-                    // Top LED: bar progress on Main (needs step). Alt/Third
-                    // genre+Feel previews live in the 1 ms shift loop so the
-                    // spectrum tracks the fader fluidly (and still works when
-                    // the clock is stopped) — same as Chord Vamp.
-                    if glob_latch_layer.get() == LatchLayer::Main {
+                    if !still_on {
                         leds.set(
                             0,
-                            Led::Top,
+                            Led::Bottom,
                             spectrum_color(glob_genre_fader.get()),
-                            Brightness::Custom(((step * 255) / STEPS_PER_BAR) as u8),
+                            Brightness::Off,
                         );
                     }
-                
+                }
+            }
+
+            let clkn = ticks() as u32;
+
+            if !origin_set || glob_reset.get() {
+                origin = clkn;
+                origin_set = true;
+                scheduled_slot = u32::MAX;
+                target_ms = [u32::MAX; VOICES];
+                fired = [false; VOICES];
+                glob_reset.set(false);
+                glob_fill_armed.set(false);
+                glob_fill_start.set(false);
+                glob_fill_solo.set(false);
+                fill_start_slot = 0;
+            }
+
+            let pos = clkn.wrapping_sub(origin);
+            let slot = pos / SIXTEENTH;
+            let step = (pos / SIXTEENTH) % STEPS_PER_BAR;
+            let phase = pos % SIXTEENTH;
+            let sixteenth_ms = ((SIXTEENTH * tick_ms_x16) / 16).max(8);
+            let elapsed_ms =
+                (phase * tick_ms_x16 / 16).saturating_add(ms_in_tick as u32);
+
+            let feel_val = if jack == JACK_IN_FEEL {
+                mod_u16(glob_feel.get(), glob_cv_val.get())
+            } else {
+                glob_feel.get()
+            };
+            let (g_lo, g_hi, g_frac) = genre_pair(glob_genre_fader.get(), NUM_GENRES);
+            let near = genre_nearest(glob_genre_fader.get(), NUM_GENRES);
+            let pat = &PATTERNS[near];
+            let pat_lo = &PATTERNS[g_lo];
+            let pat_hi = &PATTERNS[g_hi];
+
+            let density = if jack == JACK_IN_DENSITY {
+                mod_u16(glob_density.get(), glob_cv_val.get())
+            } else {
+                glob_density.get()
+            };
+
+            if glob_fill_start.get() {
+                glob_fill_start.set(false);
+                glob_fill_variant.set(fill_variant(&die, near, feel_val));
+                glob_fill_break.set(density >= BREAK_DENSITY);
+                glob_fill_solo.set(false);
+                glob_fill_armed.set(true);
+                fill_start_slot = slot;
+            } else if glob_fill_armed.get() && step == 0 && slot > fill_start_slot {
+                if glob_fill_held.get() {
+                    if glob_fill_solo.get() {
+                        solo_bar = solo_bar.wrapping_add(1);
+                    } else {
+                        glob_fill_solo.set(true);
+                        solo_bar = 0;
+                    }
+                    glob_fill_variant.set(fill_variant(&die, near, feel_val));
+                    fill_start_slot = slot;
+                } else {
+                    glob_fill_armed.set(false);
+                    glob_fill_solo.set(false);
+                }
+            }
+            let solo_now = glob_fill_armed.get() && glob_fill_solo.get();
+            if solo_now && !was_solo {
+                solo_bar = 0;
+            }
+            was_solo = solo_now;
+
+            let bias = lerp_u8(swing_bias(g_lo), swing_bias(g_hi), g_frac);
+            let swing_pct = feel_swing_pct(bias, feel_val, glob_swing_max.get());
+            let timing_char = lerp_i32(
+                i32::from(pat_lo.timing[(step % STEPS_PER_BAR) as usize]),
+                i32::from(pat_hi.timing[(step % STEPS_PER_BAR) as usize]),
+                g_frac,
+            );
+            let timing_off = feel_lerp_i32(0, timing_char, feel_val);
+            let swing =
+                swing_delay_ms(step, swing_pct, glob_reversed.get(), sixteenth_ms);
+            let tightness = lerp_u8(pat_lo.tightness, pat_hi.tightness, g_frac);
+            // Ghost window walks on a four-bar phrase, and only once Feel is
+            // past the flat zone — below that the bar has to repeat verbatim.
+            let ghost_rot = if humanize_curve(feel_val) >= GHOST_ROTATE_FEEL {
+                (slot / STEPS_PER_BAR) % 4
+            } else {
+                0
+            };
+
+            // Schedule once per 16th slot (ms dues released below).
+            if slot != scheduled_slot && !glob_muted.get() {
+                scheduled_slot = slot;
+                target_ms = [u32::MAX; VOICES];
+                sched_vel = [0; VOICES];
+                sched_midi = [false; VOICES];
+                sched_cv = [false; VOICES];
+                sched_acc = [false; VOICES];
+                sched_gh = [false; VOICES];
+                fired = [false; VOICES];
+
+                let tier = (solo_bar % SOLO_PHRASE_BARS) as usize;
+                let solo_fig = if glob_fill_armed.get()
+                    && glob_fill_solo.get()
+                    && glob_fill_held.get()
+                    && tier < SOLO_TIERS
+                {
+                    Some(&SOLOS[near][tier])
+                } else {
+                    None
+                };
+                let fill_fig = if glob_fill_armed.get() && solo_fig.is_none() {
+                    let v = glob_fill_variant.get().min(FILL_VARIANTS - 1);
+                    Some(if glob_fill_break.get() && !glob_fill_solo.get() {
+                        &BREAKS[near][v]
+                    } else {
+                        &FILLS[near][v]
+                    })
+                } else {
+                    None
+                };
+                let gesture = solo_fig.is_some() || fill_fig.is_some();
+
+                let mut kick_acc_hit = false;
+                let mut snare_acc_hit = false;
+                let mut hats_acc_hit = false;
+                let mut kick_gh = false;
+                let mut snare_gh = false;
+                let mut hats_gh = false;
+
+                let (kick_core, snare_core, hats_core) = if let Some(f) = solo_fig {
+                    kick_acc_hit = bit_set(f.kick_acc, step);
+                    snare_acc_hit = bit_set(f.snare_acc, step);
+                    hats_acc_hit = bit_set(f.hats_acc, step);
+                    let mut k = bit_set(f.kick, step);
+                    let mut s = bit_set(f.snare, step);
+                    let mut h = bit_set(f.hats, step);
+                    let prev = (step + STEPS_PER_BAR - 1) % STEPS_PER_BAR;
+                    if !k && solo_ghost(&die, feel_val, bit_set(f.kick, prev), 0x11) {
+                        k = true;
+                        kick_gh = true;
+                    }
+                    if !s && solo_ghost(&die, feel_val, bit_set(f.snare, prev), 0x22) {
+                        s = true;
+                        snare_gh = true;
+                    }
+                    if !h && solo_ghost(&die, feel_val, bit_set(f.hats, prev), 0x33) {
+                        h = true;
+                        hats_gh = true;
+                    }
+                    (k, s, h)
+                } else if let Some(f) = fill_fig {
+                    (
+                        bit_set(f.kick, step),
+                        bit_set(f.snare, step),
+                        bit_set(f.hats, step),
+                    )
+                } else {
+                    (
+                        bit_set(pat.kick, step),
+                        bit_set(pat.snare, step),
+                        bit_set(pat.hats, step),
+                    )
+                };
+
+                let (kick_ghost, snare_ghost, hats_ghost) = if gesture {
+                    (None, None, None)
+                } else {
+                    (
+                        fill_reveal(pat.kick_fill, density, step, ghost_rot),
+                        fill_reveal(pat.snare_fill, density, step, ghost_rot),
+                        fill_reveal(pat.hats_fill, density, step, ghost_rot),
+                    )
+                };
+
+                let do_kick = kick_core || kick_ghost.is_some();
+                let do_snare = snare_core || snare_ghost.is_some();
+                let do_hats = hats_core || hats_ghost.is_some();
+                let core_hit = kick_core || snare_core || hats_core;
+
+                let mut hits = [false; VOICES];
+                let mut vels = [0u16; VOICES];
+                let mut ghosts = [false; VOICES];
+
+                if do_kick {
+                    let v = if solo_fig.is_some() {
+                        solo_vel_pct(
+                            lerp_u8(pat_lo.kick_base, pat_hi.kick_base, g_frac),
+                            lerp_u8(pat_lo.kick_accent, pat_hi.kick_accent, g_frac),
+                            kick_acc_hit,
+                            kick_gh,
+                            &die,
+                            feel_val,
+                        )
+                    } else if fill_fig.is_some() {
+                        fill_vel_pct(
+                            lerp_u8(pat_lo.kick_base, pat_hi.kick_base, g_frac),
+                            lerp_u8(pat_lo.kick_accent, pat_hi.kick_accent, g_frac),
+                            step,
+                        )
+                    } else {
+                        match kick_ghost {
+                            Some(frac) if !kick_core => {
+                                let g = ghost_vel_pct(frac, 18, 35);
+                                feel_lerp_u16(FLAT_VEL, g, feel_val)
+                            }
+                            _ => core_vel_pct(
+                                lerp_u8(pat_lo.kick_base, pat_hi.kick_base, g_frac),
+                                lerp_u8(pat_lo.kick_accent, pat_hi.kick_accent, g_frac),
+                                pat.kick_acc_mask,
+                                step,
+                                feel_val,
+                                &die,
+                                tightness,
+                            ),
+                        }
+                    };
+                    vels[V_KICK] = apply_phrase_boost(v, slot, step, feel_val);
+                    hits[V_KICK] = true;
+                    ghosts[V_KICK] = kick_gh || (kick_ghost.is_some() && !kick_core);
+                    sched_acc[V_KICK] = if solo_fig.is_some() {
+                        kick_acc_hit
+                    } else {
+                        bit_set(pat.kick_acc_mask, step)
+                    };
+                }
+                if do_snare {
+                    let v = if solo_fig.is_some() {
+                        solo_vel_pct(
+                            lerp_u8(pat_lo.snare_base, pat_hi.snare_base, g_frac),
+                            lerp_u8(pat_lo.snare_accent, pat_hi.snare_accent, g_frac),
+                            snare_acc_hit,
+                            snare_gh,
+                            &die,
+                            feel_val,
+                        )
+                    } else if fill_fig.is_some() {
+                        fill_vel_pct(
+                            lerp_u8(pat_lo.snare_base, pat_hi.snare_base, g_frac),
+                            lerp_u8(pat_lo.snare_accent, pat_hi.snare_accent, g_frac),
+                            step,
+                        )
+                    } else {
+                        match snare_ghost {
+                            Some(frac) if !snare_core => {
+                                let g = ghost_vel_pct(frac, 15, 32);
+                                feel_lerp_u16(FLAT_VEL, g, feel_val)
+                            }
+                            _ => core_vel_pct(
+                                lerp_u8(pat_lo.snare_base, pat_hi.snare_base, g_frac),
+                                lerp_u8(pat_lo.snare_accent, pat_hi.snare_accent, g_frac),
+                                pat.snare_acc_mask,
+                                step,
+                                feel_val,
+                                &die,
+                                tightness,
+                            ),
+                        }
+                    };
+                    vels[V_SNARE] = apply_phrase_boost(v, slot, step, feel_val);
+                    hits[V_SNARE] = true;
+                    ghosts[V_SNARE] = snare_gh || (snare_ghost.is_some() && !snare_core);
+                    sched_acc[V_SNARE] = if solo_fig.is_some() {
+                        snare_acc_hit
+                    } else {
+                        bit_set(pat.snare_acc_mask, step)
+                    };
+                }
+                if do_hats {
+                    let hats_accented = if solo_fig.is_some() {
+                        hats_acc_hit
+                    } else {
+                        bit_set(pat.hats_acc_mask, step)
+                    };
+                    let mut v = if solo_fig.is_some() {
+                        solo_vel_pct(
+                            lerp_u8(pat_lo.hats_base, pat_hi.hats_base, g_frac),
+                            lerp_u8(pat_lo.hats_accent, pat_hi.hats_accent, g_frac),
+                            hats_acc_hit,
+                            hats_gh,
+                            &die,
+                            feel_val,
+                        )
+                    } else if fill_fig.is_some() {
+                        fill_vel_pct(
+                            lerp_u8(pat_lo.hats_base, pat_hi.hats_base, g_frac),
+                            lerp_u8(pat_lo.hats_accent, pat_hi.hats_accent, g_frac),
+                            step,
+                        )
+                    } else {
+                        match hats_ghost {
+                            Some(frac) if !hats_core => {
+                                let g = ghost_vel_pct(frac, 12, 28);
+                                feel_lerp_u16(FLAT_VEL, g, feel_val)
+                            }
+                            _ => core_vel_pct(
+                                lerp_u8(pat_lo.hats_base, pat_hi.hats_base, g_frac),
+                                lerp_u8(pat_lo.hats_accent, pat_hi.hats_accent, g_frac),
+                                pat.hats_acc_mask,
+                                step,
+                                feel_val,
+                                &die,
+                                tightness,
+                            ),
+                        }
+                    };
+                    if !gesture {
+                        v = hat_offbeat_duck(v, step, hats_accented, feel_val);
+                    }
+                    vels[V_HATS] = apply_phrase_boost(v, slot, step, feel_val);
+                    hits[V_HATS] = true;
+                    ghosts[V_HATS] = hats_gh || (hats_ghost.is_some() && !hats_core);
+                    sched_acc[V_HATS] = hats_accented;
+                }
+
+                let snare_accented = sched_acc[V_SNARE];
+                let hats_accented = sched_acc[V_HATS];
+                // Percent → MIDI velocity domain before derive (open hat / clap
+                // scale 0..=4095 values, same as the pre-feel engine).
+                for voice in [V_KICK, V_SNARE, V_HATS] {
+                    if hits[voice] {
+                        vels[voice] = midi_vel(vels[voice]);
+                    }
+                }
+                derive_extra_voices(
+                    &mut hits,
+                    &mut vels,
+                    &enabled,
+                    step,
+                    gesture,
+                    snare_accented,
+                    hats_accented,
+                );
+                for voice in 0..VOICES {
+                    if !hits[voice] || voice <= V_HATS {
+                        continue;
+                    }
+                    ghosts[voice] = match voice {
+                        V_CLAP => ghosts[V_SNARE],
+                        V_OPEN_HAT => ghosts[V_HATS],
+                        _ => ghosts[V_SNARE],
+                    };
+                    sched_acc[voice] = match voice {
+                        V_CLAP => snare_accented,
+                        V_OPEN_HAT => hats_accented,
+                        _ => sched_acc[V_SNARE],
+                    };
+                }
+
+                let ghost_extra_base = if !core_hit
+                    && (kick_ghost.is_some() || snare_ghost.is_some() || hats_ghost.is_some())
+                {
+                    ghost_drag_ms(density, feel_val)
+                } else {
+                    0
+                };
+
+                let pushes: [i32; 3] = core::array::from_fn(|fam| {
+                    let push_char = lerp_i32(
+                        i32::from(pat_lo.push_ms[fam]),
+                        i32::from(pat_hi.push_ms[fam]),
+                        g_frac,
+                    );
+                    feel_lerp_i32(0, push_char, feel_val)
+                });
+                let budget = early_budget_ms(pushes, jitter_span_ms(feel_val, tightness));
+
+                for voice in 0..VOICES {
+                    if !hits[voice] {
+                        continue;
+                    }
+                    let push = pushes[voice_push_family(voice)];
+                    let jitter =
+                        timing_jitter_ms(&die, feel_val, tightness, voice);
+                    let g_extra = if ghosts[voice] && !core_hit {
+                        ghost_extra_base
+                    } else {
+                        0
+                    };
+                    let due = voice_due_ms(
+                        budget,
+                        swing,
+                        timing_off,
+                        push,
+                        jitter,
+                        g_extra,
+                        sixteenth_ms,
+                    );
+                    // Late-behind-budget softens written (non-ghost) hits.
+                    let late_ms = due.saturating_sub(budget + swing);
+                    if !gesture && !ghosts[voice] && late_ms > 0 {
+                        let cut = (late_ms / 2).min(6);
+                        let pct = ((u32::from(vels[voice]) * 100) / 4095)
+                            .saturating_sub(cut)
+                            .max(1);
+                        vels[voice] = midi_vel(pct as u16);
+                    }
+                    target_ms[voice] = due;
+                    sched_vel[voice] = vels[voice];
+                    sched_cv[voice] = true;
+                    sched_midi[voice] = enabled[voice];
+                    sched_gh[voice] = ghosts[voice];
+                }
+            }
+
+            // Release dues whose elapsed time has arrived.
+            if !glob_muted.get() && scheduled_slot == slot {
+                let mut fire = [false; VOICES];
+                let mut fire_vels = [0u16; VOICES];
+                let mut any_fire = false;
+                let mut cv_hits = [false; VOICES];
+                for voice in 0..VOICES {
+                    if fired[voice] || target_ms[voice] == u32::MAX {
+                        continue;
+                    }
+                    if elapsed_ms >= target_ms[voice] {
+                        fired[voice] = true;
+                        let room = sixteenth_ms.saturating_sub(elapsed_ms).max(1);
+                        let glen = voice_gate_ms(
+                            voice,
+                            gatel,
+                            sixteenth_ms,
+                            sched_acc[voice],
+                            sched_gh[voice],
+                        );
+                        gate_off_wall[voice] = Some(wall_ms.wrapping_add(glen));
+                        if sched_cv[voice] {
+                            cv_off_wall[voice] =
+                                Some(wall_ms.wrapping_add(cv_pulse_ms(glen, room)));
+                            cv_on[voice] = true;
+                            cv_hits[voice] = true;
+                        }
+                        if sched_midi[voice] {
+                            fire[voice] = true;
+                            fire_vels[voice] = sched_vel[voice];
+                            any_fire = true;
+                        }
+                    }
+                }
+                if cv_hits.iter().any(|h| *h) {
+                    let level = if glob_stacked.get() {
+                        // Jack reflects currently-on CV voices, not only this poll.
+                        stacked_pulse_level(&cv_on, range)
+                    } else {
+                        any_pulse_level(&cv_on, range)
+                    };
+                    if let Some(ref jack) = out_jack {
+                        jack.set_value(level);
+                    }
+                    leds.set(
+                        0,
+                        Led::Bottom,
+                        spectrum_color(glob_genre_fader.get()),
+                        Brightness::High,
+                    );
+                    glob_button_duck.set(BUTTON_DUCK_MS);
+                }
+                if any_fire {
+                    // Merge with any still-pending hits from a prior poll.
+                    let mut pending = pending_hits.get();
+                    let mut pvels = pending_vels.get();
+                    for voice in 0..VOICES {
+                        if fire[voice] {
+                            pending[voice] = true;
+                            pvels[voice] = fire_vels[voice];
+                        }
+                    }
+                    pending_vels.set(pvels);
+                    pending_hits.set(pending);
+                }
+            }
+
+            if glob_latch_layer.get() == LatchLayer::Main {
+                leds.set(
+                    0,
+                    Led::Top,
+                    spectrum_color(glob_genre_fader.get()),
+                    Brightness::Custom(((step * 255) / STEPS_PER_BAR) as u8),
+                );
+            }
         }
     };
 
@@ -1768,13 +2143,16 @@ pub async fn run(
             if silence {
                 pending_silence.set(false);
                 pending_hits.set([false; VOICES]);
+                pending_offs.set([false; VOICES]);
             }
 
-            // Off before on in the same poll — re-triggers set both flags.
-            if silence || pending_note_off.get() {
+            let offs = pending_offs.get();
+            let all_off = silence || pending_note_off.get();
+            if all_off || offs.iter().any(|o| *o) {
                 pending_note_off.set(false);
+                pending_offs.set([false; VOICES]);
                 for voice in 0..VOICES {
-                    if sounding[voice] {
+                    if sounding[voice] && (all_off || offs[voice]) {
                         midi[voice].try_send_note_off(notes[voice]);
                         sounding[voice] = false;
                     }
@@ -1832,6 +2210,7 @@ pub async fn run(
                             jack.set_value(pulse_idle(range));
                         }
                         pending_hits.set([false; VOICES]);
+                        pending_offs.set([false; VOICES]);
                         pending_note_off.set(false);
                         pending_silence.set(true);
                     } else {
