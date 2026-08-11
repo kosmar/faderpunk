@@ -1,6 +1,7 @@
-//! Shared genre labels + LED colors + 8-bar tropes for Grooves, Chord Vamp, and Bassment.
-
-use libfp::Color;
+//! Shared genre labels + 8-bar tropes for Grooves, Chord Vamp, and Bassment.
+//!
+//! Scrub / commit LEDs use the open red→blue spectrum in [`super::led_fx::spectrum_color`] —
+//! there is no discrete per-genre chrome on device.
 
 pub const NUM_GENRES: usize = 9;
 
@@ -16,21 +17,6 @@ pub const GENRE_NAMES: &[&str] = &[
     "Jungle",
     "UK Garage",
     "Dubstep",
-];
-
-/// Same order as [`GENRE_NAMES`] — keep identical across apps.
-/// Discrete chrome for Enum/param UI; scrub LEDs use [`super::led_fx::spectrum_color`].
-#[allow(dead_code)]
-pub const GENRE_COLORS: [Color; NUM_GENRES] = [
-    Color::Orange, // Dub
-    Color::Yellow, // Disco
-    Color::Pink,   // House
-    Color::Cyan,   // Techno
-    Color::Violet, // Trip-Hop
-    Color::Red,    // Hip-Hop
-    Color::Lime,   // Jungle
-    Color::Green,  // UK Garage
-    Color::Blue,   // Dubstep
 ];
 
 /// Shared 8-bar genre tropes (scale degrees 0–6). First 4 ≈ statement;
