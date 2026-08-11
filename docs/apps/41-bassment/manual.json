@@ -21,7 +21,8 @@
     "Jack",
     "Range",
     "V/Oct",
-    "CV Att"
+    "CV Att",
+    "Filter CC"
   ],
   "storage": [
     "Feel",
@@ -67,6 +68,7 @@
             "Jack: CV Out (pitch V/Oct) · CV In Density · CV In Feel · CV In Reset",
             "One enum — a CV In destination and CV Out were never live at once",
             "Range, V/Oct, CV Att",
+            "Filter CC — cutoff number (0 = off; 74 is typical); brightness = genre base + Voice bite + accent dynamics, lifted by fill / solo",
             "Groove max % carries the swing direction in its sign — negative swings the offbeats early"
           ]
         }

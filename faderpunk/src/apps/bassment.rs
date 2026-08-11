@@ -17,7 +17,7 @@ use libfp::{
     latch::LatchLayer,
     quantizer::Pitch,
     utils::{attenuate_bipolar, split_unsigned_value, value_to_index},
-    AppIcon, Brightness, Color, Config, Key, MidiChannel, MidiNote, MidiOut, Note,
+    AppIcon, Brightness, Color, Config, Key, MidiCc, MidiChannel, MidiNote, MidiOut, Note,
     Param, Range, Value, VoltPerOct, APP_MAX_PARAMS,
 };
 
@@ -31,7 +31,7 @@ use crate::apps::groove::{
 use crate::apps::led_fx::{genre_nearest, genre_pair, lerp_i32, lerp_u8, spectrum_color};
 
 pub const CHANNELS: usize = 1;
-pub const PARAMS: usize = 12;
+pub const PARAMS: usize = 13;
 
 const LED_BRIGHTNESS: Brightness = Brightness::Mid;
 const BUTTON_DUCK_MS: u16 = 25;
@@ -346,6 +346,20 @@ const PATTERNS: [BassPattern; NUM_GENRES] = [
         oct_off: [-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         gate_w: [100, 40, 40, 40, 40, 40, 40, 40, 90, 40, 70, 40, 40, 75, 40, 40],
     },
+];
+
+/// Filter brightness per genre, lerped on the shared spectrum like the
+/// velocities: dub and dubstep sit deep, garage and jungle cut.
+const GENRE_CUTOFF: [u16; NUM_GENRES] = [
+    700,  // Dub — deep and dark
+    1900, // Disco — round but present
+    1600, // House
+    1400, // Techno — mid-dark, resonant
+    900,  // Trip-Hop — dusty
+    1100, // Hip-Hop — boom-bap
+    2100, // Jungle — snappy
+    2300, // UK Garage — brightest, skippy
+    800,  // Dubstep — low wobble
 ];
 
 const FILL_VARIANTS: usize = 3;
@@ -725,7 +739,9 @@ pub static CONFIG: Config<PARAMS> = Config::new(
     name: "CV Att",
     min: 0,
     max: 100,
-});
+})
+// 0 = off. Typical synth cutoff is 74; value follows bassline / fill / solo.
+.add_param(Param::MidiCc { name: "Filter CC" });
 
 pub struct Params {
     root: MidiNote,
@@ -742,11 +758,14 @@ pub struct Params {
     range: Range,
     vpo: VoltPerOct,
     cv_att: i32,
+    /// Filter cutoff CC number; 0 disables CC output.
+    filter_cc: MidiCc,
 }
 
 impl AppParams for Params {
     fn from_values(values: &[Value]) -> Option<Self> {
-        if values.len() < PARAMS {
+        // Pre-Filter-CC blobs had twelve slots; accept them and default CC off.
+        if values.len() < 12 {
             return None;
         }
         // The pre-merge layout carried the same types in these first twelve
@@ -766,6 +785,11 @@ impl AppParams for Params {
             range: Range::from_value(values[9]),
             vpo: VoltPerOct::from_value(values[10]),
             cv_att: i32::from_value(values[11]).clamp(0, 100),
+            filter_cc: if values.len() > 12 {
+                MidiCc::from_value(values[12])
+            } else {
+                MidiCc::from(0u8)
+            },
         })
     }
 
@@ -783,12 +807,53 @@ impl AppParams for Params {
         vec.push(self.range.into()).unwrap();
         vec.push(self.vpo.into()).unwrap();
         vec.push(self.cv_att.into()).unwrap();
+        vec.push(self.filter_cc.into()).unwrap();
         vec
     }
 }
 
 fn att_from_pct(pct: i32) -> u16 {
     ((pct.clamp(0, 100) as u32 * 4095) / 100) as u16
+}
+
+/// Filter cutoff as a 12-bit MIDI CC, built the way the rest of the line is:
+/// a genre base lerped along the shared spectrum, the Voice persona's bite on
+/// top, and the hit's own dynamics so accents open the filter. Fills lift,
+/// solos bloom, the pedal break ducks away.
+#[allow(clippy::too_many_arguments)]
+fn filter_cutoff_12bit(
+    g_lo: usize,
+    g_hi: usize,
+    g_frac: u8,
+    voice: &VoiceProfile,
+    vel_pct: u16,
+    base_vel: u8,
+    is_solo: bool,
+    is_fill: bool,
+    is_break: bool,
+    feel: u16,
+) -> u16 {
+    let genre = lerp_i32(
+        i32::from(GENRE_CUTOFF[g_lo]),
+        i32::from(GENRE_CUTOFF[g_hi]),
+        g_frac,
+    );
+    // Hard hitters cut through; pocket players stay warm and round.
+    let persona = i32::from(voice.accent_boost) * 10 - if voice.pocket { 300 } else { 0 };
+    // Accents open up — the defining move of a plucked or acid bass.
+    let dynamics = (i32::from(vel_pct) - i32::from(base_vel)) * 18;
+    let situation = if is_solo {
+        1500
+    } else if is_break {
+        -600
+    } else if is_fill {
+        700
+    } else {
+        0
+    };
+    let feel_add = (i32::from(feel) * 300) / 4095;
+
+    (genre + persona + dynamics + situation + feel_add).clamp(200, 4095) as u16
 }
 
 fn mod_u16(base: u16, in_val: u16) -> u16 {
@@ -1499,6 +1564,7 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
             range: Range::_Neg5_5V,
             vpo: VoltPerOct::Standard,
             cv_att: 100,
+            filter_cc: MidiCc::from(0u8), // off until set
         },
     );
     let storage = ManagedStorage::<Storage>::new(app.app_id, app.layout_id);
@@ -1540,6 +1606,7 @@ pub async fn run(
         range,
         vpo,
         cv_att,
+        filter_cc,
     ) = params.query(|p| {
         (
             p.midi_out,
@@ -1554,8 +1621,10 @@ pub async fn run(
             p.range,
             p.vpo,
             att_from_pct(p.cv_att),
+            p.filter_cc,
         )
     });
+    let filter_cc_on = filter_cc.as_u16() != 0;
 
     // Ticker only — never CLOCK_PUBSUB (Grooves+Vamp+Bassment+Contura combo).
     let ticks = app.clock_ticker();
@@ -1626,6 +1695,8 @@ pub async fn run(
     let pending_note_on = app.make_global(false);
     let pending_note = app.make_global(0u8);
     let pending_vel = app.make_global(0u16);
+    let pending_cc = app.make_global(false);
+    let pending_cc_val = app.make_global(0u16);
 
     let root_midi = midi_u8(root);
     midi.send_note_off(MidiNote::from(root_midi)).await;
@@ -1921,6 +1992,23 @@ pub async fn run(
                                 }
                                 note_on = true;
 
+                                if filter_cc_on {
+                                    let is_fill = fill_armed && !is_solo && !is_break;
+                                    pending_cc_val.set(filter_cutoff_12bit(
+                                        g_lo,
+                                        g_hi,
+                                        g_frac,
+                                        voice,
+                                        hit.vel_pct,
+                                        lerp_u8(pat_lo.base_vel, pat_hi.base_vel, g_frac),
+                                        is_solo,
+                                        is_fill,
+                                        is_break,
+                                        feel_val,
+                                    ));
+                                    pending_cc.set(true);
+                                }
+
                                 if let Some(ref jack) = out_jack {
                                     let counts =
                                         note_to_pitch(hit.note).as_counts(range, vpo);
@@ -1987,10 +2075,18 @@ pub async fn run(
                 pending_silence.set(false);
                 pending_note_off.set(false);
                 pending_note_on.set(false);
+                pending_cc.set(false);
                 if let Some(n) = sounding.take() {
                     midi.try_send_note_off(MidiNote::from(n));
                 }
                 continue;
+            }
+
+            if pending_cc.get() {
+                pending_cc.set(false);
+                if filter_cc_on && !glob_muted.get() {
+                    midi.try_send_cc(filter_cc, pending_cc_val.get());
+                }
             }
 
             if pending_note_off.get() {
