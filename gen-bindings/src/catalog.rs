@@ -17,8 +17,8 @@ use std::path::Path;
 
 use syn::punctuated::Punctuated;
 use syn::{
-    Expr, ExprArray, ExprCall, ExprLit, ExprMethodCall, ExprPath, ExprReference, ExprStruct, Ident,
-    Item, Lit, LitInt, Member, Token,
+    Expr, ExprArray, ExprCall, ExprLit, ExprMethodCall, ExprPath, ExprReference, ExprStruct,
+    ExprUnary, Ident, Item, Lit, LitInt, Member, Token, UnOp,
 };
 
 struct AppEntry {
@@ -138,6 +138,16 @@ fn convert_field_value(expr: &Expr, consts: &ConstMap) -> TsValue {
         }
         // `STRUM_MAX_MS as i32` — the cast only satisfies Rust's typing.
         Expr::Cast(cast) => convert_field_value(&cast.expr, consts),
+        // A signed bound (`min: -100`) is a negation around a positive
+        // literal, since Rust has no negative literal token.
+        Expr::Unary(ExprUnary {
+            op: UnOp::Neg(_),
+            expr,
+            ..
+        }) => match convert_field_value(expr, consts) {
+            TsValue::Num(n) => TsValue::Num(format!("-{n}")),
+            _ => panic!("unary minus applied to a non-numeric param value"),
+        },
         Expr::Array(ExprArray { elems, .. }) => convert_array(elems),
         Expr::Reference(_) => convert_field_value(unwrap_reference(expr), consts),
         other => panic!("unsupported field-value expression: {:?}", other),

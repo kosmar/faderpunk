@@ -15,7 +15,7 @@ use libfp::{
 };
 
 use crate::app::{
-    App, AppParams, AppStorage, Die, Led, ManagedStorage, ParamStore, SceneEvent,
+    App, AppParams, AppStorage, Die, Led, ManagedStorage, MidiOutput, ParamStore, SceneEvent,
 };
 use crate::apps::genre_palette::{genre_fader_center, GENRE_NAMES, NUM_GENRES};
 use crate::apps::groove::{
@@ -37,16 +37,59 @@ const CLOCK_STALL_MS: u16 = 100;
 /// 16 sixteenths per 4/4 bar.
 const STEPS_PER_BAR: u32 = 16;
 
-const JACK_ANY: u8 = 0;
-const JACK_STACKED: u8 = 1;
+/// Jack duty and its modifier in one param: the CV Out level shape and the CV
+/// In destination are mutually exclusive, so they share a single enum.
+const JACK_OUT_ANY: usize = 0;
+const JACK_OUT_STACKED: usize = 1;
+const JACK_IN_DENSITY: usize = 2;
+const JACK_IN_FEEL: usize = 3;
+const JACK_IN_RESET: usize = 4;
+const JACK_COUNT: usize = 5;
 
-const CV_JACK_OUT: usize = 0;
-const CV_JACK_IN: usize = 1;
+fn jack_is_out(jack: usize) -> bool {
+    jack <= JACK_OUT_STACKED
+}
 
-const DEST_DENSITY: usize = 0;
-const DEST_FEEL: usize = 1;
-const DEST_RESET: usize = 2;
-const DEST_COUNT: usize = 3;
+/// Voice order — indexes `Params::notes`, the `Ch Map` nibbles and the
+/// per-voice engine arrays. Kick/Snare/Hats stay first so the three original
+/// params keep their slots.
+const V_KICK: usize = 0;
+const V_SNARE: usize = 1;
+const V_HATS: usize = 2;
+const V_OPEN_HAT: usize = 3;
+const V_LOW_TOM: usize = 4;
+const V_HIGH_TOM: usize = 5;
+const V_CLAP: usize = 6;
+const VOICES: usize = 7;
+
+/// Note 0 is useless as a drum sound, so it doubles as the "voice off"
+/// sentinel. That keeps the four added voices optional without spending a
+/// param each on an enable switch — and with all four off, Grooves behaves
+/// exactly as it did before they existed.
+const VOICE_OFF: u8 = 0;
+
+fn voice_enabled(note: MidiNote) -> bool {
+    note != MidiNote::from(VOICE_OFF)
+}
+
+/// `Ch Map` packs one channel per voice into a nibble (voice 0 = bits 0..3).
+/// A whole map of 0 means "every voice follows the base MIDI Ch", which is the
+/// shipped default; any non-zero map is read literally, nibble + 1 = channel.
+const CH_MAP_FOLLOW: i32 = 0;
+const CH_MAP_MAX: i32 = (1 << (4 * VOICES)) - 1;
+/// Keeps the literal bounds in `CONFIG` honest against the packing above.
+const _: () = assert!(CH_MAP_FOLLOW == 0 && CH_MAP_MAX == 268_435_455);
+
+/// Stacked CV keeps its three-family voltage vocabulary (hats 1, snare 2,
+/// kick 4 units of 10) so existing patches stay calibrated. The extra voices
+/// fold into the family they belong to rather than inventing new levels.
+fn voice_family_units(voice: usize) -> u16 {
+    match voice {
+        V_HATS | V_OPEN_HAT => 1,
+        V_SNARE | V_CLAP => 2,
+        _ => 4,
+    }
+}
 
 const TRIG_HIGH: u16 = 2458;
 
@@ -259,20 +302,31 @@ pub static CONFIG: Config<PARAMS> = Config::new(
 .add_param(Param::MidiNote {
     name: "MIDI Note Kick",
 })
-.add_param(Param::MidiChannel {
-    name: "MIDI Channel Kick",
-})
 .add_param(Param::MidiNote {
     name: "MIDI Note Snare",
-})
-.add_param(Param::MidiChannel {
-    name: "MIDI Channel Snare",
 })
 .add_param(Param::MidiNote {
     name: "MIDI Note Hats",
 })
-.add_param(Param::MidiChannel {
-    name: "MIDI Channel Hats",
+.add_param(Param::MidiNote {
+    name: "MIDI Note Open Hat",
+})
+.add_param(Param::MidiNote {
+    name: "MIDI Note Low Tom",
+})
+.add_param(Param::MidiNote {
+    name: "MIDI Note High Tom",
+})
+.add_param(Param::MidiNote {
+    name: "MIDI Note Clap",
+})
+.add_param(Param::MidiChannel { name: "MIDI Ch" })
+// Literal bounds: the catalog generator reads these as syntax, and a path
+// expression would come out as an enum tag instead of a number.
+.add_param(Param::i32 {
+    name: "Ch Map",
+    min: 0,
+    max: 268_435_455,
 })
 .add_param(Param::Enum {
     name: "Groove",
@@ -280,7 +334,7 @@ pub static CONFIG: Config<PARAMS> = Config::new(
 })
 .add_param(Param::i32 {
     name: "Swing max %",
-    min: 10,
+    min: -100,
     max: 100,
 })
 .add_param(Param::i32 {
@@ -291,124 +345,102 @@ pub static CONFIG: Config<PARAMS> = Config::new(
 .add_param(Param::MidiOut)
 .add_param(Param::Enum {
     name: "Jack",
-    variants: &["CV Out", "CV In"],
+    variants: &[
+        "CV Out Any",
+        "CV Out Stacked",
+        "CV In Density",
+        "CV In Feel",
+        "CV In Reset",
+    ],
 })
 .add_param(Param::Range {
     name: "Range",
     variants: &[Range::_0_10V, Range::_Neg5_5V],
 })
-.add_param(Param::Enum {
-    name: "CV Dest",
-    variants: &["Density", "Feel", "Reset"],
-})
 .add_param(Param::i32 {
     name: "CV Att",
     min: 0,
     max: 100,
-})
-.add_param(Param::Enum {
-    name: "Jack Mode",
-    variants: &["Any", "Stacked"],
-})
-.add_param(Param::Enum {
-    name: "Swing Dir",
-    variants: &["Normal", "Reverse"],
 });
 
 pub struct Params {
-    note_kick: MidiNote,
-    midi_channel_kick: MidiChannel,
-    note_snare: MidiNote,
-    midi_channel_snare: MidiChannel,
-    note_hats: MidiNote,
-    midi_channel_hats: MidiChannel,
+    /// Indexed by the `V_*` voice constants. Note 0 disables a voice, which is
+    /// the default for everything past Hats.
+    notes: [MidiNote; VOICES],
+    /// Base channel; every voice uses it unless `ch_map` overrides.
+    midi_ch: MidiChannel,
+    /// Seven packed nibbles, one channel per voice. See `CH_MAP_FOLLOW`.
+    ch_map: i32,
     genre: usize,
+    /// Swing cap in percent; the sign carries the direction, so a negative
+    /// value swings the offbeats early instead of late.
     swing_max_pct: i32,
     gatel: i32,
     midi_out: MidiOut,
-    cv_jack: usize,
+    jack: usize,
     range: Range,
-    cv_dest: usize,
     cv_att: i32,
-    /// CV Out activity: Any (OR) vs Stacked (level by voice count).
-    jack_mode: usize,
-    /// Swing direction: Normal (offbeats late) vs Reverse (offbeats early).
-    swing_dir: usize,
+}
+
+impl Params {
+    /// Resolve the sending channel for one voice.
+    fn channel_for(&self, voice: usize) -> MidiChannel {
+        if self.ch_map == CH_MAP_FOLLOW {
+            return self.midi_ch;
+        }
+        let nibble = ((self.ch_map >> (4 * voice)) & 0xF) as u8;
+        MidiChannel::from(nibble + 1)
+    }
 }
 
 impl AppParams for Params {
     fn from_values(values: &[Value]) -> Option<Self> {
-        // Layout without Color (current): [0..=8 core] [9 midi_out] [10..=13 cv…] [14 jack_mode]
-        // Legacy with Color at [9]:       [0..=8 core] [9 color] [10 midi_out] [11..=14 cv…] [15 jack_mode]
-        // Pre-jack-mode lists omit the final enum and default to Any.
-        // Length 15 is ambiguous (old color layout vs new + jack_mode) — discriminate on values[9].
-        let legacy_color =
-            values.len() == 11 || matches!(values.get(9), Some(Value::Color(_)));
-        let midi_i = if legacy_color { 10 } else { 9 };
-        let cv_i = midi_i + 1;
-        if values.len() < midi_i + 1 {
+        if values.len() < PARAMS {
             return None;
         }
-        let (cv_jack, range, cv_dest, cv_att) = if values.len() >= cv_i + 4 {
-            (
-                usize::from_value(values[cv_i]).min(1),
-                Range::from_value(values[cv_i + 1]),
-                usize::from_value(values[cv_i + 2]).min(DEST_COUNT - 1),
-                i32::from_value(values[cv_i + 3]).clamp(0, 100),
-            )
-        } else {
-            (CV_JACK_OUT, Range::_0_10V, DEST_DENSITY, 100)
-        };
-        let jack_mode_i = cv_i + 4;
-        let jack_mode = if values.len() > jack_mode_i {
-            usize::from_value(values[jack_mode_i]).min(1)
-        } else {
-            JACK_ANY as usize
-        };
-        let swing_dir_i = jack_mode_i + 1;
-        let swing_dir = if values.len() > swing_dir_i {
-            usize::from_value(values[swing_dir_i]).min(1)
-        } else {
-            0
-        };
+        // The pre-voices layout was 16 values too, so length alone can't tell
+        // them apart — but it carried the per-voice channel at index 1, where
+        // the Snare note now lives. Reject it rather than read channels as
+        // notes; `ParamStore` then falls back to the defaults below.
+        if matches!(values[1], Value::MidiChannel(_)) {
+            return None;
+        }
         Some(Self {
-            note_kick: MidiNote::from_value(values[0]),
-            midi_channel_kick: MidiChannel::from_value(values[1]),
-            note_snare: MidiNote::from_value(values[2]),
-            midi_channel_snare: MidiChannel::from_value(values[3]),
-            note_hats: MidiNote::from_value(values[4]),
-            midi_channel_hats: MidiChannel::from_value(values[5]),
-            genre: usize::from_value(values[6]).min(NUM_GENRES - 1),
-            swing_max_pct: i32::from_value(values[7]).clamp(10, 100),
-            gatel: i32::from_value(values[8]),
-            midi_out: MidiOut::from_value(values[midi_i]),
-            cv_jack,
-            range,
-            cv_dest,
-            cv_att,
-            jack_mode,
-            swing_dir,
+            notes: [
+                MidiNote::from_value(values[V_KICK]),
+                MidiNote::from_value(values[V_SNARE]),
+                MidiNote::from_value(values[V_HATS]),
+                MidiNote::from_value(values[V_OPEN_HAT]),
+                MidiNote::from_value(values[V_LOW_TOM]),
+                MidiNote::from_value(values[V_HIGH_TOM]),
+                MidiNote::from_value(values[V_CLAP]),
+            ],
+            midi_ch: MidiChannel::from_value(values[7]),
+            ch_map: i32::from_value(values[8]).clamp(CH_MAP_FOLLOW, CH_MAP_MAX),
+            genre: usize::from_value(values[9]).min(NUM_GENRES - 1),
+            swing_max_pct: i32::from_value(values[10]).clamp(-100, 100),
+            gatel: i32::from_value(values[11]),
+            midi_out: MidiOut::from_value(values[12]),
+            jack: usize::from_value(values[13]).min(JACK_COUNT - 1),
+            range: Range::from_value(values[14]),
+            cv_att: i32::from_value(values[15]).clamp(0, 100),
         })
     }
 
     fn to_values(&self) -> Vec<Value, APP_MAX_PARAMS> {
         let mut vec = Vec::new();
-        vec.push(self.note_kick.into()).unwrap();
-        vec.push(self.midi_channel_kick.into()).unwrap();
-        vec.push(self.note_snare.into()).unwrap();
-        vec.push(self.midi_channel_snare.into()).unwrap();
-        vec.push(self.note_hats.into()).unwrap();
-        vec.push(self.midi_channel_hats.into()).unwrap();
+        for note in self.notes.iter() {
+            vec.push((*note).into()).unwrap();
+        }
+        vec.push(self.midi_ch.into()).unwrap();
+        vec.push(self.ch_map.into()).unwrap();
         vec.push(self.genre.into()).unwrap();
         vec.push(self.swing_max_pct.into()).unwrap();
         vec.push(self.gatel.into()).unwrap();
         vec.push(self.midi_out.into()).unwrap();
-        vec.push(self.cv_jack.into()).unwrap();
+        vec.push(self.jack.into()).unwrap();
         vec.push(self.range.into()).unwrap();
-        vec.push(self.cv_dest.into()).unwrap();
         vec.push(self.cv_att.into()).unwrap();
-        vec.push(self.jack_mode.into()).unwrap();
-        vec.push(self.swing_dir.into()).unwrap();
         vec
     }
 }
@@ -429,10 +461,6 @@ pub struct Storage {
     /// Groove density: progressively reveals extra kick/snare/hat hits
     /// across the whole pattern (not just hats) as this rises.
     density: u16,
-    /// Legacy scene fields — Jack Mode and swing direction now live in Params;
-    /// kept for FRAM shape.
-    jack_mode: u8,
-    reversed: bool,
     muted: bool,
 }
 
@@ -442,8 +470,6 @@ impl Default for Storage {
             // Mid-high so a fresh instance already grooves.
             feel: 2800,
             density: 2048,
-            jack_mode: JACK_ANY,
-            reversed: false,
             muted: false,
         }
     }
@@ -979,7 +1005,8 @@ fn core_vel_pct(base: u8, accent: u8, acc_mask: u16, step: u32, feel: u16) -> u1
 fn feel_swing_pct(bias: u8, feel: u16, swing_max_pct: i32) -> i32 {
     let f = u32::from(feel_curve(feel));
     let pct = (u32::from(bias) * f) / 4095;
-    pct.min(swing_max_pct.clamp(10, 100) as u32) as i32
+    // Only the magnitude caps the swing — the sign picks the direction.
+    pct.min(swing_max_pct.unsigned_abs().min(100)) as i32
 }
 
 /// Resting CV for activity pulses. On ±5V, 0 counts = −5V — use mid (0V) as idle
@@ -1006,34 +1033,86 @@ fn pulse_on_range(unipolar: u16, range: Range) -> u16 {
     }
 }
 
-fn any_pulse_level(kick: bool, snare: bool, hats: bool, range: Range) -> u16 {
+/// Loudest family that fired this step. Open Hat reads as hats, Clap as snare
+/// and the toms as kick, so the three original voltages still mean the same
+/// thing once the extra voices are switched on.
+fn any_pulse_level(hits: &[bool; VOICES], range: Range) -> u16 {
     let mut level = 0u16;
-    if hats {
-        level = level.max(1400);
-    }
-    if snare {
-        level = level.max(2600);
-    }
-    if kick {
-        level = level.max(4095);
+    for (voice, fired) in hits.iter().enumerate() {
+        if !fired {
+            continue;
+        }
+        level = level.max(match voice_family_units(voice) {
+            1 => 1400,
+            2 => 2600,
+            _ => 4095,
+        });
     }
     pulse_on_range(level, range)
 }
 
-fn stacked_pulse_level(kick: bool, snare: bool, hats: bool, range: Range) -> u16 {
-    // ~1V / 2V / 4V on 0–10V (4095 ≈ 10V); remapped for ±5V via pulse_on_range.
+/// Binary-weighted family sum: hats 1, snare 2, kick 4 of a nominal 10 units,
+/// so each combination keeps its own distinct voltage. Voices double up within
+/// a family (Clap under Snare, toms under Kick) rather than adding a unit each,
+/// which would push the sum past the 10-unit scale and clip.
+fn stacked_pulse_level(hits: &[bool; VOICES], range: Range) -> u16 {
     let mut units = 0u16;
-    if hats {
-        units += 1;
-    }
-    if snare {
-        units += 2;
-    }
-    if kick {
-        units += 4;
+    for family in [1u16, 2, 4] {
+        let fired = hits
+            .iter()
+            .enumerate()
+            .any(|(voice, hit)| *hit && voice_family_units(voice) == family);
+        if fired {
+            units += family;
+        }
     }
     let uni = ((units as u32 * 4095) / 10).min(4095) as u16;
     pulse_on_range(uni, range)
+}
+
+/// Fold the four optional voices out of the three written ones. Every rule
+/// borrows a hit the groove already plays, so no genre needs extra mask data —
+/// and with all four voices off this leaves `hits` exactly as it found it.
+fn derive_extra_voices(
+    hits: &mut [bool; VOICES],
+    vels: &mut [u16; VOICES],
+    enabled: &[bool; VOICES],
+    step: u32,
+    gesture: bool,
+    snare_accented: bool,
+    hats_accented: bool,
+) {
+    // Toms only appear inside a fill, break or solo, and only in the back half
+    // of the bar, where they turn the snare figure into the descending run that
+    // makes a fill read as a fill: high tom first, low tom to land it. The
+    // snare steps aside, otherwise the run just thickens instead of descending.
+    if gesture && hits[V_SNARE] && step >= STEPS_PER_BAR / 2 {
+        let tom = if step < 3 * STEPS_PER_BAR / 4 {
+            V_HIGH_TOM
+        } else {
+            V_LOW_TOM
+        };
+        if enabled[tom] {
+            hits[tom] = true;
+            hits[V_SNARE] = false;
+            vels[tom] = vels[V_SNARE];
+        }
+    }
+
+    // Open hat takes over an accented hat off the beat. Sounding a closed and
+    // an open hat on the same step only smears the transient.
+    if enabled[V_OPEN_HAT] && hits[V_HATS] && hats_accented && !step.is_multiple_of(4) {
+        hits[V_OPEN_HAT] = true;
+        hits[V_HATS] = false;
+        vels[V_OPEN_HAT] = (u32::from(vels[V_HATS]) * 11 / 10).min(4095) as u16;
+    }
+
+    // Clap thickens the backbeat: it layers under the accented snare instead of
+    // replacing it, the way house and disco stack the two.
+    if enabled[V_CLAP] && hits[V_SNARE] && snare_accented {
+        hits[V_CLAP] = true;
+        vels[V_CLAP] = (vels[V_SNARE] * 9) / 10;
+    }
 }
 
 #[embassy_executor::task(pool_size = 4)]
@@ -1042,23 +1121,27 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
         app.app_id,
         app.layout_id,
         Params {
-            note_kick: MidiNote::from(36),
-            midi_channel_kick: MidiChannel::default(),
-            note_snare: MidiNote::from(38),
-            midi_channel_snare: MidiChannel::default(),
-            note_hats: MidiNote::from(42),
-            midi_channel_hats: MidiChannel::default(),
+            // GM drum map for the three written voices; the four optional ones
+            // ship off (note 0) so a fresh instance sounds as it always did.
+            notes: [
+                MidiNote::from(36),
+                MidiNote::from(38),
+                MidiNote::from(42),
+                MidiNote::from(VOICE_OFF),
+                MidiNote::from(VOICE_OFF),
+                MidiNote::from(VOICE_OFF),
+                MidiNote::from(VOICE_OFF),
+            ],
+            midi_ch: MidiChannel::default(),
+            ch_map: CH_MAP_FOLLOW,
             genre: 2, // House
             swing_max_pct: 50,
             // Fraction of a 16th (same GATE % convention as Euclid/Turing).
             gatel: 100,
             midi_out: MidiOut([true, false, false]), // USB only — all-ports floods cable
-            cv_jack: CV_JACK_OUT,
+            jack: JACK_OUT_ANY,
             range: Range::_0_10V,
-            cv_dest: DEST_DENSITY,
             cv_att: 100,
-            jack_mode: JACK_ANY as usize,
-            swing_dir: 0,
         },
     );
     let storage = ManagedStorage::<Storage>::new(app.app_id, app.layout_id);
@@ -1087,43 +1170,22 @@ pub async fn run(
 ) {
     app.wait_while_perf_muted().await;
 
-    let (
-        midi_out,
-        note_kick,
-        note_snare,
-        note_hats,
-        midi_channel_kick,
-        midi_channel_snare,
-        midi_channel_hats,
-        genre,
-        swing_max_pct,
-        gatel,
-        cv_jack,
-        range,
-        cv_dest,
-        cv_att,
-        jack_mode,
-        swing_dir,
-    ) = params.query(|p| {
-        (
-            p.midi_out,
-            p.note_kick,
-            p.note_snare,
-            p.note_hats,
-            p.midi_channel_kick,
-            p.midi_channel_snare,
-            p.midi_channel_hats,
-            p.genre.min(NUM_GENRES - 1),
-            p.swing_max_pct.clamp(10, 100),
-            p.gatel,
-            p.cv_jack.min(1),
-            p.range,
-            p.cv_dest.min(DEST_COUNT - 1),
-            att_from_pct(p.cv_att),
-            (p.jack_mode.min(1) as u8),
-            p.swing_dir == 1,
-        )
-    });
+    let (midi_out, notes, channels, genre, swing_max_pct, gatel, jack, range, cv_att) = params
+        .query(|p| {
+            (
+                p.midi_out,
+                p.notes,
+                core::array::from_fn::<MidiChannel, VOICES, _>(|v| p.channel_for(v)),
+                p.genre.min(NUM_GENRES - 1),
+                p.swing_max_pct.clamp(-100, 100),
+                p.gatel,
+                p.jack.min(JACK_COUNT - 1),
+                p.range,
+                att_from_pct(p.cv_att),
+            )
+        });
+    // Which voices are wired up at all; everything past Hats is off by default.
+    let enabled: [bool; VOICES] = core::array::from_fn(|v| voice_enabled(notes[v]));
 
     // Ticker only — never CLOCK_PUBSUB (Grooves+Vamp+Bassment+Contura combo).
     let ticks = app.clock_ticker();
@@ -1131,18 +1193,17 @@ pub async fn run(
     let buttons = app.use_buttons();
     let leds = app.use_leds();
     let die = app.use_die();
-    let midi_kick = app.use_midi_output(midi_out, midi_channel_kick, false);
-    let midi_snare = app.use_midi_output(midi_out, midi_channel_snare, false);
-    let midi_hats = app.use_midi_output(midi_out, midi_channel_hats, false);
-    let out_jack = if cv_jack == CV_JACK_OUT {
+    let midi: [MidiOutput; VOICES] =
+        core::array::from_fn(|v| app.use_midi_output(midi_out, channels[v], false));
+    let out_jack = if jack_is_out(jack) {
         Some(app.make_out_jack(0, range).await)
     } else {
         None
     };
-    let in_jack = if cv_jack == CV_JACK_IN {
-        Some(app.make_in_jack(0, Range::_Neg5_5V).await)
-    } else {
+    let in_jack = if jack_is_out(jack) {
         None
+    } else {
+        Some(app.make_in_jack(0, Range::_Neg5_5V).await)
     };
     if let Some(ref jack) = out_jack {
         jack.set_value(pulse_idle(range));
@@ -1153,9 +1214,10 @@ pub async fn run(
     let glob_feel = app.make_global(feel);
     let glob_swing_max = app.make_global(swing_max_pct);
     let glob_density = app.make_global(density);
-    // Jack Mode and swing direction are Config params — scenes no longer own them.
-    let glob_jack_mode = app.make_global(jack_mode);
-    let glob_reversed = app.make_global(swing_dir);
+    // Jack shape and swing direction are Config params — scenes no longer own
+    // them. The swing sign is the direction, so both ride on one value.
+    let glob_stacked = app.make_global(jack == JACK_OUT_STACKED);
+    let glob_reversed = app.make_global(swing_max_pct < 0);
     let glob_genre = app.make_global(genre);
     // Continuous Alt-layer fader value (not reconstructed from genre index).
     let glob_genre_fader = app.make_global(genre_fader_center(genre, NUM_GENRES));
@@ -1186,17 +1248,18 @@ pub async fn run(
     // storms from stalling CLOCK_PUBSUB and dropping 16ths.
     let pending_silence = app.make_global(false);
     let pending_note_off = app.make_global(false);
-    let pending_kick = app.make_global(false);
-    let pending_snare = app.make_global(false);
-    let pending_hats = app.make_global(false);
-    let pending_kick_vel = app.make_global(0u16);
-    let pending_snare_vel = app.make_global(0u16);
-    let pending_hats_vel = app.make_global(0u16);
+    // One flag and one velocity per voice — the clock side fills these in and
+    // `fut_voice` is the only place that talks to MIDI. Formerly pending_kick /
+    // pending_snare / pending_hats.
+    let pending_hits = app.make_global([false; VOICES]);
+    let pending_vels = app.make_global([0u16; VOICES]);
 
     // Clear any hanging notes from a prior respawn.
-    midi_kick.send_note_off(note_kick).await;
-    midi_snare.send_note_off(note_snare).await;
-    midi_hats.send_note_off(note_hats).await;
+    for voice in 0..VOICES {
+        if enabled[voice] {
+            midi[voice].send_note_off(notes[voice]).await;
+        }
+    }
 
     if muted {
         leds.unset(0, Led::Button);
@@ -1213,9 +1276,8 @@ pub async fn run(
     let fut_clock = async {
         let mut origin: u32 = 0;
         let mut origin_set = false;
-        let mut kick_on = false;
-        let mut snare_on = false;
-        let mut hats_on = false;
+        // Any voice still inside its gate window (they all share one gate).
+        let mut any_on = false;
         let mut gate_off_at: Option<u32> = None;
         // Fire-once guard per 16th slot; u32::MAX = nothing fired yet.
         let mut last_fired_slot = u32::MAX;
@@ -1257,14 +1319,10 @@ pub async fn run(
             if do_stop {
 
                     // Flag only — voice owns MIDI so we keep draining clock ticks.
-                    pending_kick.set(false);
-                    pending_snare.set(false);
-                    pending_hats.set(false);
+                    pending_hits.set([false; VOICES]);
                     pending_note_off.set(false);
                     pending_silence.set(true);
-                    kick_on = false;
-                    snare_on = false;
-                    hats_on = false;
+                    any_on = false;
                     if let Some(ref jack) = out_jack {
                         jack.set_value(pulse_idle(range));
                     }
@@ -1313,7 +1371,7 @@ pub async fn run(
                     let step = (pos / SIXTEENTH) % STEPS_PER_BAR;
                     let phase = pos % SIXTEENTH;
 
-                    let feel_val = if cv_jack == CV_JACK_IN && cv_dest == DEST_FEEL {
+                    let feel_val = if jack == JACK_IN_FEEL {
                         mod_u16(glob_feel.get(), glob_cv_val.get())
                     } else {
                         glob_feel.get()
@@ -1324,7 +1382,7 @@ pub async fn run(
                     let pat_lo = &PATTERNS[g_lo];
                     let pat_hi = &PATTERNS[g_hi];
 
-                    let density = if cv_jack == CV_JACK_IN && cv_dest == DEST_DENSITY {
+                    let density = if jack == JACK_IN_DENSITY {
                         mod_u16(glob_density.get(), glob_cv_val.get())
                     } else {
                         glob_density.get()
@@ -1381,16 +1439,12 @@ pub async fn run(
                     // Note / jack off
                     if let Some(off_at) = gate_off_at {
                         if clkn >= off_at {
-                            if kick_on || snare_on || hats_on {
+                            if any_on {
                                 // Cancel any unsent note-ons so a stalled voice
                                 // does not fire a hit after its gate expired.
-                                pending_kick.set(false);
-                                pending_snare.set(false);
-                                pending_hats.set(false);
+                                pending_hits.set([false; VOICES]);
                                 pending_note_off.set(true);
-                                kick_on = false;
-                                snare_on = false;
-                                hats_on = false;
+                                any_on = false;
                             }
                             if let Some(ref jack) = out_jack {
                                 jack.set_value(pulse_idle(range));
@@ -1515,15 +1569,14 @@ pub async fn run(
                             // flush note-offs before re-triggering to avoid
                             // overlapping note-ons on the same key.
                             if (do_kick || do_snare || do_hats) && gate_off_at.is_some() {
-                                pending_kick.set(false);
-                                pending_snare.set(false);
-                                pending_hats.set(false);
+                                pending_hits.set([false; VOICES]);
                                 pending_note_off.set(true);
-                                kick_on = false;
-                                snare_on = false;
-                                hats_on = false;
+                                any_on = false;
                                 gate_off_at = None;
                             }
+
+                            let mut hits = [false; VOICES];
+                            let mut vels = [0u16; VOICES];
 
                             if do_kick {
                                 let v = if solo_fig.is_some() {
@@ -1556,9 +1609,8 @@ pub async fn run(
                                         ),
                                     }
                                 };
-                                pending_kick_vel.set(midi_vel(v));
-                                pending_kick.set(true);
-                                kick_on = true;
+                                vels[V_KICK] = midi_vel(v);
+                                hits[V_KICK] = true;
                             }
                             if do_snare {
                                 let v = if solo_fig.is_some() {
@@ -1595,9 +1647,8 @@ pub async fn run(
                                         ),
                                     }
                                 };
-                                pending_snare_vel.set(midi_vel(v));
-                                pending_snare.set(true);
-                                snare_on = true;
+                                vels[V_SNARE] = midi_vel(v);
+                                hits[V_SNARE] = true;
                             }
                             if do_hats {
                                 let v = if solo_fig.is_some() {
@@ -1630,16 +1681,51 @@ pub async fn run(
                                         ),
                                     }
                                 };
-                                pending_hats_vel.set(midi_vel(v));
-                                pending_hats.set(true);
-                                hats_on = true;
+                                vels[V_HATS] = midi_vel(v);
+                                hits[V_HATS] = true;
                             }
 
-                            if do_kick || do_snare || do_hats {
-                                let level = if glob_jack_mode.get() == JACK_STACKED {
-                                    stacked_pulse_level(do_kick, do_snare, do_hats, range)
+                            // Accent source follows whatever figure is playing:
+                            // a solo carries its own accent mask, the groove and
+                            // the fills read the genre's.
+                            let snare_accented = if solo_fig.is_some() {
+                                snare_acc_hit
+                            } else {
+                                bit_set(pat.snare_acc_mask, step)
+                            };
+                            let hats_accented = if solo_fig.is_some() {
+                                hats_acc_hit
+                            } else {
+                                bit_set(pat.hats_acc_mask, step)
+                            };
+                            derive_extra_voices(
+                                &mut hits,
+                                &mut vels,
+                                &enabled,
+                                step,
+                                gesture,
+                                snare_accented,
+                                hats_accented,
+                            );
+                            // The jack follows what the groove plays, so a patch
+                            // that only wants CV still pulses with every note
+                            // switched off. MIDI follows what is wired up.
+                            let cv_hits = hits;
+                            for voice in 0..VOICES {
+                                hits[voice] &= enabled[voice];
+                            }
+
+                            if cv_hits.iter().any(|hit| *hit) {
+                                if hits.iter().any(|hit| *hit) {
+                                    pending_vels.set(vels);
+                                    pending_hits.set(hits);
+                                    any_on = true;
+                                }
+
+                                let level = if glob_stacked.get() {
+                                    stacked_pulse_level(&cv_hits, range)
                                 } else {
-                                    any_pulse_level(do_kick, do_snare, do_hats, range)
+                                    any_pulse_level(&cv_hits, range)
                                 };
                                 if let Some(ref jack) = out_jack {
                                     jack.set_value(level);
@@ -1674,78 +1760,45 @@ pub async fn run(
     // MIDI voice engine — isolated from the clock subscriber so APP_MIDI_CHANNEL
     // backpressure (Harmonica chord storms, Note Fader spam) cannot stall ticks.
     let fut_voice = async {
-        let mut kick_sounding = false;
-        let mut snare_sounding = false;
-        let mut hats_sounding = false;
+        let mut sounding = [false; VOICES];
         loop {
             app.delay_millis(1).await;
 
-            if pending_silence.get() {
+            let silence = pending_silence.get();
+            if silence {
                 pending_silence.set(false);
-                pending_note_off.set(false);
-                pending_kick.set(false);
-                pending_snare.set(false);
-                pending_hats.set(false);
-                if kick_sounding {
-                    midi_kick.try_send_note_off(note_kick);
-                    kick_sounding = false;
-                }
-                if snare_sounding {
-                    midi_snare.try_send_note_off(note_snare);
-                    snare_sounding = false;
-                }
-                if hats_sounding {
-                    midi_hats.try_send_note_off(note_hats);
-                    hats_sounding = false;
-                }
-                continue;
+                pending_hits.set([false; VOICES]);
             }
 
             // Off before on in the same poll — re-triggers set both flags.
-            if pending_note_off.get() {
+            if silence || pending_note_off.get() {
                 pending_note_off.set(false);
-                if kick_sounding {
-                    midi_kick.try_send_note_off(note_kick);
-                    kick_sounding = false;
+                for voice in 0..VOICES {
+                    if sounding[voice] {
+                        midi[voice].try_send_note_off(notes[voice]);
+                        sounding[voice] = false;
+                    }
                 }
-                if snare_sounding {
-                    midi_snare.try_send_note_off(note_snare);
-                    snare_sounding = false;
-                }
-                if hats_sounding {
-                    midi_hats.try_send_note_off(note_hats);
-                    hats_sounding = false;
-                }
+            }
+            if silence {
+                continue;
             }
 
-            if pending_kick.get() {
-                pending_kick.set(false);
+            let fire = pending_hits.get();
+            if fire.iter().any(|hit| *hit) {
+                pending_hits.set([false; VOICES]);
                 if !glob_muted.get() {
-                    if kick_sounding {
-                        midi_kick.try_send_note_off(note_kick);
+                    let vels = pending_vels.get();
+                    for voice in 0..VOICES {
+                        if !fire[voice] {
+                            continue;
+                        }
+                        if sounding[voice] {
+                            midi[voice].try_send_note_off(notes[voice]);
+                        }
+                        midi[voice].try_send_note_on(notes[voice], vels[voice]);
+                        sounding[voice] = true;
                     }
-                    midi_kick.try_send_note_on(note_kick, pending_kick_vel.get());
-                    kick_sounding = true;
-                }
-            }
-            if pending_snare.get() {
-                pending_snare.set(false);
-                if !glob_muted.get() {
-                    if snare_sounding {
-                        midi_snare.try_send_note_off(note_snare);
-                    }
-                    midi_snare.try_send_note_on(note_snare, pending_snare_vel.get());
-                    snare_sounding = true;
-                }
-            }
-            if pending_hats.get() {
-                pending_hats.set(false);
-                if !glob_muted.get() {
-                    if hats_sounding {
-                        midi_hats.try_send_note_off(note_hats);
-                    }
-                    midi_hats.try_send_note_on(note_hats, pending_hats_vel.get());
-                    hats_sounding = true;
                 }
             }
         }
@@ -1778,9 +1831,7 @@ pub async fn run(
                         if let Some(ref jack) = out_jack {
                             jack.set_value(pulse_idle(range));
                         }
-                        pending_kick.set(false);
-                        pending_snare.set(false);
-                        pending_hats.set(false);
+                        pending_hits.set([false; VOICES]);
                         pending_note_off.set(false);
                         pending_silence.set(true);
                     } else {
@@ -1874,12 +1925,12 @@ pub async fn run(
                     let g = params.query(|p| p.genre.min(NUM_GENRES - 1));
                     glob_genre.set(g);
                     glob_genre_fader.set(genre_fader_center(g, NUM_GENRES));
-                    // Jack Mode and swing direction are Config params — keep the
+                    // Jack shape and swing direction are Config params — keep the
                     // live param values.
-                    let (jm, sd) =
-                        params.query(|p| (p.jack_mode.min(1) as u8, p.swing_dir == 1));
-                    glob_jack_mode.set(jm);
-                    glob_reversed.set(sd);
+                    let (stacked, reversed) = params
+                        .query(|p| (p.jack == JACK_OUT_STACKED, p.swing_max_pct < 0));
+                    glob_stacked.set(stacked);
+                    glob_reversed.set(reversed);
                     if muted {
                         leds.unset(0, Led::Button);
                     } else {
@@ -1911,7 +1962,7 @@ pub async fn run(
             if let Some(ref input) = in_jack {
                 let in_val = attenuate_bipolar(input.get_value(), cv_att);
                 glob_cv_val.set(in_val);
-                if cv_dest == DEST_RESET {
+                if jack == JACK_IN_RESET {
                     let high = in_val >= TRIG_HIGH;
                     if high && !prev_gate_high {
                         glob_reset.set(true);
