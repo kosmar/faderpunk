@@ -1317,6 +1317,48 @@ fn resolve_hit(
     })
 }
 
+/// Register arc for solos. A constant +12 reads as "wrong octave", not as a solo:
+/// a bass solo pushes off a low anchor, climbs through the phrase, and comes back
+/// down to land. Peak height follows the Voice's octave span.
+fn solo_register_lift(voice: &VoiceProfile, mask: u16, step: u32, bar: u32, die: &Die) -> i8 {
+    let (idx, total) = fill_hit_index(mask, step % STEPS_PER_BAR);
+    if total == 0 {
+        return 0;
+    }
+    // Anchor the phrase start low so the climb has a floor to push against.
+    if idx == 0 {
+        return 0;
+    }
+    let denom = total.saturating_sub(1).max(1);
+    let t = (idx * 255) / denom;
+    // Rise to a peak around 60 % of the bar, then fall back for the landing.
+    let arc = if t <= 153 {
+        (t * 255) / 153
+    } else {
+        ((255 - t) * 255) / 102
+    };
+    let ceiling: i8 = if voice.oct_span >= 2 { 2 } else { 1 };
+    let mut lift = ((arc * ceiling as usize) / 255) as i8;
+    // Answer bars sit lower — call and response instead of one plateau.
+    if bar % 2 == 1 && lift > 0 && (die.roll() % 100) < 45 {
+        lift -= 1;
+    }
+    lift.clamp(0, ceiling)
+}
+
+/// Fold into the playable bass window instead of clamping — a wall turns every
+/// out-of-range note into the same repeated pitch.
+fn fold_into_range(note: u8, lo: u8, hi: u8) -> u8 {
+    let mut n = i16::from(note);
+    while n > i16::from(hi) {
+        n -= 12;
+    }
+    while n < i16::from(lo) {
+        n += 12;
+    }
+    n.clamp(i16::from(lo), i16::from(hi)) as u8
+}
+
 /// Encode / decode FillShape for globals (no_std, no Enum as Atomic).
 fn shape_to_u8(s: FillShape) -> u8 {
     match s {
@@ -1400,25 +1442,19 @@ fn resolve_fill_hit(
         fill_degree(shape, mask, si, cur_chord, next_chord)
     };
 
-    // Solo register: +1 octave (Jaco/Claypool +2 when span allows).
     if is_solo {
-        let lift = if voice.oct_span >= 2 { 2 } else { 1 };
-        oct = oct.saturating_add(lift);
+        oct = oct.saturating_add(solo_register_lift(voice, mask, si, bar, die));
     }
-    if oct.abs() > voice.oct_span.max(if is_solo { 2 } else { 1 }) {
-        oct = oct.signum() * voice.oct_span.max(1);
-    }
+    oct = oct.clamp(-2, 2);
 
     let offsets = scale_offsets(scale_index_to_key(scale));
     let n = offsets.len().max(1);
     let deg_i = degree_rel.rem_euclid(n as i8) as usize;
     let semis = i16::from(offsets[deg_i % n]);
-    let mut note =
-        (i16::from(root_midi) + semis + i16::from(oct) * 12).clamp(24, 84) as u8;
-    // Also clamp relative to root window.
+    let raw = (i16::from(root_midi) + semis + i16::from(oct) * 12).clamp(0, 127) as u8;
     let lo = root_midi.saturating_sub(12).max(24);
     let hi = (root_midi as u16 + 24).min(84) as u8;
-    note = note.clamp(lo, hi);
+    let mut note = fold_into_range(raw, lo, hi);
 
     // Approach into non-final fill hits for greasy voices (skip on pedal/break).
     if !is_break
