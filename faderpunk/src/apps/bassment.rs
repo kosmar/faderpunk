@@ -31,10 +31,9 @@ use crate::apps::groove::{
 use crate::apps::led_fx::{genre_nearest, genre_pair, lerp_i32, lerp_u8, spectrum_color};
 
 pub const CHANNELS: usize = 1;
-pub const PARAMS: usize = 13;
+pub const PARAMS: usize = 14;
 
 const LED_BRIGHTNESS: Brightness = Brightness::Mid;
-const REVERSE_FADE_MS: u16 = 500;
 const BUTTON_DUCK_MS: u16 = 25;
 const FADER_MOVE_THRESH: u16 = 64;
 const CLOCK_STALL_MS: u16 = 100;
@@ -194,7 +193,7 @@ const VOICES: [VoiceProfile; NUM_VOICES] = [
     },
 ];
 
-/// Distinct flash colors so Shift+Long Voice cycle is obvious on the button.
+/// Distinct flash colors so Long Voice cycle is obvious on the button.
 const VOICE_FLASH_COLOR: [Color; NUM_VOICES] = [
     Color::Violet, // Mingus
     Color::Orange, // Jamerson
@@ -349,6 +348,336 @@ const PATTERNS: [BassPattern; NUM_GENRES] = [
     },
 ];
 
+const FILL_VARIANTS: usize = 3;
+/// Density at which Shift+Tap reads as a pedal break instead of an additive fill.
+const BREAK_DENSITY: u16 = 2600;
+/// Pocket voices flip to pedal earlier — they don't pile on.
+const BREAK_DENSITY_POCKET: u16 = 1800;
+
+/// End-weighted fill rhythms (bit N = 16th step N). Build toward the downbeat.
+const FILL_RHYTHM: [[u16; FILL_VARIANTS]; NUM_GENRES] = [
+    // 0 Dub — sparse late answers
+    [
+        0b1100_0000_0000_0000,
+        0b1010_0000_0000_0000,
+        0b1000_1000_0000_0000,
+    ],
+    // 1 Disco — octave-pop run into the one
+    [
+        0b1110_1010_0000_0000,
+        0b1101_0100_0001_0000,
+        0b1111_0000_0001_0000,
+    ],
+    // 2 House — driving 8ths into the bar line
+    [
+        0b1110_1010_1010_0000,
+        0b1101_0101_0001_0000,
+        0b1111_0100_0100_0000,
+    ],
+    // 3 Techno — straight machine climb
+    [
+        0b1111_0101_0101_0000,
+        0b1110_1110_0000_0000,
+        0b1111_1111_0000_0000,
+    ],
+    // 4 Trip-Hop — dragging late figures
+    [
+        0b1100_0000_0000_0000,
+        0b1010_0000_1000_0000,
+        0b1101_0000_0000_0000,
+    ],
+    // 5 Hip-Hop — boom-bap walk into the one
+    [
+        0b1110_0100_1000_0000,
+        0b1101_0010_0100_0000,
+        0b1111_0000_1001_0000,
+    ],
+    // 6 Jungle — amen chops, busy late
+    [
+        0b1111_1010_0100_1000,
+        0b1101_0110_1001_0000,
+        0b1110_1101_0010_0000,
+    ],
+    // 7 UK Garage — skippy syncopation
+    [
+        0b1110_0101_0010_0000,
+        0b1101_1000_0100_1000,
+        0b1111_0010_1000_0000,
+    ],
+    // 8 Dubstep — half-time weight, few hits
+    [
+        0b1000_0000_0000_0000,
+        0b1100_0000_1000_0000,
+        0b1010_0000_0000_0000,
+    ],
+];
+
+/// Full-bar solo rhythms: denser than fills, but with gaps for breath (not a thunderstorm).
+const SOLO_RHYTHM: [[u16; FILL_VARIANTS]; NUM_GENRES] = [
+    // 0 Dub — echo answers, still air
+    [
+        0b1001_0000_1001_0000,
+        0b1010_0100_1000_0100,
+        0b1000_1001_0000_1000,
+    ],
+    // 1 Disco — continuous 8th chatter
+    [
+        0b1010_1010_1010_1010,
+        0b1101_0101_1101_0101,
+        0b1010_1110_1010_1110,
+    ],
+    // 2 House — pump with skips
+    [
+        0b1010_1010_1010_1001,
+        0b1101_0101_0101_0100,
+        0b1010_1101_1010_1100,
+    ],
+    // 3 Techno — straight but not every 16th
+    [
+        0b1010_1010_1010_1010,
+        0b1110_1110_1110_1110,
+        0b1101_1101_1101_1101,
+    ],
+    // 4 Trip-Hop — sparse dragging phrases
+    [
+        0b1000_0100_1000_0100,
+        0b1010_0000_1001_0000,
+        0b1000_1000_0100_1000,
+    ],
+    // 5 Hip-Hop — walking solo
+    [
+        0b1010_0101_1010_0101,
+        0b1101_0010_1101_0010,
+        0b1010_1001_0100_1010,
+    ],
+    // 6 Jungle — busy with breath holes
+    [
+        0b1011_0101_1010_1001,
+        0b1101_1010_0101_1010,
+        0b1010_1101_1011_0100,
+    ],
+    // 7 UK Garage — skippy full-bar
+    [
+        0b1010_0101_1010_0101,
+        0b1101_0010_1101_0010,
+        0b1001_0110_1001_0110,
+    ],
+    // 8 Dubstep — half-time weight with answers
+    [
+        0b1000_0100_1000_1000,
+        0b1010_0000_1001_0000,
+        0b1000_1000_0100_1000,
+    ],
+];
+
+/// Melodic contour for a fill/solo gesture. Locked at arm so a tap stays one phrase.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FillShape {
+    WalkUp,
+    WalkDown,
+    ArpClimb,
+    OctavePush,
+    Pedal,
+}
+
+/// Deterministic 0..99 hash so low Feel keeps one signature figure per genre.
+fn fill_hash(genre: usize) -> u8 {
+    let x = (genre as u32)
+        .wrapping_mul(2_654_435_761)
+        .wrapping_add(0x9E37_79B9);
+    ((x >> 9) % 100) as u8
+}
+
+/// Feel-weighted variant roll: low Feel stays hash-locked, high Feel leans on the Die.
+fn fill_variant(die: &Die, genre: usize, feel: u16) -> usize {
+    let hashed = u32::from(fill_hash(genre));
+    let live = u32::from(die.roll() % 100);
+    let w = (u32::from(feel_curve(feel)) * 4) / 5;
+    let roll = (hashed * (4095 - w) + live * w) / 4095;
+    ((roll as usize * FILL_VARIANTS) / 100).min(FILL_VARIANTS - 1)
+}
+
+/// Fill velocity: crescendo from `base` toward `accent` across the bar.
+fn fill_vel_pct(base: u8, accent: u8, step: u32) -> u16 {
+    let b = u16::from(base);
+    let a = u16::from(accent).max(b);
+    let idx = (step % STEPS_PER_BAR) as u16;
+    b + ((a - b) * idx) / (STEPS_PER_BAR as u16 - 1)
+}
+
+/// Solo velocity: Feel-weighted Die chatter between `base` and `accent`.
+fn solo_vel_pct(base: u8, accent: u8, die: &Die, feel: u16) -> u16 {
+    let b = u16::from(base);
+    let a = u16::from(accent).max(b);
+    let f = u32::from(feel_curve(feel));
+    let mid = (b + a) / 2;
+    let span = (a - b).max(1);
+    let live = b + ((span as u32 * u32::from(die.roll() % 100)) / 99) as u16;
+    ((u32::from(mid) * (4095 - f) + u32::from(live) * f) / 4095) as u16
+}
+
+/// Voice × genre picks the melodic contour. Pocket / Dub lean Pedal; busy voices walk/arp.
+fn fill_shape(voice: &VoiceProfile, genre: usize, die: &Die, feel: u16) -> FillShape {
+    let gfeel = feel_curve(feel);
+    let roll = {
+        let hashed = u32::from(fill_hash(genre.wrapping_add(voice.oct_span as usize)));
+        let live = u32::from(die.roll() % 100);
+        let w = (u32::from(gfeel) * 4) / 5;
+        ((hashed * (4095 - w) + live * w) / 4095) as u8
+    };
+    // Dub / Dubstep / pocket: almost never pile on.
+    if voice.pocket || matches!(genre, 0 | 8) {
+        return if roll < 70 {
+            FillShape::Pedal
+        } else if voice.oct_span >= 1 && roll < 90 {
+            FillShape::OctavePush
+        } else {
+            FillShape::WalkUp
+        };
+    }
+    if voice.approach_pct >= 80 {
+        // Mingus / Jaco — chromatic or melodic walks.
+        return if roll < 45 {
+            FillShape::WalkUp
+        } else if roll < 75 {
+            FillShape::WalkDown
+        } else {
+            FillShape::ArpClimb
+        };
+    }
+    if voice.oct_span >= 2 {
+        // Flea / Claypool / Jaco — leaps and arps.
+        return if roll < 40 {
+            FillShape::ArpClimb
+        } else if roll < 70 {
+            FillShape::OctavePush
+        } else {
+            FillShape::WalkUp
+        };
+    }
+    if voice.ghost_pct >= 80 {
+        // Bootsy — octave pops.
+        return if roll < 60 {
+            FillShape::OctavePush
+        } else {
+            FillShape::WalkUp
+        };
+    }
+    // Default: walk with occasional arp.
+    if roll < 50 {
+        FillShape::WalkUp
+    } else if roll < 80 {
+        FillShape::WalkDown
+    } else {
+        FillShape::ArpClimb
+    }
+}
+
+/// Index of this hit among fill-mask hits in the bar, and total hit count.
+fn fill_hit_index(mask: u16, step: u32) -> (usize, usize) {
+    let total = mask.count_ones() as usize;
+    if total == 0 {
+        return (0, 0);
+    }
+    let s = step % STEPS_PER_BAR;
+    let mut idx = 0usize;
+    for i in 0..STEPS_PER_BAR {
+        if bit_set(mask, i) {
+            if i == s {
+                return (idx, total);
+            }
+            idx += 1;
+        }
+    }
+    (0, total)
+}
+
+/// True when this step is the last fill hit in the bar (leading-tone seat).
+fn is_last_fill_hit(mask: u16, step: u32) -> bool {
+    let (idx, total) = fill_hit_index(mask, step);
+    total > 0 && idx + 1 == total
+}
+
+/// Melodic degree for a fill/solo step. Last hit = leading tone into `next_chord`.
+fn fill_degree(
+    shape: FillShape,
+    mask: u16,
+    step: u32,
+    cur_chord: i8,
+    next_chord: i8,
+) -> (i8, i8) {
+    // Returns (degree 0..=6 relative to root after chord add, oct_off).
+    let cur = cur_chord.rem_euclid(7);
+    let next = next_chord.rem_euclid(7);
+    if shape == FillShape::Pedal {
+        return (cur, 0);
+    }
+    if is_last_fill_hit(mask, step) {
+        // Leading tone: scale degree just below the target.
+        let lead = (next + 6).rem_euclid(7);
+        return (lead, 0);
+    }
+    let (idx, total) = fill_hit_index(mask, step);
+    let denom = (total.saturating_sub(1)).max(1);
+    let t = ((idx * 255) / denom) as u8; // 0..=255 along the phrase
+
+    match shape {
+        FillShape::WalkUp => {
+            // Walk ascending scale degrees from cur toward / past next.
+            let span = ((next + 7 - cur) % 7).max(1);
+            let steps = 1 + ((u16::from(t) * (span as u16 + 1)) / 255) as i8;
+            ((cur + steps).rem_euclid(7), 0)
+        }
+        FillShape::WalkDown => {
+            let span = ((cur + 7 - next) % 7).max(1);
+            let steps = 1 + ((u16::from(t) * (span as u16 + 1)) / 255) as i8;
+            ((cur + 7 - steps).rem_euclid(7), 0)
+        }
+        FillShape::ArpClimb => {
+            // Chord tones relative to current, climbing: root → 3rd → 5th → octave.
+            let chord_tones = [0i8, 2, 4, 0];
+            let i = ((u16::from(t) * 3) / 255) as usize;
+            let rel = chord_tones[i.min(3)];
+            let oct = if i >= 3 { 1 } else { 0 };
+            ((cur + rel).rem_euclid(7), oct)
+        }
+        FillShape::OctavePush => {
+            // Mostly current chord root; mid-phrase pops an octave.
+            let oct = if t > 80 && t < 200 { 1 } else { 0 };
+            let deg = if t > 140 && t < 180 {
+                (cur + 4).rem_euclid(7) // fifth flick
+            } else {
+                cur
+            };
+            (deg, oct)
+        }
+        FillShape::Pedal => (cur, 0),
+    }
+}
+
+/// Sustain look-ahead against the active fill/solo mask (not the groove DNA).
+fn sustain_fill_sixteenths(mask: u16, step: u32, staccato: u8, is_break: bool) -> u32 {
+    if is_break {
+        // Pedal: hold nearly the whole bar.
+        return 14;
+    }
+    let mut n = 1u32;
+    for look in 1..8u32 {
+        let s = (step + look) % STEPS_PER_BAR;
+        // Don't wrap sustain across the bar line — fills resolve there.
+        if step % STEPS_PER_BAR + look >= STEPS_PER_BAR {
+            break;
+        }
+        if bit_set(mask, s) {
+            break;
+        }
+        n += 1;
+    }
+    // Staccato voices shorten; sustained voices keep more of the gap.
+    let scaled = (n * u32::from(staccato) / 100).max(1);
+    scaled.min(n)
+}
+
 pub static CONFIG: Config<PARAMS> = Config::new(
     "Bassment",
     "Multi-genre basslines with bassist voices",
@@ -399,6 +728,10 @@ pub static CONFIG: Config<PARAMS> = Config::new(
     name: "CV Att",
     min: 0,
     max: 100,
+})
+.add_param(Param::Enum {
+    name: "Swing Dir",
+    variants: &["Normal", "Reverse"],
 });
 
 pub struct Params {
@@ -416,6 +749,8 @@ pub struct Params {
     vpo: VoltPerOct,
     cv_dest: usize,
     cv_att: i32,
+    /// Swing direction: Normal (offbeats late) vs Reverse (offbeats early).
+    swing_dir: usize,
 }
 
 impl AppParams for Params {
@@ -423,6 +758,11 @@ impl AppParams for Params {
         if values.len() < 13 {
             return None;
         }
+        let swing_dir = if values.len() > 13 {
+            usize::from_value(values[13]).min(1)
+        } else {
+            0
+        };
         Some(Self {
             root: MidiNote::from_value(values[0]),
             scale: usize::from_value(values[1]).min(SCALE_NAMES.len() - 1),
@@ -437,6 +777,7 @@ impl AppParams for Params {
             vpo: VoltPerOct::from_value(values[10]),
             cv_dest: usize::from_value(values[11]).min(DEST_COUNT - 1),
             cv_att: i32::from_value(values[12]).clamp(0, 100),
+            swing_dir,
         })
     }
 
@@ -455,6 +796,7 @@ impl AppParams for Params {
         vec.push(self.vpo.into()).unwrap();
         vec.push(self.cv_dest.into()).unwrap();
         vec.push(self.cv_att.into()).unwrap();
+        vec.push(self.swing_dir.into()).unwrap();
         vec
     }
 }
@@ -975,6 +1317,146 @@ fn resolve_hit(
     })
 }
 
+/// Encode / decode FillShape for globals (no_std, no Enum as Atomic).
+fn shape_to_u8(s: FillShape) -> u8 {
+    match s {
+        FillShape::WalkUp => 0,
+        FillShape::WalkDown => 1,
+        FillShape::ArpClimb => 2,
+        FillShape::OctavePush => 3,
+        FillShape::Pedal => 4,
+    }
+}
+
+fn shape_from_u8(v: u8) -> FillShape {
+    match v {
+        1 => FillShape::WalkDown,
+        2 => FillShape::ArpClimb,
+        3 => FillShape::OctavePush,
+        4 => FillShape::Pedal,
+        _ => FillShape::WalkUp,
+    }
+}
+
+/// Fill/solo/break path — bypasses density reveal, pickups, and the bar-8 breath cull
+/// (fills belong on the turnaround). Melody walks toward the *next* bar's chord.
+#[allow(clippy::too_many_arguments)]
+fn resolve_fill_hit(
+    mask: u16,
+    shape: FillShape,
+    step: u32,
+    bar: u32,
+    genre: usize,
+    is_solo: bool,
+    is_break: bool,
+    feel: u16,
+    voice: &VoiceProfile,
+    root_midi: u8,
+    scale: usize,
+    die: &Die,
+    base_vel: u8,
+    accent_vel: u8,
+) -> Option<ResolvedHit> {
+    let si = step % STEPS_PER_BAR;
+
+    if is_break {
+        // Pedal: one held root on the downbeat only.
+        if si != 0 {
+            return None;
+        }
+    } else if !bit_set(mask, si) {
+        return None;
+    }
+
+    // Solo onset cap (~12 notes/bar): drop excess hits deterministically.
+    if is_solo && !is_break {
+        let total = mask.count_ones();
+        if total > 12 {
+            let (idx, _) = fill_hit_index(mask, si);
+            // Keep first 12 in phrase order.
+            if idx >= 12 {
+                return None;
+            }
+        }
+        // Breath: silence the last 1–2 mask hits on odd bars for phrasing.
+        if is_last_fill_hit(mask, si) && (bar % 2 == 1) {
+            return None;
+        }
+        let (idx, total) = fill_hit_index(mask, si);
+        if total > 2 && idx + 1 == total.saturating_sub(1) && (bar % 3 == 2) {
+            return None;
+        }
+    }
+
+    let phrase_bar = bar % PHRASE_BARS;
+    let next_bar = (phrase_bar + 1) % PHRASE_BARS;
+    let prog = &GENRE_PROG_8[genre.min(NUM_GENRES - 1)];
+    let cur_chord = prog[phrase_bar as usize] as i8;
+    let next_chord = prog[next_bar as usize] as i8;
+
+    let (degree_rel, mut oct) = if is_break {
+        (cur_chord, 0i8)
+    } else {
+        fill_degree(shape, mask, si, cur_chord, next_chord)
+    };
+
+    // Solo register: +1 octave (Jaco/Claypool +2 when span allows).
+    if is_solo {
+        let lift = if voice.oct_span >= 2 { 2 } else { 1 };
+        oct = oct.saturating_add(lift);
+    }
+    if oct.abs() > voice.oct_span.max(if is_solo { 2 } else { 1 }) {
+        oct = oct.signum() * voice.oct_span.max(1);
+    }
+
+    let offsets = scale_offsets(scale_index_to_key(scale));
+    let n = offsets.len().max(1);
+    let deg_i = degree_rel.rem_euclid(n as i8) as usize;
+    let semis = i16::from(offsets[deg_i % n]);
+    let mut note =
+        (i16::from(root_midi) + semis + i16::from(oct) * 12).clamp(24, 84) as u8;
+    // Also clamp relative to root window.
+    let lo = root_midi.saturating_sub(12).max(24);
+    let hi = (root_midi as u16 + 24).min(84) as u8;
+    note = note.clamp(lo, hi);
+
+    // Approach into non-final fill hits for greasy voices (skip on pedal/break).
+    if !is_break
+        && shape != FillShape::Pedal
+        && !is_last_fill_hit(mask, si)
+        && voice.approach_pct > 40
+        && (die.roll() % 100) < (voice.approach_pct / 2) as u16
+    {
+        note = note.saturating_sub(1).max(lo);
+    }
+
+    let vel_pct = if is_solo {
+        solo_vel_pct(base_vel, accent_vel, die, feel)
+    } else if is_break {
+        // Quiet pedal under the drums.
+        u16::from(base_vel).saturating_sub(20).max(35)
+    } else {
+        fill_vel_pct(base_vel, accent_vel, si)
+    };
+
+    // Shorter gates for solos / staccato voices so runs articulate.
+    let gate_base = if is_solo {
+        45u8
+    } else if is_break {
+        100u8
+    } else {
+        70u8
+    };
+    let gate_w = ((u16::from(gate_base) * u16::from(voice.staccato)) / 100)
+        .clamp(25, 100) as u8;
+
+    Some(ResolvedHit {
+        note,
+        vel_pct,
+        gate_w,
+    })
+}
+
 #[embassy_executor::task(pool_size = 4)]
 pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMutex, bool>) {
     let param_store = ParamStore::<Params>::new(
@@ -994,6 +1476,7 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
             vpo: VoltPerOct::Standard,
             cv_dest: DEST_DENSITY,
             cv_att: 100,
+            swing_dir: 0,
         },
     );
     let storage = ManagedStorage::<Storage>::new(app.app_id, app.layout_id);
@@ -1036,6 +1519,7 @@ pub async fn run(
         vpo,
         cv_dest,
         cv_att,
+        swing_dir,
     ) = params.query(|p| {
         (
             p.midi_out,
@@ -1051,6 +1535,7 @@ pub async fn run(
             p.vpo,
             p.cv_dest.min(DEST_COUNT - 1),
             att_from_pct(p.cv_att),
+            p.swing_dir == 1,
         )
     });
 
@@ -1075,7 +1560,7 @@ pub async fn run(
         jack.set_value(0);
     }
 
-    let (feel, density, reversed, muted, stored_voice) =
+    let (feel, density, _stored_reversed, muted, stored_voice) =
         storage.query(|s| (s.feel, s.density, s.reversed, s.muted, s.voice));
     // Prefer live scene Voice; fall back to Configurator param when unset/default race.
     let initial_voice = if stored_voice as usize > 0 || voice_param == 0 {
@@ -1087,7 +1572,8 @@ pub async fn run(
     let glob_feel = app.make_global(feel);
     let glob_groove_max = app.make_global(groove_max_pct);
     let glob_density = app.make_global(density);
-    let glob_reversed = app.make_global(reversed);
+    // Swing Dir is a Config param — scenes no longer own the toggle.
+    let glob_reversed = app.make_global(swing_dir);
     let glob_genre = app.make_global(genre);
     let glob_genre_fader = app.make_global(genre_fader_center(genre, NUM_GENRES));
     let glob_muted = app.make_global(muted);
@@ -1103,12 +1589,19 @@ pub async fn run(
     let glob_genre_dirty = app.make_global(false);
     let glob_voice_dirty = app.make_global(false);
     let glob_latch_layer = app.make_global(LatchLayer::Main);
-    let glob_reverse_fade = app.make_global(0u16);
-    let glob_reverse_fade_up = app.make_global(false);
     let glob_voice_flash = app.make_global(0u16);
     let glob_button_duck = app.make_global(0u16);
     // ManagedStorage: only genre_persist writes FRAM (avoids RefCell vs saver_task).
     let glob_storage_dirty = app.make_global(false);
+    // Fill/break/solo gesture: Shift tap = fill (or pedal break at high density)
+    // until the next downbeat. Shift hold escalates to a register-lifted solo.
+    let glob_fill_armed = app.make_global(false);
+    let glob_fill_held = app.make_global(false);
+    let glob_fill_start = app.make_global(false);
+    let glob_fill_variant = app.make_global(0usize);
+    let glob_fill_break = app.make_global(false);
+    let glob_fill_solo = app.make_global(false);
+    let glob_fill_shape = app.make_global(0u8);
 
     let pending_silence = app.make_global(false);
     let pending_note_off = app.make_global(false);
@@ -1137,6 +1630,9 @@ pub async fn run(
         let mut sounding_note: u8 = 0;
         let mut gate_off_at: Option<u32> = None;
         let mut last_fired_slot = u32::MAX;
+        // Slot the current fill/break gesture started on, so the release resolves
+        // on the *next* downbeat rather than the one it may have started on.
+        let mut fill_start_slot = 0u32;
 
         let mut last_tick = ticks();
         let mut stall_ms = 0u16;
@@ -1174,6 +1670,10 @@ pub async fn run(
                     origin_set = false;
                     last_fired_slot = u32::MAX;
                     glob_reset.set(false);
+                    glob_fill_armed.set(false);
+                    glob_fill_start.set(false);
+                    glob_fill_solo.set(false);
+                    fill_start_slot = 0;
                     if glob_muted.get() {
                         leds.unset(0, Led::Top);
                         leds.unset(0, Led::Bottom);
@@ -1198,6 +1698,10 @@ pub async fn run(
                         origin_set = true;
                         last_fired_slot = u32::MAX;
                         glob_reset.set(false);
+                        glob_fill_armed.set(false);
+                        glob_fill_start.set(false);
+                        glob_fill_solo.set(false);
+                        fill_start_slot = 0;
                     }
 
                     let pos = clkn.wrapping_sub(origin);
@@ -1233,6 +1737,50 @@ pub async fn run(
                         + timing_off)
                         .clamp(0, (SIXTEENTH as i32) - 1) as u32;
 
+                    let mut density = if cv_jack == CV_JACK_IN && cv_dest == DEST_DENSITY {
+                        mod_u16(glob_density.get(), glob_cv_val.get())
+                    } else {
+                        glob_density.get()
+                    };
+                    density = density.saturating_add(voice.syncop_bias).min(4095);
+
+                    // Fill/break/solo gesture. Figure and shape lock in at press so a
+                    // tap stays one phrase. Holding across a bar line escalates to
+                    // a register-lifted solo that re-rolls each bar.
+                    if glob_fill_start.get() {
+                        glob_fill_start.set(false);
+                        let v = fill_variant(&die, near, feel_val);
+                        glob_fill_variant.set(v);
+                        let break_thresh = if voice.pocket {
+                            BREAK_DENSITY_POCKET
+                        } else {
+                            BREAK_DENSITY
+                        };
+                        glob_fill_break.set(density >= break_thresh);
+                        glob_fill_solo.set(false);
+                        let shape = if glob_fill_break.get() {
+                            FillShape::Pedal
+                        } else {
+                            fill_shape(voice, near, &die, feel_val)
+                        };
+                        glob_fill_shape.set(shape_to_u8(shape));
+                        glob_fill_armed.set(true);
+                        fill_start_slot = slot;
+                    } else if glob_fill_armed.get() && step == 0 && slot > fill_start_slot {
+                        if glob_fill_held.get() {
+                            glob_fill_solo.set(true);
+                            glob_fill_break.set(false);
+                            let v = fill_variant(&die, near, feel_val);
+                            glob_fill_variant.set(v);
+                            let shape = fill_shape(voice, near, &die, feel_val);
+                            glob_fill_shape.set(shape_to_u8(shape));
+                            fill_start_slot = slot;
+                        } else {
+                            glob_fill_armed.set(false);
+                            glob_fill_solo.set(false);
+                        }
+                    }
+
                     if let Some(off_at) = gate_off_at {
                         if clkn >= off_at {
                             if note_on {
@@ -1254,42 +1802,83 @@ pub async fn run(
                     }
 
                     if slot != last_fired_slot && !glob_muted.get() {
-                        let mut density = if cv_jack == CV_JACK_IN && cv_dest == DEST_DENSITY {
-                            mod_u16(glob_density.get(), glob_cv_val.get())
+                        let is_solo = glob_fill_solo.get();
+                        let is_break = glob_fill_break.get() && !is_solo;
+                        let fill_armed = glob_fill_armed.get();
+                        let v = glob_fill_variant.get().min(FILL_VARIANTS - 1);
+                        let fill_mask = if fill_armed {
+                            if is_solo {
+                                SOLO_RHYTHM[near][v]
+                            } else if is_break {
+                                0b0000_0000_0000_0001 // pedal on downbeat
+                            } else {
+                                FILL_RHYTHM[near][v]
+                            }
                         } else {
-                            glob_density.get()
+                            0
                         };
-                        density = density.saturating_add(voice.syncop_bias).min(4095);
+                        let shape = shape_from_u8(glob_fill_shape.get());
 
-                        let hit = resolve_hit(
-                            pat,
-                            pat_lo,
-                            pat_hi,
-                            g_frac,
-                            step,
-                            bar,
-                            near,
-                            density,
-                            feel_val,
-                            gmax,
-                            voice,
-                            voice_idx,
-                            root_midi,
-                            scale,
-                            &die,
-                        );
+                        let hit = if fill_armed {
+                            let base = lerp_u8(pat_lo.base_vel, pat_hi.base_vel, g_frac);
+                            let accent = lerp_u8(pat_lo.accent_vel, pat_hi.accent_vel, g_frac)
+                                .saturating_add(voice.accent_boost)
+                                .min(127);
+                            resolve_fill_hit(
+                                fill_mask,
+                                shape,
+                                step,
+                                bar,
+                                near,
+                                is_solo,
+                                is_break,
+                                feel_val,
+                                voice,
+                                root_midi,
+                                scale,
+                                &die,
+                                base,
+                                accent,
+                            )
+                        } else {
+                            resolve_hit(
+                                pat,
+                                pat_lo,
+                                pat_hi,
+                                g_frac,
+                                step,
+                                bar,
+                                near,
+                                density,
+                                feel_val,
+                                gmax,
+                                voice,
+                                voice_idx,
+                                root_midi,
+                                scale,
+                                &die,
+                            )
+                        };
 
                         let rot = phrase_rot(bar % PHRASE_BARS);
-                        let core = bit_set(rot16(pat.hits, rot), step);
-                        let any_ghost = fill_reveal(rot16(pat.hits_fill, rot), density, step)
-                            .or_else(|| {
-                                if !core {
-                                    synth_reveal(density, step, voice_idx)
-                                } else {
-                                    None
-                                }
-                            })
-                            .is_some();
+                        let core = if fill_armed {
+                            bit_set(fill_mask, step)
+                        } else {
+                            bit_set(rot16(pat.hits, rot), step)
+                        };
+                        let any_ghost = if fill_armed {
+                            false
+                        } else {
+                            fill_reveal(rot16(pat.hits_fill, rot), density, step)
+                                .or_else(|| {
+                                    if !core {
+                                        synth_reveal(density, step, voice_idx)
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .is_some()
+                        };
                         let ghost_extra = ghost_drag_ticks(density, feel_val, gmax);
                         let required_delay = if core || !any_ghost {
                             delay
@@ -1320,15 +1909,22 @@ pub async fn run(
                                     jack.set_value(counts);
                                 }
 
-                                // Sustain across empty 16ths until the next hit —
-                                // was clamped to one 16th, which made every line staccato.
-                                let sust = sustain_sixteenths(
-                                    rot16(pat.hits, rot),
-                                    rot16(pat.hits_fill, rot),
-                                    step,
-                                    density,
-                                    voice_idx,
-                                );
+                                let sust = if fill_armed {
+                                    sustain_fill_sixteenths(
+                                        fill_mask,
+                                        step,
+                                        voice.staccato,
+                                        is_break,
+                                    )
+                                } else {
+                                    sustain_sixteenths(
+                                        rot16(pat.hits, rot),
+                                        rot16(pat.hits_fill, rot),
+                                        step,
+                                        density,
+                                        voice_idx,
+                                    )
+                                };
                                 let max_ticks = (SIXTEENTH * 8).saturating_sub(1);
                                 let step_gate = ((SIXTEENTH as i32
                                     * sust as i32
@@ -1407,21 +2003,19 @@ pub async fn run(
             glob_shift_chord.set(shift_chord);
             long_press_fired.set(false);
             if shift_chord {
+                // Shift+tap: bass fill (or pedal break) until the next downbeat.
+                // Shift+hold across a bar: escalates to a register-lifted solo.
+                glob_fill_held.set(true);
+                glob_fill_start.set(true);
                 buttons.wait_for_up(0).await;
+                glob_fill_held.set(false);
                 glob_shift_chord.set(false);
-                if !long_press_fired.get() {
-                    // Shift+short: reverse swing
-                    let reversed = glob_reversed.toggle();
-                    glob_storage_dirty.set(true);
-                    glob_reverse_fade_up.set(!reversed);
-                    glob_reverse_fade.set(REVERSE_FADE_MS);
-                }
             } else {
                 glob_fader_moved.set(false);
                 glob_fader_at_down.set(faders.get_value());
                 buttons.wait_for_up(0).await;
                 glob_shift_chord.set(false);
-                // Short: mute — same as Contura. Reset moved to CV Dest: Reset.
+                // Short: mute — same as Contura / Grooves. Reset is CV Dest: Reset.
                 if !long_press_fired.get() && !glob_fader_moved.get() {
                     let muted = glob_muted.toggle();
                     glob_storage_dirty.set(true);
@@ -1433,6 +2027,9 @@ pub async fn run(
                         pending_note_on.set(false);
                         pending_note_off.set(false);
                         pending_silence.set(true);
+                        glob_fill_armed.set(false);
+                        glob_fill_start.set(false);
+                        glob_fill_solo.set(false);
                     } else {
                         leds.set(
                             0,
@@ -1454,18 +2051,20 @@ pub async fn run(
             // long-press event is delivered (same race Arp avoids by re-polling).
             let shift_chord =
                 glob_shift_chord.get() || is_shift_now || buttons.is_shift_pressed();
-            // Long / Shift+Long walk the Voice list forward / backward — same
-            // press length, Shift only flips direction (Contura grammar).
-            // Button+fader is the Third-layer Feel scrub, never a Voice change.
-            if !shift_chord && glob_fader_moved.get() {
+            if shift_chord {
+                // Shift held long enough → escalate fill into solo.
+                if glob_fill_armed.get() || glob_fill_start.get() || glob_fill_held.get() {
+                    glob_fill_solo.set(true);
+                    glob_fill_break.set(false);
+                }
+                continue;
+            }
+            // Long: next Voice. Button+fader is the Third-layer Feel scrub.
+            if glob_fader_moved.get() {
                 continue;
             }
             let cur = glob_voice.get();
-            let next = if shift_chord {
-                (cur + NUM_VOICES - 1) % NUM_VOICES
-            } else {
-                (cur + 1) % NUM_VOICES
-            };
+            let next = (cur + 1) % NUM_VOICES;
             glob_voice.set(next);
             glob_storage_dirty.set(true);
             glob_voice_dirty.set(true);
@@ -1525,16 +2124,21 @@ pub async fn run(
             match app.wait_for_scene_event().await {
                 SceneEvent::LoadScene(scene) => {
                     storage.load_from_scene(scene).await;
-                    let (feel, density, reversed, muted, voice) =
-                        storage.query(|s| (s.feel, s.density, s.reversed, s.muted, s.voice));
+                    let (feel, density, muted, voice) =
+                        storage.query(|s| (s.feel, s.density, s.muted, s.voice));
                     glob_feel.set(feel);
                     glob_density.set(density);
-                    glob_reversed.set(reversed);
                     glob_muted.set(muted);
                     glob_voice.set((voice as usize).min(NUM_VOICES - 1));
-                    let g = params.query(|p| p.genre.min(NUM_GENRES - 1));
+                    glob_fill_armed.set(false);
+                    glob_fill_start.set(false);
+                    glob_fill_solo.set(false);
+                    let (g, sd) = params.query(|p| {
+                        (p.genre.min(NUM_GENRES - 1), p.swing_dir == 1)
+                    });
                     glob_genre.set(g);
                     glob_genre_fader.set(genre_fader_center(g, NUM_GENRES));
+                    glob_reversed.set(sd);
                     if muted {
                         leds.unset(0, Led::Button);
                     } else {
@@ -1552,6 +2156,7 @@ pub async fn run(
     };
 
     let shift = async {
+        let mut fill_led_prev = false;
         let mut prev_gate_high = false;
         let mut last_seen_ticks: u32 = ticks() as u32;
         let mut stall_ms: u16 = CLOCK_STALL_MS;
@@ -1605,7 +2210,7 @@ pub async fn run(
                     let led = split_unsigned_value(fader_now);
                     leds.set(0, Led::Top, color, Brightness::Custom(led[0]));
                     leds.set(0, Led::Bottom, color, Brightness::Custom(led[1]));
-                    if glob_reverse_fade.get() == 0 && glob_voice_flash.get() == 0 {
+                    if !glob_fill_armed.get() && glob_voice_flash.get() == 0 {
                         leds.set(0, Led::Button, color, Brightness::High);
                     }
                 }
@@ -1656,35 +2261,35 @@ pub async fn run(
                 }
             }
 
-            let fade_left = glob_reverse_fade.get();
-            if fade_left > 0 {
-                let elapsed = REVERSE_FADE_MS.saturating_sub(fade_left);
-                let bright = if glob_reverse_fade_up.get() {
-                    ((elapsed as u32 * 255) / REVERSE_FADE_MS as u32) as u8
+            // Fill/solo/break takes over the button LED for the whole gesture:
+            // bright white while filling/soloing, dim while pedaling a break.
+            let fill_led = glob_fill_armed.get();
+            if fill_led && !glob_muted.get() {
+                let bright = if glob_fill_break.get() && !glob_fill_solo.get() {
+                    Brightness::Low
                 } else {
-                    (((REVERSE_FADE_MS - elapsed) as u32 * 255) / REVERSE_FADE_MS as u32) as u8
+                    Brightness::High
                 };
-                leds.set(0, Led::Button, Color::White, Brightness::Custom(bright));
-                glob_reverse_fade.set(fade_left.saturating_sub(1));
-                if fade_left == 1 {
-                    if glob_muted.get() {
-                        leds.unset(0, Led::Button);
-                    } else {
-                        leds.set(
-                            0,
-                            Led::Button,
-                            spectrum_color(glob_genre_fader.get()),
-                            LED_BRIGHTNESS,
-                        );
-                    }
+                leds.set(0, Led::Button, Color::White, bright);
+            } else if fill_led_prev {
+                if glob_muted.get() {
+                    leds.unset(0, Led::Button);
+                } else {
+                    leds.set(
+                        0,
+                        Led::Button,
+                        spectrum_color(glob_genre_fader.get()),
+                        LED_BRIGHTNESS,
+                    );
                 }
             }
+            fill_led_prev = fill_led;
 
             let flash_left = glob_voice_flash.get();
             if flash_left > 0 {
                 let left = flash_left.saturating_sub(1);
                 glob_voice_flash.set(left);
-                if left == 0 && glob_reverse_fade.get() == 0 {
+                if left == 0 && !fill_led {
                     if glob_muted.get() {
                         leds.unset(0, Led::Button);
                     } else {
@@ -1695,8 +2300,7 @@ pub async fn run(
                             LED_BRIGHTNESS,
                         );
                     }
-                } else if left > 0 && glob_reverse_fade.get() == 0 {
-                    // Hold the Voice color for the flash window.
+                } else if left > 0 && !fill_led {
                     let v = glob_voice.get().min(NUM_VOICES - 1);
                     leds.set(0, Led::Button, VOICE_FLASH_COLOR[v], Brightness::High);
                 }
@@ -1706,7 +2310,7 @@ pub async fn run(
             if duck > 0 {
                 glob_button_duck.set(duck.saturating_sub(1));
             }
-            if fade_left == 0
+            if !fill_led
                 && flash_left == 0
                 && !glob_muted.get()
                 && latch_active_layer != LatchLayer::Alt

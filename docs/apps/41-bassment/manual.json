@@ -22,7 +22,8 @@
     "Range",
     "V/Oct",
     "CV Dest",
-    "CV Att"
+    "CV Att",
+    "Swing Dir"
   ],
   "storage": [
     "Feel",
@@ -57,9 +58,10 @@
           "heading": "Buttons",
           "items": [
             "<strong>Short</strong> — Mute (notes off)",
-            "<strong>Shift+Short</strong> — Reverse swing",
+            "<strong>Shift+Tap</strong> — Bass fill into next bar’s chord (pedal break at high Density); white button LED",
+            "<strong>Shift+Hold</strong> — Bass solo (+1–2 oct), re-rolls each bar; resolves on the next downbeat",
             "<strong>Long</strong> — Next Voice (flash = voice color)",
-            "<strong>Shift+Long</strong> — Previous Voice"
+            "Previous Voice / Swing Dir: Configurator only"
           ]
         },
         {
@@ -67,7 +69,8 @@
           "items": [
             "Jack: CV Out (pitch V/Oct) / CV In",
             "CV Dest: Density · Feel · Reset (Configurator) — Reset now lives here only",
-            "Range, V/Oct, CV Att"
+            "Range, V/Oct, CV Att",
+            "Swing Dir: Normal / Reverse (Configurator)"
           ]
         }
       ]
@@ -86,7 +89,7 @@
             "<strong>Flabba</strong> Lime — roots walk, roomy gates",
             "<strong>Flea</strong> Red — staccato + aggressive jumps",
             "<strong>Claypool</strong> Yellow — quirky leaps + chromatic nudges",
-            "Button: genre hue in play; Long / Shift+Long flash = voice color; hits duck Mid→Low"
+            "Button: genre hue in play; Long flash = voice color; fill/solo = white (dim = pedal break); hits duck Mid→Low"
           ]
         }
       ]
