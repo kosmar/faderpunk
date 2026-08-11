@@ -2,7 +2,8 @@
 //!
 //! Generates phrases with mixed note lengths. Each scale set carries a compact
 //! melodic feel (contour, leap, density bias, sustain, tonic pull, ornaments).
-//! Faders: Main = interval, Alt = phrase length, Third = note density.
+//! Faders: Main = interval (stepwise ↔ wide pool leaps), Alt = phrase length,
+//! Third = note density.
 //! Jack = CV Out (pitch) or CV In (Density / Interval / Reset), Configurator-only.
 //! Labels and feels are conventional interval-pattern flavors — not claims
 //! about living musical practice. Optional follow of device tonic / scale.
@@ -680,21 +681,29 @@ fn phrase_from_fader(v: u16) -> u8 {
     (MIN_PHRASE as u32 + (v as u32 * span) / 4095) as u8
 }
 
-/// Third fader → rest probability gate (higher = fewer rests).
-/// Quadratic curve so the top half clearly densifies.
-fn density_from_fader(v: u16) -> u16 {
+/// Mild fader curve: average of linear and quadratic so mid travel is audible.
+fn mild_curve_u12(v: u16) -> u32 {
     let t = v as u32;
-    let curved = (t * t) / 4095;
-    (350 + (curved * 3700) / 4095) as u16
+    (t * t + t * 4095) / (2 * 4095)
 }
 
+/// Third fader → rest probability gate (higher = fewer rests).
+fn density_from_fader(v: u16) -> u16 {
+    let curved = mild_curve_u12(v);
+    // Floor still sparse; mid already densifies; top near-continuous.
+    (500 + (curved * 3550) / 4095) as u16
+}
+
+/// Cap for one leap in scale-degree indices — enough to cross ~3 octaves of
+/// a heptatonic pool in a single step when the octave span allows it.
+const MAX_INTERVAL_STEP: usize = 24;
+
 /// Main fader → max scale-degree step. Bottom sticks to steps of 1;
-/// top opens wide leaps (quadratic).
+/// top can wander across most of the pool (2–3 octaves when span ≥ 2).
 fn max_step_from_fader(v: u16, pool_len: usize) -> usize {
-    let max = (pool_len / 2).clamp(1, 12);
-    let t = v as u32;
-    let curved = (t * t) / 4095;
-    1 + ((curved as usize * max.saturating_sub(1)) / 4095)
+    let max = pool_len.saturating_sub(1).clamp(1, MAX_INTERVAL_STEP);
+    let curved = mild_curve_u12(v) as usize;
+    1 + (curved * max.saturating_sub(1)) / 4095
 }
 
 /// Expressivity is no longer a fader — ScaleFeel + Main interval drive it.
@@ -749,7 +758,7 @@ fn midi_gap_ms_for_div(div: u32) -> u16 {
 fn shaped_max_step(interval: u16, pool_len: usize, feel: ScaleFeel) -> usize {
     let base = max_step_from_fader(interval, pool_len);
     let scaled = ((base as u32 * feel.leap_q8 as u32) / 128).max(1) as usize;
-    scaled.clamp(1, (pool_len / 2).clamp(1, 10))
+    scaled.clamp(1, pool_len.saturating_sub(1).clamp(1, MAX_INTERVAL_STEP))
 }
 
 fn contour_rising(contour: u8, phrase_step: u8, phrase_len: u8) -> bool {
@@ -803,7 +812,13 @@ fn pick_next_index(
     }
 
     let mut step = 1 + ((r as usize >> 2) % max_step.max(1));
-    if (r & 0x3ff) < feel.step_glue {
+    // Glue fades as leaps open — otherwise high Main stays stepwise.
+    let glue = if max_step <= 1 {
+        0
+    } else {
+        feel.step_glue.saturating_mul(2) / (max_step as u16).max(2)
+    };
+    if (r & 0x3ff) < glue.min(1023) {
         step = 1;
     }
 
@@ -941,18 +956,21 @@ pub async fn run(
         leds.set(0, Led::Button, set_color(scale_init), LED_BRIGHTNESS);
     }
 
-    // Ticker path owns MIDI/CV directly (no CLOCK_PUBSUB) — one loop avoids
-    // pending-flag races and halves the 1 ms wakeups that starved Core 1.
+    // Engine sets flags only; voice owns MIDI try_send with retry so Grooves
+    // filling APP_MIDI_CHANNEL cannot silently drop Contura notes.
     let glob_silence_req = app.make_global(false);
+    let pending_fire = app.make_global(false);
+    let pending_note = app.make_global(0u8);
+    let pending_note_off = app.make_global(false);
+    let pending_silence = app.make_global(false);
     let glob_gate_on = app.make_global(false);
+    let glob_midi_div = app.make_global(RESOLUTION[division.min(RESOLUTION.len() - 1)]);
 
     let fut_engine = async {
         let mut pool: Vec<u8, POOL_CAP> = Vec::new();
         let mut phrase_step: u8 = 0;
         let mut remain: u8 = 0;
         let mut gated = false;
-        let mut note_on: Option<u8> = None;
-        let mut midi_quiet_ms: u16 = 0;
         let mut cached_tonic = 0u8;
         let rebuild = |pool: &mut Vec<u8, POOL_CAP>,
                        cached_tonic: &mut u8,
@@ -977,13 +995,10 @@ pub async fn run(
         let mut stall_ms = 0u16;
         let mut prev_gate_high = false;
 
-        let silence = |note_on: &mut Option<u8>,
-                       gated: &mut bool,
-                       remain: &mut u8,
-                       phrase_step: &mut u8| {
-            if let Some(n) = note_on.take() {
-                midi.try_send_note_off(MidiNote::from(n));
-            }
+        let silence = |gated: &mut bool, remain: &mut u8, phrase_step: &mut u8| {
+            pending_fire.set(false);
+            pending_note_off.set(false);
+            pending_silence.set(true);
             if let Some(ref jack) = out_jack {
                 jack.set_value(0);
             }
@@ -996,7 +1011,6 @@ pub async fn run(
         loop {
             // 2 ms: still tracks 1/8–1/32 boundaries; half the timer pressure.
             app.delay_millis(2).await;
-            midi_quiet_ms = midi_quiet_ms.saturating_sub(2);
 
             if let Some(ref input) = in_jack {
                 let in_val = attenuate_bipolar(input.get_value(), cv_att);
@@ -1014,27 +1028,28 @@ pub async fn run(
 
             if glob_silence_req.get() {
                 glob_silence_req.set(false);
-                silence(&mut note_on, &mut gated, &mut remain, &mut phrase_step);
+                silence(&mut gated, &mut remain, &mut phrase_step);
             }
 
             let t = ticks();
             if t == last_seen {
                 stall_ms = stall_ms.saturating_add(2);
                 if stall_ms >= 250 && gated {
-                    silence(&mut note_on, &mut gated, &mut remain, &mut phrase_step);
+                    silence(&mut gated, &mut remain, &mut phrase_step);
                 }
                 continue;
             }
             stall_ms = 0;
 
             if t < last_seen {
-                silence(&mut note_on, &mut gated, &mut remain, &mut phrase_step);
+                silence(&mut gated, &mut remain, &mut phrase_step);
                 last_seen = t;
                 last_div_fire = u64::MAX;
                 continue;
             }
 
             let div = glob_div.get().max(1) as u64;
+            glob_midi_div.set(div as u32);
             let boundary = t - (t % div);
             last_seen = t;
             if boundary == 0 && t < div {
@@ -1069,9 +1084,8 @@ pub async fn run(
             if scale_set != last_scale || octaves != last_oct || glob_resets_voice.get() {
                 glob_resets_voice.set(false);
                 if gated {
-                    if let Some(n) = note_on.take() {
-                        midi.try_send_note_off(MidiNote::from(n));
-                    }
+                    pending_fire.set(false);
+                    pending_note_off.set(true);
                     gated = false;
                     glob_gate_on.set(false);
                 }
@@ -1096,9 +1110,8 @@ pub async fn run(
 
             if muted {
                 if gated {
-                    if let Some(n) = note_on.take() {
-                        midi.try_send_note_off(MidiNote::from(n));
-                    }
+                    pending_fire.set(false);
+                    pending_note_off.set(true);
                     gated = false;
                 }
                 remain = 0;
@@ -1111,9 +1124,7 @@ pub async fn run(
             if remain > 0 {
                 remain -= 1;
                 if remain == 0 && gated {
-                    if let Some(n) = note_on.take() {
-                        midi.try_send_note_off(MidiNote::from(n));
-                    }
+                    pending_note_off.set(true);
                     gated = false;
                     glob_gate_on.set(false);
                 }
@@ -1121,9 +1132,7 @@ pub async fn run(
                 let r = die.roll();
                 if r > density {
                     if gated {
-                        if let Some(n) = note_on.take() {
-                            midi.try_send_note_off(MidiNote::from(n));
-                        }
+                        pending_note_off.set(true);
                         gated = false;
                         glob_gate_on.set(false);
                     }
@@ -1165,23 +1174,12 @@ pub async fn run(
                     )
                     .max(1);
                     if let Some(&note) = pool.get(idx.min(plen - 1)) {
-                        let pitch_changed = note_on != Some(note);
                         if let Some(ref jack) = out_jack {
                             jack.set_value(note_to_pitch(note).as_counts(range, vpo));
                         }
 
-                        let gap = midi_gap_ms_for_div(div as u32);
-                        if pitch_changed || midi_quiet_ms == 0 {
-                            if let Some(old) = note_on {
-                                if old != note {
-                                    midi.try_send_note_off(MidiNote::from(old));
-                                }
-                            }
-                            midi.try_send_note_on(MidiNote::from(note), 3200);
-
-                            midi_quiet_ms = gap;
-                        }
-                        note_on = Some(note);
+                        pending_note.set(note);
+                        pending_fire.set(true);
                         gated = true;
                         glob_gate_on.set(true);
                         // Button duck doubles as activity cue.
@@ -1196,6 +1194,62 @@ pub async fn run(
                 let (_, tonic) =
                     follow_mask_tonic(follow_scale, follow_tonic, scale_set as usize, base_note);
                 cached_tonic = tonic;
+            }
+        }
+    };
+
+    let fut_voice = async {
+        let mut note_on: Option<u8> = None;
+        let mut midi_quiet_ms: u16 = 0;
+        loop {
+            app.delay_millis(1).await;
+            midi_quiet_ms = midi_quiet_ms.saturating_sub(1);
+
+            if pending_silence.get() {
+                pending_silence.set(false);
+                pending_fire.set(false);
+                pending_note_off.set(false);
+                if let Some(n) = note_on.take() {
+                    let _ = midi.try_send_note_off(MidiNote::from(n));
+                }
+                continue;
+            }
+
+            if pending_note_off.get() {
+                if let Some(n) = note_on.take() {
+                    if midi.try_send_note_off(MidiNote::from(n)) {
+                        pending_note_off.set(false);
+                    } else {
+                        // Keep flag so we retry when the queue frees.
+                        note_on = Some(n);
+                    }
+                } else {
+                    pending_note_off.set(false);
+                }
+            }
+
+            if pending_fire.get() {
+                if glob_muted.get() {
+                    pending_fire.set(false);
+                    continue;
+                }
+                let note = pending_note.get();
+                let pitch_changed = note_on != Some(note);
+                let gap = midi_gap_ms_for_div(glob_midi_div.get());
+                if !pitch_changed && midi_quiet_ms > 0 {
+                    pending_fire.set(false);
+                    continue;
+                }
+                if let Some(old) = note_on {
+                    if old != note && !midi.try_send_note_off(MidiNote::from(old)) {
+                        continue;
+                    }
+                }
+                if midi.try_send_note_on(MidiNote::from(note), 3200) {
+                    pending_fire.set(false);
+                    note_on = Some(note);
+                    midi_quiet_ms = gap;
+                }
             }
         }
     };
@@ -1417,10 +1471,12 @@ pub async fn run(
 
     join5(
         fut_engine,
+        fut_voice,
         fut_faders,
         join3(fut_buttons, fut_long, fut_scale_persist),
-        fut_leds,
-        fut_scene,
+        join3(fut_leds, fut_scene, async {
+            core::future::pending::<()>().await
+        }),
     )
     .await;
 }

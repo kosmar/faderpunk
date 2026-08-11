@@ -529,10 +529,11 @@ impl MidiOutput {
 
     /// Non-blocking NoteOn — drops if `APP_MIDI_CHANNEL` is full instead of
     /// stalling Core 1 (dense melodic apps + busy playground).
-    pub fn try_send_note_on(&self, note_number: MidiNote, velocity: u16) {
+    /// Returns `false` if the app MIDI queue is full (caller may retry).
+    pub fn try_send_note_on(&self, note_number: MidiNote, velocity: u16) -> bool {
         // Soft mute must not swallow NoteOn (CV still plays → USB NoteOff-only).
         if crate::tasks::midi::perf_local_hard_muted() {
-            return;
+            return true;
         }
         let message = MidiMessage::NoteOn {
             key: note_number.into(),
@@ -543,11 +544,12 @@ impl MidiOutput {
             message,
         };
         let msg = MidiMsg::new(event, self.midi_out, MidiEventSource::Local);
-        let _ = self.midi_sender.try_send((self.start_channel, msg));
+        self.midi_sender.try_send((self.start_channel, msg)).is_ok()
     }
 
     /// Non-blocking NoteOff. Prefer this in high-rate voice engines.
-    pub fn try_send_note_off(&self, note_number: MidiNote) {
+    /// Returns `false` if the app MIDI queue is full (caller may retry).
+    pub fn try_send_note_off(&self, note_number: MidiNote) -> bool {
         let message = MidiMessage::NoteOff {
             key: note_number.into(),
             vel: 0.into(),
@@ -557,7 +559,7 @@ impl MidiOutput {
             message,
         };
         let msg = MidiMsg::new(event, self.midi_out, MidiEventSource::Local);
-        let _ = self.midi_sender.try_send((self.start_channel, msg));
+        self.midi_sender.try_send((self.start_channel, msg)).is_ok()
     }
 
     /// Sends a MIDI Aftertouch message.

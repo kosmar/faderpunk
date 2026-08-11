@@ -38,9 +38,9 @@
         {
           "heading": "Faders",
           "items": [
-            "<strong>Main</strong> — interval width (stepwise ↔ wide leaps; aggressive curve)",
+            "<strong>Main</strong> — interval width (stepwise ↔ 2–3 octave leaps across the pool)",
             "<strong>Alt</strong> (Shift) — phrase length only (3–28 steps)",
-            "<strong>Third</strong> (Btn hold) — note density (sparse rests ↔ continuous)"
+            "<strong>Third</strong> (Btn hold) — note density (sparse rests ↔ continuous; audible mid)"
           ]
         }
       ]
@@ -78,11 +78,11 @@
       "jackTitle": "Pitch CV / CV In",
       "jackDescription": "CV Out: quantized melodic pitch (1V/oct / range). CV In: modulates Density or Interval, or Reset (gate) — Dest + Att in Configurator. Gate is MIDI note on/off.",
       "faderTitle": "Interval",
-      "faderDescription": "Max scale-degree step — bottom stays stepwise, top opens wide leaps",
+      "faderDescription": "Max scale-degree step — bottom stepwise, mid already leaps, top wanders 2–3 octaves when octave span allows",
       "faderPlusShiftTitle": "Phrase length",
       "faderPlusShiftDescription": "How many steps before the contour resets (3–28)",
       "faderPlusFnTitle": "Density",
-      "faderPlusFnDescription": "How often notes fire vs rests — bottom sparse, top continuous",
+      "faderPlusFnDescription": "How often notes fire vs rests — sparse ↔ continuous, mid already densifies",
       "fnTitle": "Mute",
       "fnDescription": "Short press mutes/unmutes. Long press steps to the next scale set.",
       "fnPlusShiftTitle": "Octaves / scale",
