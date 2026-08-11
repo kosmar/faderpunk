@@ -46,7 +46,7 @@
         {
           "heading": "Buttons",
           "items": [
-            "<strong>Hold</strong> (gate modes) — Note on; release = off (long notes OK)",
+            "<strong>Hold</strong> (gate modes) — Note on; release = off (long notes OK). Hold+Fader = scale-degree glissando toward the fader (like Chord Vamp)",
             "<strong>Shift+Short</strong> — Cycle loop length 1→2→…→8 bars (amber→cyan flash)",
             "<strong>Shift+Long</strong> — Mute (red LED; decay pauses)",
             "<strong>Short while muted</strong> — Unmute (re-arms)",
@@ -81,7 +81,7 @@
       "faderPlusFnTitle": "Decay Mode",
       "faderPlusFnDescription": "Seven zones IR→UV (Btn+Fader; gate modes while muted)",
       "fnTitle": "Gate / play",
-      "fnDescription": "Hold for note in gate modes; Shift+Short = bars; Shift+Long = mute/erase",
+      "fnDescription": "Hold for note in gate modes; Hold+Fader = glissando; Shift+Short = bars; Shift+Long = mute/erase",
       "ledTop": "Pitch / decay / mode meters",
       "ledBottom": "Pitch / decay / mode meters"
     }

@@ -2,6 +2,7 @@
 //!
 //! Gestures:
 //! - Press/hold = gate/play (Pitch→MIDI / Fader→Both); release ends the note.
+//! - Hold+Fader = scale-degree glissando toward the fader (like Chord Vamp perform).
 //! - Shift+Short = cycle loop length 1→8 bars.
 //! - Shift+Long = mute (decay pauses); again while muted = erase buffer.
 //! - Short while muted = unmute (re-arms recording).
@@ -54,6 +55,8 @@ const CAPTURE_FLASH_TICKS: u64 = 2;
 const CAPTURE_DIM_REMAIN_PCT: u16 = 20;
 /// Hold length for Shift+Long mute/erase (matches hardware LONG_PRESS).
 const SHIFT_LONG_MS: u64 = 500;
+/// Hold+Fader glissando: engine frames (~1 ms) between scale-degree steps.
+const GLISS_FRAMES: u16 = 35;
 
 const DECAY_MODE_COUNT: usize = 7;
 const DECAY_RANDOM: usize = 0;
@@ -593,6 +596,27 @@ fn snap_to_scale(note: u8, key: Key, tonic: Note) -> u8 {
     snap_to_scale_toward(note, key, tonic, None)
 }
 
+/// Next MIDI note one scale degree (or semitone) toward `target`.
+fn step_toward(cur: u8, target: u8, key: Key, tonic: Note) -> u8 {
+    if cur == target {
+        return cur;
+    }
+    let dir: i16 = if target > cur { 1 } else { -1 };
+    let chromatic = matches!(key, Key::Chromatic | Key::Off);
+    let mut n = cur as i16;
+    for _ in 0..12 {
+        n += dir;
+        if !(0..=127).contains(&n) {
+            return cur;
+        }
+        let cand = n as u8;
+        if cand == target || chromatic || pc_in_scale(cand % 12, key, tonic) {
+            return cand;
+        }
+    }
+    cur
+}
+
 fn snap_to_scale_toward(note: u8, key: Key, tonic: Note, toward: Option<u8>) -> u8 {
     if matches!(key, Key::Chromatic | Key::Off) {
         return note;
@@ -1041,42 +1065,80 @@ pub async fn run(
                     needs_cv_out,
                 )
                 .await;
-            }
 
-            match select(buttons.wait_for_up(0), app.delay_millis(SHIFT_LONG_MS)).await {
-                Either::First(_) => {
-                    if uses_button_gate {
-                        note_off(
-                            &midi,
-                            &buf,
-                            &bars_glob,
-                            &live_note,
-                            &rec_open,
-                            &armed,
-                            ticks,
-                            out_jack.as_ref(),
-                        )
-                        .await;
+                // Hold+Fader: step through scale degrees toward the fader (Vamp-style).
+                let mut glide_frames_left: u16 = 0;
+                loop {
+                    match select(buttons.wait_for_up(0), app.delay_millis(1)).await {
+                        Either::First(_) => {
+                            note_off(
+                                &midi,
+                                &buf,
+                                &bars_glob,
+                                &live_note,
+                                &rec_open,
+                                &armed,
+                                ticks,
+                                out_jack.as_ref(),
+                            )
+                            .await;
+                            break;
+                        }
+                        Either::Second(_) => {
+                            let target = resolve_pitch(
+                                mode,
+                                &quantizer,
+                                in_jack.as_ref(),
+                                main_glob.get(),
+                                base_note,
+                                span,
+                            )
+                            .await;
+                            let Some(cur) = live_note.get() else {
+                                continue;
+                            };
+                            if cur == target {
+                                glide_frames_left = 0;
+                                continue;
+                            }
+                            if glide_frames_left == 0 {
+                                let (key, tonic) = quantizer.get_scale().await;
+                                let next = step_toward(cur, target, key, tonic);
+                                if next != cur {
+                                    retune_live(
+                                        &midi,
+                                        &buf,
+                                        &bars_glob,
+                                        &armed,
+                                        &live_note,
+                                        &rec_open,
+                                        &flash_until,
+                                        ticks,
+                                        next,
+                                        4095,
+                                        out_jack.as_ref(),
+                                        range,
+                                        vpo,
+                                        &quantizer,
+                                        needs_cv_out,
+                                    )
+                                    .await;
+                                }
+                                glide_frames_left = if next == target { 0 } else { GLISS_FRAMES };
+                            } else {
+                                glide_frames_left = glide_frames_left.saturating_sub(1);
+                            }
+                        }
                     }
                 }
+                continue;
+            }
+
+            // Non-gate modes: Long (no fader move) = mute.
+            // Mute is Shift+Long in gate modes — button is the note gate.
+            match select(buttons.wait_for_up(0), app.delay_millis(SHIFT_LONG_MS)).await {
+                Either::First(_) => {}
                 Either::Second(_) => {
-                    if uses_button_gate {
-                        buttons.wait_for_up(0).await;
-                        note_off(
-                            &midi,
-                            &buf,
-                            &bars_glob,
-                            &live_note,
-                            &rec_open,
-                            &armed,
-                            ticks,
-                            out_jack.as_ref(),
-                        )
-                        .await;
-                        continue;
-                    }
-                    // Non-gate modes: Long (no fader move) = mute.
-                    // Mute is Shift+Long in gate modes — button is the note gate.
                     if !fader_moved_while_held.get() {
                         if let Some(n) = live_note.get() {
                             midi.send_note_off(MidiNote::from(n)).await;
@@ -1510,6 +1572,73 @@ async fn start_note(
         rec_open.set(true);
         flash_until.set(tick.wrapping_add(CAPTURE_FLASH_TICKS));
     }
+}
+
+/// Glissando step: close the sounding note (and its open record) then attack the next degree.
+#[allow(clippy::too_many_arguments)]
+async fn retune_live(
+    midi: &MidiOutput,
+    buf: &Global<LoopBuf>,
+    bars_glob: &Global<u8>,
+    armed: &Global<bool>,
+    live_note: &Global<Option<u8>>,
+    rec_open: &Global<bool>,
+    flash_until: &Global<u64>,
+    ticks: fn() -> u64,
+    note: u8,
+    vel: u16,
+    out_jack: Option<&OutJack>,
+    range: Range,
+    vpo: VoltPerOct,
+    quantizer: &Quantizer,
+    cv_out: bool,
+) {
+    if live_note.get() == Some(note) {
+        return;
+    }
+    // Finalize the previous open event so glide steps become short recorded notes.
+    if let Some(old) = live_note.get() {
+        if armed.get() && rec_open.get() {
+            let tick = ticks();
+            let bars = bars_glob.get();
+            let window = LoopBuf::window_ticks(bars).max(1);
+            let mut b = buf.get();
+            let pos = if b.origin == u64::MAX {
+                0
+            } else {
+                ((tick.saturating_sub(b.origin)) % window as u64) as u16
+            };
+            let qpos = quantize_16th(pos) % window;
+            b.finalize_open(old, qpos, window);
+            for e in b.events.iter_mut() {
+                if e.used && e.note == old && e.dur == u16::MAX {
+                    e.dur = DEFAULT_GATE_TICKS;
+                }
+            }
+            buf.set(b);
+            rec_open.set(false);
+        }
+        midi.send_note_off(MidiNote::from(old)).await;
+        live_note.set(None);
+    }
+    start_note(
+        midi,
+        buf,
+        bars_glob,
+        armed,
+        live_note,
+        rec_open,
+        flash_until,
+        ticks,
+        note,
+        vel,
+        out_jack,
+        range,
+        vpo,
+        quantizer,
+        cv_out,
+    )
+    .await;
 }
 
 #[allow(clippy::too_many_arguments)]
