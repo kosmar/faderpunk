@@ -578,10 +578,13 @@ fn mode_color(mode: usize) -> Color {
     MODES[mode.min(4)]
 }
 
+/// Bipolar fader offset: bottom = −span/2, centre = 0, top = +span/2.
+fn fader_semitones(fader: u16, span: i32) -> i32 {
+    ((fader as i32 - 2048) * span) / 4096
+}
+
 fn pitch_from_fader(fader: u16, base: MidiNote, span: i32) -> u8 {
-    // Bipolar around Base Note: bottom = base−span/2, centre = base, top = base+span/2.
-    let offset = ((fader as i32 - 2048) * span) / 4096;
-    (note_u8(base) as i32 + offset).clamp(0, 127) as u8
+    (note_u8(base) as i32 + fader_semitones(fader, span)).clamp(0, 127) as u8
 }
 
 fn pc_in_scale(pc: u8, key: Key, tonic: Note) -> bool {
@@ -1427,8 +1430,16 @@ async fn resolve_pitch(
 ) -> u8 {
     let raw = if mode == 0 {
         if let Some(j) = in_jack {
+            // CV pitch and fader stack. mode 0 always has an in jack, so reading
+            // CV alone left the fader (and Span) dead whenever nothing was
+            // patched: an open input sits near 0 V, pinning every note to Base.
+            // Unpatched the fader keeps its documented span; with a cable it
+            // transposes, and its centre detent is a 0-semitone no-op.
             let pitch = quantizer.get_quantized_note(j.get_value()).await;
-            (note_u8(base_note) as i32 + note_u8(pitch.as_midi()) as i32).clamp(0, 127) as u8
+            (note_u8(base_note) as i32
+                + note_u8(pitch.as_midi()) as i32
+                + fader_semitones(main, span))
+            .clamp(0, 127) as u8
         } else {
             pitch_from_fader(main, base_note, span)
         }

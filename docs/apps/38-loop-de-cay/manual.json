@@ -34,7 +34,7 @@
         {
           "heading": "Faders",
           "items": [
-            "<strong>Main</strong> — Pitch (span from Base Note); spectrum LED meter",
+            "<strong>Main</strong> — Pitch (span from Base Note); spectrum LED meter. In Pitch→MIDI it transposes the CV pitch, so centre = unchanged and an unpatched jack leaves the fader in charge",
             "<strong>Alt</strong> (Shift+Fader) — Decay strength: bottom = immortal, top ≈ 4 wraps (violet→red)",
             "<strong>Third</strong> (Btn+Fader; gate modes while muted) — Decay mode zones (IR→UV): Random Rose · Pitch Up Orange · Pitch Down Yellow · Vel+Root Lime · Pitch Root Cyan · Velocity Blue · Gate Violet"
           ]
@@ -75,7 +75,7 @@
       "jackTitle": "CV / gate",
       "jackDescription": "Depends on Mode (Pitch→MIDI / Gate→MIDI use CV In; MIDI→CV / Fader→Both use CV Out)",
       "faderTitle": "Pitch",
-      "faderDescription": "Span around Base Note; quantized to global scale",
+      "faderDescription": "Span around Base Note; quantized to global scale. Pitch→MIDI adds it to the CV pitch as a transpose",
       "faderPlusShiftTitle": "Decay strength",
       "faderPlusShiftDescription": "0 = immortal; higher ≈ fewer wraps to silence",
       "faderPlusFnTitle": "Decay Mode",
