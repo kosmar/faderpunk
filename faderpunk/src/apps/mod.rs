@@ -3,6 +3,7 @@ mod genre_palette;
 mod groove;
 mod led_fx;
 mod led_spectrum;
+mod morph;
 
 register_apps!(
     1 => control,
@@ -46,4 +47,5 @@ register_apps!(
     40 => venn,
     41 => bassment,
     42 => contura,
+    43 => manifold,
 );

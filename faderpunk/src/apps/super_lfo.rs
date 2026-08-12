@@ -14,13 +14,17 @@ use serde::{Deserialize, Serialize};
 use libfp::{
     ext::FromValue,
     latch::LatchLayer,
-    utils::{attenuate, attenuate_bipolar, midi_gate, split_unsigned_value},
-    AppIcon, Brightness, ClockDivision, Color, Config, Curve, MidiCc, MidiChannel, MidiOut, Param,
+    utils::{
+        attenuate, attenuate_bipolar, lfo_step, lfo_step_modulated, midi_gate, quant_step,
+        signal_brightness, split_unsigned_value, CLOCK_DIVISIONS,
+    },
+    AppIcon, Brightness, ClockDivision, Color, Config, MidiCc, MidiChannel, MidiOut, Param,
     Range, Value, Waveform, APP_MAX_PARAMS,
 };
 
 use crate::{
-    app::{App, AppStorage, ClockEvent, Die, Led, ManagedStorage, SceneEvent},
+    app::{App, AppStorage, ClockEvent, Led, ManagedStorage, SceneEvent},
+    apps::morph::{morph_color, morph_sample, MorphChaos},
     storage::{AppParams, ParamStore},
     tasks::leds::LedMode,
 };
@@ -49,15 +53,6 @@ const RATE_MOD_RATIO: f32 = 0.3;
 const RATE_MOD_DEPTH_GAIN: f32 = 2.0;
 /// Mid-fader emphasis for rate-mod amount (< 1 = stronger sooner).
 const RATE_MOD_DEPTH_CURVE: f32 = 0.65;
-/// How hard Symmetry leans away from 50% for a given fader offset (< 1 = more extreme).
-const SYMMETRY_LEAN_CURVE: f32 = 0.45;
-
-/// Morph continuum: soft waves → stepped/chaos.
-/// Indices: 0 Sine, 1 Tri, 2 Saw, 3 Square, 4 Walk, 5 S&H, 6 Noise
-const MORPH_NODES: usize = 7;
-/// Hue (degrees 0–359) for each morph node — full saturation at the node,
-/// desaturates toward the next node so the waveform type is always readable.
-const NODE_HUES: [u16; MORPH_NODES] = [0, 45, 90, 135, 180, 225, 270];
 
 pub static CONFIG: Config<PARAMS> = Config::new(
     "Super LFO",
@@ -416,7 +411,7 @@ pub async fn run(
     let glob_latch_0 = app.make_global(LatchLayer::Main);
     let glob_latch_1 = app.make_global(LatchLayer::Main);
     let glob_tick = app.make_global(false);
-    let glob_div = app.make_global(24u16);
+    let glob_div = app.make_global(24u32);
     let glob_quant_speed = app.make_global(0.07);
     let glob_count = app.make_global(20u32);
     let glob_phase_origin = app.make_global(0u64);
@@ -438,12 +433,9 @@ pub async fn run(
     let die = app.use_die();
     let glob_chaos = app.make_global(MorphChaos::new());
 
-    let curve = Curve::Exponential;
-    let resolution = [384u16, 192, 96, 48, 24, 16, 12, 8, 6];
-
     let speed = storage.query(|s| s.layer_speed);
-    glob_lfo_speed.set(curve.at(speed) as f32 * 0.015 + 0.0682);
-    glob_div.set(resolution[(speed as usize / 500).clamp(0, 8)]);
+    glob_lfo_speed.set(lfo_step(speed));
+    glob_div.set(division_for_speed(speed as u32));
 
     let mut count = 0u32;
     let mut last_val: u16 = u16::MAX;
@@ -468,16 +460,14 @@ pub async fn run(
         let offset_u32 = offset as u32;
         let sum = layer_speed.saturating_add(offset_u32);
 
-        glob_lfo_speed
-            .set((curve.at(layer_speed as u16) as f32 + offset as f32 - 2047.0) * 0.015 + 0.0682);
+        glob_lfo_speed.set(lfo_step_modulated(layer_speed as u16, offset));
 
-        let index_val = sum.saturating_sub(2047).min(4095) as usize / 500;
-        let div = resolution[index_val.clamp(0, 8)];
+        let div = division_for_speed(sum.saturating_sub(2047).min(4095));
         if div != glob_div.get() {
             glob_div.set(div);
             glob_phase_origin.set(0);
         }
-        glob_quant_speed.set(4096. / (glob_count.get().max(1) as f32 * div as f32));
+        glob_quant_speed.set(quant_step(glob_count.get(), div));
     };
 
     let fut_audio = async {
@@ -719,7 +709,7 @@ pub async fn run(
             let shape_color = morph_color(morph);
             // Button breath tracks the same wave as Ch1 Top/Bottom; yield to mute /
             // freeze / reverse-fade / Alt dest / Flash feedback elsewhere.
-            let wave_bright = wave_button_brightness(effective_val, range.is_bipolar());
+            let wave_bright = signal_brightness(effective_val, range.is_bipolar());
 
             // Ch1 button = app color, brightness = LFO (unless reverse fade / flash owns it).
             if fade_left == 0 && flash_1 == 0 {
@@ -1029,8 +1019,8 @@ pub async fn run(
                     storage.load_from_scene(scene).await;
                     let (speed, out_muted, morph) =
                         storage.query(|s| (s.layer_speed, s.out_muted, s.morph));
-                    glob_lfo_speed.set(curve.at(speed) as f32 * 0.015 + 0.0682);
-                    glob_div.set(resolution[(speed as usize / 500).clamp(0, 8)]);
+                    glob_lfo_speed.set(lfo_step(speed));
+                    glob_div.set(division_for_speed(speed as u32));
                     glob_out_muted.set(out_muted);
                     if out_muted {
                         leds.unset(1, Led::Button);
@@ -1056,16 +1046,12 @@ pub async fn run(
     .await;
 }
 
-fn wave_button_brightness(val: u16, bipolar: bool) -> Brightness {
-    // Floor at Low so troughs never look like mute (Off); compress 0..255 into MIN..255.
-    const MIN: u8 = 110; // Brightness::Low
-    let raw = if bipolar {
-        ((val as i32 - 2047).unsigned_abs() / 8) as u8
-    } else {
-        (val / 16) as u8
-    };
-    let span = 255u16 - MIN as u16;
-    Brightness::Custom(MIN + ((raw as u16 * span) / 255) as u8)
+/// Historical speed→division mapping: 500-wide buckets rather than an even
+/// split over the nine entries, which leaves the very top of the fader a narrow
+/// fast zone. Kept verbatim so existing patches keep their fader feel — new
+/// apps should use `division_at` instead.
+fn division_for_speed(speed: u32) -> u32 {
+    CLOCK_DIVISIONS[(speed as usize / 500).min(8)]
 }
 
 fn cv_mod_u16(base: u16, active: bool, cv_delta: i32) -> u16 {
@@ -1084,137 +1070,6 @@ fn display_latch(edit: LatchLayer, chan: u8, shift_focus: u8) -> LatchLayer {
     }
 }
 
-fn symmetry_phase(phase: usize, symmetry: u16) -> usize {
-    // Piecewise phase remap: center (2048) = balanced halves.
-    // Lean curve pulls toward extremes faster so shape changes read clearly live.
-    let t = (phase % 4096) as f32 / 4096.0;
-    let centered = (symmetry as f32 / 4095.0 - 0.5) * 2.0; // -1..1
-    let lean = libm::copysignf(libm::powf(centered.abs(), SYMMETRY_LEAN_CURVE), centered);
-    let pw = (0.5 + lean * 0.49).clamp(0.01, 0.99);
-    let out = if t < pw {
-        t / pw * 0.5
-    } else {
-        0.5 + (t - pw) / (1.0 - pw) * 0.5
-    };
-    (out.clamp(0.0, 1.0) * 4095.0) as usize
-}
-
-fn warp_phase(phase: usize, warp: u16) -> usize {
-    if warp == 0 {
-        return phase % 4096;
-    }
-    let t = (phase % 4096) as f32 / 4096.0;
-    let amount = warp as f32 / 4095.0;
-    // Smoothstep blend toward ease-in/out time feel
-    let eased = t * t * (3.0 - 2.0 * t);
-    let out = t * (1.0 - amount) + eased * amount;
-    (out * 4095.0) as usize
-}
-
-fn skew_phase(phase: usize, skew: u16) -> usize {
-    // Center (2048) = linear; low/high lean soft asymmetry (pow curve)
-    let t = (phase % 4096) as f32 / 4096.0;
-    let s = (skew as f32 / 4095.0 - 0.5) * 2.0; // -1..1
-    let warped = if s >= 0.0 {
-        libm::powf(t, 1.0 + s)
-    } else {
-        1.0 - libm::powf(1.0 - t, 1.0 - s)
-    };
-    (warped.clamp(0.0, 1.0) * 4095.0) as usize
-}
-
-#[derive(Clone, Copy)]
-struct MorphChaos {
-    walk_a: i32,
-    walk_b: i32,
-    sh_a: u16,
-    sh_b: u16,
-    sh_bucket_a: u16,
-    sh_bucket_b: u16,
-}
-
-impl MorphChaos {
-    fn new() -> Self {
-        Self {
-            walk_a: 2048,
-            walk_b: 2048,
-            sh_a: 2048,
-            sh_b: 2048,
-            sh_bucket_a: 0xffff,
-            sh_bucket_b: 0xffff,
-        }
-    }
-
-    fn tick_walks(&mut self, die: &Die) {
-        // Gentle drift (~±3 at 1 kHz audio tick).
-        let step_a = (die.roll() as i32 % 7) - 3;
-        let step_b = (die.roll() as i32 % 7) - 3;
-        self.walk_a = (self.walk_a + step_a).clamp(0, 4095);
-        self.walk_b = (self.walk_b + step_b).clamp(0, 4095);
-    }
-}
-
-fn classic_wave(node: usize, phase: usize) -> Option<u16> {
-    let w = match node {
-        0 => Waveform::Sine,
-        1 => Waveform::Triangle,
-        2 => Waveform::Saw,
-        3 => Waveform::Square,
-        _ => return None,
-    };
-    Some(w.at(phase))
-}
-
-fn chaos_sample(node: usize, phase: usize, osc: usize, chaos: &mut MorphChaos, die: &Die) -> u16 {
-    match node {
-        4 => {
-            if osc == 0 {
-                chaos.walk_a as u16
-            } else {
-                chaos.walk_b as u16
-            }
-        }
-        5 => {
-            // S&H — new level every 1/16 of the cycle (phase bucket).
-            let bucket = (phase / 256) as u16;
-            let (sh, last) = if osc == 0 {
-                (&mut chaos.sh_a, &mut chaos.sh_bucket_a)
-            } else {
-                (&mut chaos.sh_b, &mut chaos.sh_bucket_b)
-            };
-            if bucket != *last {
-                *last = bucket;
-                *sh = die.roll();
-            }
-            *sh
-        }
-        _ => die.roll(),
-    }
-}
-
-fn node_sample(node: usize, phase: usize, osc: usize, chaos: &mut MorphChaos, die: &Die) -> u16 {
-    classic_wave(node, phase).unwrap_or_else(|| chaos_sample(node, phase, osc, chaos, die))
-}
-
-fn morph_sample(
-    phase: usize,
-    morph: u16,
-    form: (u16, u16, u16),
-    osc: usize,
-    chaos: &mut MorphChaos,
-    die: &Die,
-) -> u16 {
-    let (skew, warp, symmetry) = form;
-    let p = skew_phase(symmetry_phase(warp_phase(phase, warp), symmetry), skew);
-    let segments = MORPH_NODES - 1;
-    let seg_size = 4096 / segments;
-    let seg = ((morph as usize) / seg_size).min(segments - 1);
-    let frac = (morph as usize) % seg_size;
-    let a = node_sample(seg, p, osc, chaos, die) as i32;
-    let b = node_sample(seg + 1, p, osc, chaos, die) as i32;
-    (a + (b - a) * frac as i32 / seg_size as i32).clamp(0, 4095) as u16
-}
-
 fn mix_samples(a: u16, b: u16, mode: usize, balance: u16) -> u16 {
     match mode {
         1 => a.min(b),
@@ -1226,52 +1081,6 @@ fn mix_samples(a: u16, b: u16, mode: usize, balance: u16) -> u16 {
             let out = (a as i32 * (4095 - t) + b as i32 * t) / 4095;
             out.clamp(0, 4095) as u16
         }
-    }
-}
-
-/// Node-snap morph color: full saturation at each waveform anchor, linearly
-/// desaturates toward the next node. The new hue snaps in at full saturation
-/// the moment the fader crosses a node boundary.
-fn morph_color(morph: u16) -> Color {
-    let segments = MORPH_NODES - 1; // 6
-    let seg_size = 4096 / segments;  // 682
-    let m = morph.min(4095) as usize;
-    let seg = (m / seg_size).min(segments - 1);
-    let frac = m % seg_size;
-    // At the overflow edge of the last segment (morph 4092–4095) show Noise at full sat.
-    if seg == segments - 1 && frac >= seg_size {
-        let (r, g, b) = hsv_to_rgb(NODE_HUES[MORPH_NODES - 1]);
-        return Color::Custom(r, g, b);
-    }
-    let sat = 255u8.saturating_sub((frac * 255 / seg_size) as u8);
-    let (r, g, b) = hsv_to_rgb_sat(NODE_HUES[seg], sat);
-    Color::Custom(r, g, b)
-}
-
-/// Integer HSV→RGB with V=max and variable saturation (0 = white, 255 = full hue).
-fn hsv_to_rgb_sat(hue: u16, sat: u8) -> (u8, u8, u8) {
-    let (fr, fg, fb) = hsv_to_rgb(hue);
-    let s = sat as u32;
-    let w = 255 - s;
-    (
-        ((fr as u32 * s + 255 * w) / 255) as u8,
-        ((fg as u32 * s + 255 * w) / 255) as u8,
-        ((fb as u32 * s + 255 * w) / 255) as u8,
-    )
-}
-
-/// Integer HSV→RGB with S=V=max. Hue in degrees (0..360).
-fn hsv_to_rgb(hue: u16) -> (u8, u8, u8) {
-    let sector = hue / 60; // 0..=5
-                           // Rising/falling ramp within the sector, scaled to 0..=255.
-    let ramp = ((hue % 60) as u32 * 255 / 59) as u8;
-    match sector {
-        0 => (255, ramp, 0),
-        1 => (255 - ramp, 255, 0),
-        2 => (0, 255, ramp),
-        3 => (0, 255 - ramp, 255),
-        4 => (ramp, 0, 255),
-        _ => (255, 0, 255 - ramp),
     }
 }
 
