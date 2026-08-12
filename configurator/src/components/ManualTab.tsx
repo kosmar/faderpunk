@@ -1643,7 +1643,8 @@ On load, both registers are restored at the next phrase boundary so the recalled
       },
       {
         jackTitle: "Coupled out",
-        jackDescription: "Gate + MIDI Note B for the logic companion (overlap / rest / accent)",
+        jackDescription:
+          "Gate + MIDI Note B for the logic companion (overlap / rest / accent)",
         faderTitle: "Pulses B",
         faderDescription: "Number of pulses in Euclidean layer B",
         faderPlusShiftTitle: "Rotation B",
@@ -1753,7 +1754,8 @@ With **Jack = CV Out**, the jack mirrors drum activity — **Button + Fader** pi
         jackDescription:
           "CV Out: drum-activity gate. CV In: modulates Density, Swing, or Reset.",
         faderTitle: "Density",
-        faderDescription: "Reveals extra kick, snare, and hat hits in the pattern.",
+        faderDescription:
+          "Reveals extra kick, snare, and hat hits in the pattern.",
         faderPlusShiftTitle: "Swing",
         faderPlusShiftDescription:
           "Swing amount (capped by Swing max % parameter).",
@@ -1816,7 +1818,8 @@ The **Mode** parameter selects Note, CC, Pitch (12-TET), or Phi (φ-spaced pitch
         jackDescription:
           "CV Out: gate/pitch per Mode. CV In: Depth/Cycle/Reset modulation (no outs).",
         faderTitle: "Fibonacci depth",
-        faderDescription: "Max Fibonacci gap depth — deeper approaches φ spacing.",
+        faderDescription:
+          "Max Fibonacci gap depth — deeper approaches φ spacing.",
         faderPlusShiftTitle: "Cycle length",
         faderPlusShiftDescription: "Phrase length N in steps.",
         faderPlusFnTitle: "Local speed",
@@ -1948,8 +1951,7 @@ The **Mode** parameter selects Note, CC, Pitch (12-TET), or Phi (φ-spaced pitch
         ledTop: "Positive half of the output (app color)",
         ledTopPlusShift: "Speed (red)",
         ledTopPlusFn: "Warp zone — green / yellow / red",
-        ledBottom:
-          "Negative half of the output (always, even in 0–10 V range)",
+        ledBottom: "Negative half of the output (always, even in 0–10 V range)",
       },
     ],
   },

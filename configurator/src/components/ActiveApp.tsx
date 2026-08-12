@@ -46,8 +46,7 @@ export const ActiveApp = ({ app, layoutId, params, startChannel }: Props) => {
     formState: { isSubmitting },
   } = useForm();
 
-  const ioFallback =
-    params[0]?.tag === "Enum" ? Number(params[0].value) : 0;
+  const ioFallback = params[0]?.tag === "Enum" ? Number(params[0].value) : 0;
   // Echolot: I/O is always param 0 — watch so Routing / Out Pong appear for CV→MIDI.
   const ioMode =
     app.name === "Echolot"
