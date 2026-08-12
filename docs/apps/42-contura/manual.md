@@ -9,3 +9,5 @@ musical practice or authentic intonation.
 Needs a running clock. Jack = CV Out (pitch, 1V/oct) or CV In (Density /
 Interval / Reset + CV Att), set in the Configurator. Gates via MIDI note on/off.
 Phrases mix short, medium, and longer note lengths.
+
+**Follow device tonic** (default on) turns the device Tonic into a live transpose: hold the Scene button and move Fader 5 and Contura moves with Bassment, Chord Vamp, Venn and Arp de Lévy. The note pool is rebuilt on the change, so the cadence resolves in the new key; it takes effect at the next phrase start. **Follow device scale** (default off) swaps the Scale set for the device Scale.

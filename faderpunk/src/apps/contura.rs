@@ -19,13 +19,13 @@ use serde::{Deserialize, Serialize};
 
 use libfp::{
     ext::FromValue, latch::LatchLayer, quantizer::Pitch, utils::attenuate_bipolar, AppIcon,
-    Brightness, Color, Config, Key, MidiChannel, MidiNote, MidiOut, Note, Param, Range, Value,
+    Brightness, Color, Config, MidiChannel, MidiNote, MidiOut, Note, Param, Range, Value,
     VoltPerOct, APP_MAX_PARAMS,
 };
 
 use crate::{
     app::{App, AppParams, AppStorage, Die, Led, ManagedStorage, ParamStore, SceneEvent},
-    tasks::global_config::get_global_config,
+    apps::follow_key,
 };
 
 pub const CHANNELS: usize = 1;
@@ -632,30 +632,15 @@ fn follow_mask_tonic(
     scale_set: usize,
     base: MidiNote,
 ) -> (u16, u8) {
-    if follow_scale || follow_tonic {
-        let c = get_global_config();
-        let mask = if follow_scale {
-            let key = c.quantizer.key;
-            if key == Key::Off {
-                Key::Chromatic.as_u16_key()
-            } else {
-                key.as_u16_key()
-            }
-        } else {
-            SCALE_MASKS[scale_set.min(SCALE_COUNT - 1)]
-        };
-        let tonic = if follow_tonic {
-            c.quantizer.tonic as u8
-        } else {
-            midi_u8(base) % 12
-        };
-        (mask, tonic)
+    let local = SCALE_MASKS[scale_set.min(SCALE_COUNT - 1)];
+    // Contura's scale sets are its own (Folk, Hexatonic …), so only the
+    // followed case can go through a plain Key.
+    let mask = if follow_scale {
+        follow_key::device_key().as_u16_key()
     } else {
-        (
-            SCALE_MASKS[scale_set.min(SCALE_COUNT - 1)],
-            midi_u8(base) % 12,
-        )
-    }
+        local
+    };
+    (mask, follow_key::tonic_pc(follow_tonic, base))
 }
 
 fn build_pool(mask: u16, tonic: u8, base: u8, octaves: u8) -> Vec<u8, POOL_CAP> {
@@ -728,9 +713,9 @@ fn pick_duration(die: &Die, express: u16, remain: u8, feel: ScaleFeel, min_dur: 
     let dur = if (roll as u32) < short_gate {
         min_dur
     } else if (roll as u32) < mid_gate {
-        (2 + ((roll % 3) as u8)).max(min_dur)
+        min_dur + 1 + ((roll % 3) as u8)
     } else {
-        (remain / 2).max(3).min(remain.max(1)).max(min_dur)
+        (remain / 2).max(min_dur + 1)
     };
     // At the end of a phrase `remain` can drop below `min_dur` (fine grids ask
     // for 3–4 slots). The note has to fit the phrase, so the floor yields —
@@ -740,14 +725,51 @@ fn pick_duration(die: &Die, express: u16, remain: u8, feel: ScaleFeel, min_dur: 
     dur.clamp(lo, hi)
 }
 
-/// At fine grids, force longer holds so we don't fire a note every division step.
+/// Rest length in slots. Every rest used to be exactly one slot long, so all
+/// gaps sounded alike and the line never breathed. `roll` is the same value
+/// that already decided this slot is a rest — the further it overshoots the
+/// density gate, the longer the rest. No extra RNG call.
+fn pick_rest(roll: u16, density: u16, steps_left: u8) -> u8 {
+    let over = u32::from(roll.saturating_sub(density));
+    let span = u32::from(4095u16.saturating_sub(density)).max(1);
+    let n = if over * 4 > span * 3 {
+        4
+    } else if over * 2 > span {
+        2
+    } else {
+        1
+    };
+    n.min(steps_left.max(1))
+}
+
+/// Note velocity (0..=4095). This used to be a fixed 3200, which made the
+/// phrase start, a held note and a short passing note all sound identical.
+/// `roll` is the value already drawn for this slot — no extra RNG call.
+fn note_velocity(roll: u16, phrase_step: u8, dur: u8, feel: ScaleFeel) -> u16 {
+    let mut v: i32 = 2500;
+    if phrase_step == 0 {
+        v += 750; // the phrase start carries the weight
+    }
+    if dur >= 3 {
+        v += 250; // held notes lean in
+    } else if dur <= 1 {
+        v -= 250; // short passing notes stay light
+    }
+    v += i32::from(feel.sustain_bias) * 2;
+    v += i32::from((roll >> 4) % 256) - 128;
+    v.clamp(1100, 4000) as u16
+}
+
+/// Floor for note length in slots. `div` is the tick count from `RESOLUTION`,
+/// so a large value means a *coarse* grid. Fine grids have to hold or every
+/// slot fires; coarse grids must conversely be able to play a single short
+/// note, which the old catch-all forbade.
 fn min_duration_for_div(div: u32) -> u8 {
     match div {
-        0..=2 => 4,
-        3..=4 => 3,
-        5..=8 => 2,
-        // 1/16T…1/32T — hold several slots; Contura must stay cheap under load.
-        _ => 3,
+        0..=2 => 4, // 1/64T, 1/32T
+        3..=4 => 3, // 1/32, 1/16T
+        5..=8 => 2, // 1/16, 1/8T
+        _ => 1,     // 1/8 and coarser
     }
 }
 
@@ -965,6 +987,7 @@ pub async fn run(
     let glob_silence_req = app.make_global(false);
     let pending_fire = app.make_global(false);
     let pending_note = app.make_global(0u8);
+    let pending_vel = app.make_global(3200u16);
     let pending_note_off = app.make_global(false);
     let pending_silence = app.make_global(false);
     let glob_gate_on = app.make_global(false);
@@ -1134,15 +1157,15 @@ pub async fn run(
                 }
             } else {
                 let r = die.roll();
+                let steps_left = phrase_len.saturating_sub(phrase_step).max(1);
                 if r > density {
                     if gated {
                         pending_note_off.set(true);
                         gated = false;
                         glob_gate_on.set(false);
                     }
-                    remain = 1;
+                    remain = pick_rest(r, density, steps_left);
                 } else {
-                    let steps_left = phrase_len.saturating_sub(phrase_step).max(1);
                     // Cached at rebuild / phrase wrap — avoid GlobalConfig copy per note.
                     let tonic_pc = cached_tonic;
                     // Cadence grammar: last 1–2 slots resolve harder toward tonic
@@ -1183,6 +1206,7 @@ pub async fn run(
                         }
 
                         pending_note.set(note);
+                        pending_vel.set(note_velocity(r, phrase_step, remain, feel));
                         pending_fire.set(true);
                         gated = true;
                         glob_gate_on.set(true);
@@ -1197,7 +1221,13 @@ pub async fn run(
                 phrase_step = 0;
                 let (_, tonic) =
                     follow_mask_tonic(follow_scale, follow_tonic, scale_set as usize, base_note);
-                cached_tonic = tonic;
+                // The tonic is baked into the pool's notes, so a device
+                // transpose has to rebuild it — otherwise the cadence would
+                // aim at a tonic the pool cannot play.
+                if tonic != cached_tonic {
+                    let plen = rebuild(&mut pool, &mut cached_tonic, scale_set, octaves);
+                    idx = idx.min(plen.saturating_sub(1));
+                }
             }
         }
     };
@@ -1249,7 +1279,7 @@ pub async fn run(
                         continue;
                     }
                 }
-                if midi.try_send_note_on(MidiNote::from(note), 3200) {
+                if midi.try_send_note_on(MidiNote::from(note), pending_vel.get()) {
                     pending_fire.set(false);
                     note_on = Some(note);
                     midi_quiet_ms = gap;
