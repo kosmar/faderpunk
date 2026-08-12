@@ -15,8 +15,8 @@ use libfp::{
     ext::FromValue,
     latch::LatchLayer,
     utils::{
-        attenuate, attenuate_bipolar, lfo_step, lfo_step_modulated, midi_gate, quant_step,
-        signal_brightness, split_unsigned_value, CLOCK_DIVISIONS,
+        attenuate, attenuate_bipolar, division_at, lfo_step, lfo_step_modulated, midi_gate,
+        quant_step, signal_brightness, split_unsigned_value,
     },
     AppIcon, Brightness, ClockDivision, Color, Config, MidiCc, MidiChannel, MidiOut, Param,
     Range, Value, Waveform, APP_MAX_PARAMS,
@@ -53,6 +53,8 @@ const RATE_MOD_RATIO: f32 = 0.3;
 const RATE_MOD_DEPTH_GAIN: f32 = 2.0;
 /// Mid-fader emphasis for rate-mod amount (< 1 = stronger sooner).
 const RATE_MOD_DEPTH_CURVE: f32 = 0.65;
+/// Clock divisions the speed fader spans (slowest 384 ticks … 6 = quarter note).
+const LFO_DIVISIONS: usize = 9;
 
 pub static CONFIG: Config<PARAMS> = Config::new(
     "Super LFO",
@@ -435,7 +437,7 @@ pub async fn run(
 
     let speed = storage.query(|s| s.layer_speed);
     glob_lfo_speed.set(lfo_step(speed));
-    glob_div.set(division_for_speed(speed as u32));
+    glob_div.set(division_at(speed, LFO_DIVISIONS));
 
     let mut count = 0u32;
     let mut last_val: u16 = u16::MAX;
@@ -462,7 +464,7 @@ pub async fn run(
 
         glob_lfo_speed.set(lfo_step_modulated(layer_speed as u16, offset));
 
-        let div = division_for_speed(sum.saturating_sub(2047).min(4095));
+        let div = division_at(sum.saturating_sub(2047).min(4095) as u16, LFO_DIVISIONS);
         if div != glob_div.get() {
             glob_div.set(div);
             glob_phase_origin.set(0);
@@ -1020,7 +1022,7 @@ pub async fn run(
                     let (speed, out_muted, morph) =
                         storage.query(|s| (s.layer_speed, s.out_muted, s.morph));
                     glob_lfo_speed.set(lfo_step(speed));
-                    glob_div.set(division_for_speed(speed as u32));
+                    glob_div.set(division_at(speed, LFO_DIVISIONS));
                     glob_out_muted.set(out_muted);
                     if out_muted {
                         leds.unset(1, Led::Button);
@@ -1044,14 +1046,6 @@ pub async fn run(
         clock_handler,
     )
     .await;
-}
-
-/// Historical speed→division mapping: 500-wide buckets rather than an even
-/// split over the nine entries, which leaves the very top of the fader a narrow
-/// fast zone. Kept verbatim so existing patches keep their fader feel — new
-/// apps should use `division_at` instead.
-fn division_for_speed(speed: u32) -> u32 {
-    CLOCK_DIVISIONS[(speed as usize / 500).min(8)]
 }
 
 fn cv_mod_u16(base: u16, active: bool, cv_delta: i32) -> u16 {
