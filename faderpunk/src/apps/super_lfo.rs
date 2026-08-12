@@ -55,6 +55,9 @@ const SYMMETRY_LEAN_CURVE: f32 = 0.45;
 /// Morph continuum: soft waves → stepped/chaos.
 /// Indices: 0 Sine, 1 Tri, 2 Saw, 3 Square, 4 Walk, 5 S&H, 6 Noise
 const MORPH_NODES: usize = 7;
+/// Hue (degrees 0–359) for each morph node — full saturation at the node,
+/// desaturates toward the next node so the waveform type is always readable.
+const NODE_HUES: [u16; MORPH_NODES] = [0, 45, 90, 135, 180, 225, 270];
 
 pub static CONFIG: Config<PARAMS> = Config::new(
     "Super LFO",
@@ -753,7 +756,7 @@ pub async fn run(
             // Ch0: Main = morph shape + amount; Alt = amp; Third = skew zones
             match show_0 {
                 LatchLayer::Main => {
-                    let morph_bright = (morph / 16) as u8;
+                    let morph_bright = ((morph / 16) as u8).max(32);
                     leds.set(0, Led::Top, shape_color, Brightness::Custom(morph_bright));
                     let led0 = split_unsigned_value(in_val);
                     leds.set(0, Led::Bottom, led_color, Brightness::Custom(led0[1]));
@@ -1226,13 +1229,35 @@ fn mix_samples(a: u16, b: u16, mode: usize, balance: u16) -> u16 {
     }
 }
 
-/// Spectrum sweep: morph 0..=4095 → hue 0°..270°
-/// (infrared/red → yellow → green → cyan → blue → ultraviolet/violet).
-/// No wrap back to red — same IR→UV convention as other WIP meters.
+/// Node-snap morph color: full saturation at each waveform anchor, linearly
+/// desaturates toward the next node. The new hue snaps in at full saturation
+/// the moment the fader crosses a node boundary.
 fn morph_color(morph: u16) -> Color {
-    let hue = (morph.min(4095) as u32 * 270 / 4095) as u16;
-    let (r, g, b) = hsv_to_rgb(hue);
+    let segments = MORPH_NODES - 1; // 6
+    let seg_size = 4096 / segments;  // 682
+    let m = morph.min(4095) as usize;
+    let seg = (m / seg_size).min(segments - 1);
+    let frac = m % seg_size;
+    // At the overflow edge of the last segment (morph 4092–4095) show Noise at full sat.
+    if seg == segments - 1 && frac >= seg_size {
+        let (r, g, b) = hsv_to_rgb(NODE_HUES[MORPH_NODES - 1]);
+        return Color::Custom(r, g, b);
+    }
+    let sat = 255u8.saturating_sub((frac * 255 / seg_size) as u8);
+    let (r, g, b) = hsv_to_rgb_sat(NODE_HUES[seg], sat);
     Color::Custom(r, g, b)
+}
+
+/// Integer HSV→RGB with V=max and variable saturation (0 = white, 255 = full hue).
+fn hsv_to_rgb_sat(hue: u16, sat: u8) -> (u8, u8, u8) {
+    let (fr, fg, fb) = hsv_to_rgb(hue);
+    let s = sat as u32;
+    let w = 255 - s;
+    (
+        ((fr as u32 * s + 255 * w) / 255) as u8,
+        ((fg as u32 * s + 255 * w) / 255) as u8,
+        ((fb as u32 * s + 255 * w) / 255) as u8,
+    )
 }
 
 /// Integer HSV→RGB with S=V=max. Hue in degrees (0..360).
