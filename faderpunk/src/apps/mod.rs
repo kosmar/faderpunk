@@ -1,3 +1,4 @@
+mod follow_key;
 mod genre_palette;
 mod groove;
 mod led_fx;
