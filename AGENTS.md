@@ -53,7 +53,7 @@ Follow this for **every** task, in order. Do not skip steps.
 3. **On the user's go: commit.** A single one-line subject in
    conventional-commit format (`feat:`, `fix:`, `chore:`, `refactor:`, …,
    optionally scoped e.g. `feat(genseq):`). Commit with the system git user
-   (commits are signed). Do **not** add a `Co-authored-by: Claude` trailer.
+   (commits are signed).
    In the commit body, state clearly that an AI coding agent authored the
    change on the user's behalf (e.g. `Authored by an AI coding agent on
    behalf of <user>.`).
@@ -366,8 +366,8 @@ manually in a Chromium browser with a live device connection.
 7. **Atomic ordering**: Use `Ordering::Relaxed` for non-synchronized state, `Acquire`/`Release` for synchronized.
 8. **Web MIDI requirements**: Browser must support Web MIDI with SysEx (Chromium, Firefox); HTTPS required for non-localhost. The user must grant the MIDI/SysEx permission.
 9. **Commit messages**: Conventional-commit subject; body must note AI authorship
-   on the user's behalf. Do not add a `Co-authored-by: Claude` trailer. Never
-   merge/approve/accept PRs — only open them for the user.
+   on the user's behalf. Never merge/approve/accept PRs — only open them for the
+   user.
 
 ## File Structure Summary
 
