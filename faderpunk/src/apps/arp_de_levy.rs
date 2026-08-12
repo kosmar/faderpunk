@@ -20,12 +20,13 @@ use crate::{
     app::{
         App, AppParams, AppStorage, ClockEvent, Die, Led, ManagedStorage, ParamStore, SceneEvent,
     },
+    apps::follow_key,
     tasks::global_config::get_global_config,
     tasks::leds::LedMode,
 };
 
 pub const CHANNELS: usize = 1;
-pub const PARAMS: usize = 11;
+pub const PARAMS: usize = 12;
 
 /// Reverse gesture LED feedback length (white↔off fade), same as Golden Gate / Heat Pump.
 const REVERSE_FADE_MS: u16 = 500;
@@ -125,6 +126,11 @@ pub static CONFIG: Config<PARAMS> = Config::new(
     name: "CV Att",
     min: 0,
     max: 100,
+})
+// Arp already follows the device scale for its degree math; this adds the
+// tonic, so the global Tonic fader transposes it with the rest of the set.
+.add_param(Param::bool {
+    name: "Follow device tonic",
 });
 
 pub struct Params {
@@ -139,6 +145,7 @@ pub struct Params {
     cv_out: usize,
     cv_dest: usize,
     cv_att: i32,
+    follow_tonic: bool,
 }
 
 impl Default for Params {
@@ -155,6 +162,7 @@ impl Default for Params {
             cv_out: OUT_PITCH,
             cv_dest: DEST_MUTATION,
             cv_att: 100,
+            follow_tonic: true,
         }
     }
 }
@@ -164,7 +172,9 @@ impl AppParams for Params {
         if values.len() < 6 {
             return None;
         }
-        let (cv_jack, range, cv_out, cv_dest, cv_att) = if values.len() >= PARAMS {
+        // Pinned to 11, not PARAMS: this slot layout is fixed history, and a
+        // `>= PARAMS` check would silently misread it the moment PARAMS grows.
+        let (cv_jack, range, cv_out, cv_dest, cv_att) = if values.len() >= 11 {
             (
                 usize::from_value(values[6]).min(1),
                 Range::from_value(values[7]),
@@ -196,6 +206,8 @@ impl AppParams for Params {
             cv_out,
             cv_dest,
             cv_att,
+            // Older blobs predate the flag; default it on like a fresh instance.
+            follow_tonic: values.len() < 12 || bool::from_value(values[11]),
         })
     }
 
@@ -557,6 +569,7 @@ pub async fn run(
         param_cv_out,
         cv_dest,
         cv_att,
+        follow_tonic,
     ) = params.query(|p| {
         (
             p.midi_out,
@@ -570,6 +583,7 @@ pub async fn run(
             p.cv_out.min(OUT_COUNT - 1),
             p.cv_dest.min(DEST_COUNT - 1),
             att_from_pct(p.cv_att),
+            p.follow_tonic,
         )
     });
 
@@ -641,6 +655,9 @@ pub async fn run(
     let glob_octave_blink = app.make_global(0u16);
     let glob_btn_flash = app.make_global(0u16);
     let glob_reload_pool = app.make_global(false);
+    // Root in effect right now — the param's own, or the device tonic when
+    // following. The clock future owns it; the voice future reads it.
+    let glob_base = app.make_global(base_midi(base_note));
     // Clock watch → voice engine (never await MIDI/quantizer inside the clock subscriber).
     // Same isolation pattern as Chord Vamp — keeps USB MIDI from stalling the clock path.
     let pending_fire = app.make_global(false);
@@ -699,6 +716,24 @@ pub async fn run(
 
     let fut_clock = async {
         let mut pool = storage.query(|s| s.pool);
+        // The pool holds absolute MIDI notes, so a device transpose has to move
+        // it. Shifting keeps the melodic shape the pool has evolved into;
+        // rerolling would throw it away. Resolved at phrase starts only —
+        // reading the device tonic copies the whole GlobalConfig.
+        let shift_pool = |pool: &mut [u8; POOL_CAP], delta: i16| {
+            for n in pool.iter_mut() {
+                *n = clamp_note(i16::from(*n) + delta);
+            }
+        };
+        let mut cur_base = base_midi(base_note);
+        if follow_tonic {
+            let want = follow_key::root(true, base_note);
+            if want != cur_base {
+                shift_pool(&mut pool, i16::from(want) - i16::from(cur_base));
+                cur_base = want;
+                glob_base.set(cur_base);
+            }
+        }
         let mut step: usize = 0;
         let mut pending_on_at: Option<u32> = None;
         let mut pending_note: Option<u8> = None;
@@ -721,7 +756,7 @@ pub async fn run(
                 ClockEvent::Tick(_) => {
                     let clkn = ticks() as u32;
                     let octaves = clamp_octaves(glob_octaves.get());
-                    let lo = base_midi(base_note);
+                    let lo = cur_base;
                     let hi = clamp_note(lo as i16 + (octaves as i16) * 12);
                     let texture_val = if cv_jack == CV_JACK_IN && cv_dest == DEST_TEXTURE {
                         mod_u16(glob_texture.get(), glob_cv_val.get())
@@ -833,6 +868,17 @@ pub async fn run(
                         step = step.wrapping_add(1);
                         if phrase_len > 0 && step.is_multiple_of(phrase_len) {
                             step = 0;
+                            if follow_tonic {
+                                let want = follow_key::root(true, base_note);
+                                if want != cur_base {
+                                    shift_pool(
+                                        &mut pool,
+                                        i16::from(want) - i16::from(cur_base),
+                                    );
+                                    cur_base = want;
+                                    glob_base.set(cur_base);
+                                }
+                            }
                         }
                     }
                 }
@@ -878,7 +924,7 @@ pub async fn run(
                 pending_fire.set(false);
                 if !glob_muted.get() {
                     let octaves = clamp_octaves(glob_octaves.get());
-                    let lo = base_midi(base_note);
+                    let lo = glob_base.get();
                     let hi = clamp_note(lo as i16 + (octaves as i16) * 12);
                     let raw = pending_raw.get();
                     fire_note(
