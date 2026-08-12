@@ -1,8 +1,12 @@
-// Each app's `@ <bytes>` is its measured embassy-executor task pool cost —
-// see `register_apps!` in `macros.rs` for how and why. While developing,
-// use 40_000 as a placeholder (safely above every entry below) and measure
-// for real before shipping — too low silently reopens the bug this exists
-// to close.
+// Shared helpers for the genre-based apps (Grooves, Chord Vamp, Bassment).
+// Those apps land in their own PRs, so nothing references these yet.
+#[allow(dead_code)]
+mod genre_palette;
+#[allow(dead_code)]
+mod groove;
+#[allow(dead_code)]
+mod led_fx;
+
 register_apps!(
     1 => control @ 22528,
     2 => lfo @ 27264,
