@@ -22,13 +22,13 @@ use serde::{Deserialize, Serialize};
 use crate::app::{
     App, AppParams, AppStorage, ClockEvent, Led, ManagedStorage, ParamStore, SceneEvent,
 };
+use crate::apps::follow_key;
 use crate::apps::led_fx::hsv_to_rgb;
-use crate::tasks::global_config::get_global_config;
 use crate::tasks::leds::LedMode;
 use smart_leds::RGB8;
 
 pub const CHANNELS: usize = 2;
-pub const PARAMS: usize = 9;
+pub const PARAMS: usize = 10;
 
 /// Interval B select labels (index == diatonic steps above the line).
 /// Wire/FRAM indices 0..=12 stay stable; live Interval is also on Alt F1.
@@ -328,6 +328,12 @@ pub static CONFIG: Config<PARAMS> = Config::new(
         Color::Violet,
         Color::Yellow,
     ],
+})
+// Venn already follows the device scale unconditionally; this adds the tonic,
+// which turns the global Tonic fader into a live transpose. No scale-follow
+// counterpart is needed here.
+.add_param(Param::bool {
+    name: "Follow device tonic",
 });
 
 pub struct Params {
@@ -343,6 +349,7 @@ pub struct Params {
     prob: i32,
     vel: i32,
     color: Color,
+    follow_tonic: bool,
 }
 
 impl Default for Params {
@@ -357,13 +364,15 @@ impl Default for Params {
             prob: 100,
             vel: 0,
             color: Color::Cyan,
+            follow_tonic: true,
         }
     }
 }
 
 impl AppParams for Params {
     fn from_values(values: &[Value]) -> Option<Self> {
-        if values.len() < PARAMS {
+        // Pre-follow blobs had nine slots; accept them and default the flag.
+        if values.len() < 9 {
             return None;
         }
         Some(Self {
@@ -380,6 +389,7 @@ impl AppParams for Params {
             prob: i32::from_value(values[6]),
             vel: i32::from_value(values[7]),
             color: Color::from_value(values[8]),
+            follow_tonic: values.len() < 10 || bool::from_value(values[9]),
         })
     }
 
@@ -394,6 +404,7 @@ impl AppParams for Params {
         vec.push(self.prob.into()).unwrap();
         vec.push(self.vel.into()).unwrap();
         vec.push(self.color.into()).unwrap();
+        vec.push(self.follow_tonic.into()).unwrap();
         vec
     }
 }
@@ -496,7 +507,7 @@ pub async fn run(
     let buttons = app.use_buttons();
     let leds = app.use_leds();
 
-    let (midi_out, midi_chan, note_a, interval_b, division, gatel, prob, vel, color_a) =
+    let (midi_out, midi_chan, note_a, interval_b, division, gatel, prob, vel, color_a, follow_tonic) =
         params.query(|p| {
             (
                 p.midi_out,
@@ -508,6 +519,7 @@ pub async fn run(
                 p.prob,
                 p.vel,
                 p.color,
+                p.follow_tonic,
             )
         });
     let color_b = complement_color(color_a);
@@ -593,6 +605,17 @@ pub async fn run(
         let mut note_on_b = false;
         let mut sounding_a = note_a;
         let mut sounding_b = note_a + MidiNote::from(1);
+        // Reading the device tonality copies the whole GlobalConfig, which is
+        // far too heavy for the step path. Refresh at the start of each
+        // A-cycle — a pattern boundary is also where a key change belongs
+        // musically. Asking for scale and tonic together costs one copy, not
+        // two; the local key is irrelevant because Venn always follows the
+        // device scale.
+        let resolve = || follow_key::root_and_key(follow_tonic, true, note_a, Key::Chromatic);
+        let (root0, key0) = resolve();
+        let mut cached_root = MidiNote::from(root0);
+        let mut cached_pcs = scale_pcs(key0);
+        let mut last_cycle = u32::MAX;
 
         loop {
             match clock.wait_for_event(ClockDivision::_1).await {
@@ -651,10 +674,17 @@ pub async fn run(
                         }
 
                         // Scale-degree arch from Length-A; Ch2 = line + diatonic Interval.
-                        let pcs = scale_pcs(get_global_config().quantizer.key);
+                        let cycle = step / u32::from(len_a);
+                        if cycle != last_cycle {
+                            last_cycle = cycle;
+                            let (r, k) = resolve();
+                            cached_root = MidiNote::from(r);
+                            cached_pcs = scale_pcs(k);
+                        }
                         let deg = u16::from(melody_degree(step, len_a, extent));
-                        let line = midi_at_degree(note_a, &pcs, deg);
-                        let line_b = midi_at_degree(note_a, &pcs, deg + u16::from(interval));
+                        let line = midi_at_degree(cached_root, &cached_pcs, deg);
+                        let line_b =
+                            midi_at_degree(cached_root, &cached_pcs, deg + u16::from(interval));
 
                         if !muted {
                             if out0 {

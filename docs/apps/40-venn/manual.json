@@ -18,7 +18,8 @@
     "GATE %",
     "Prob %",
     "Humanize",
-    "Color"
+    "Color",
+    "Follow device tonic"
   ],
   "storage": [
     "Pulses A",
