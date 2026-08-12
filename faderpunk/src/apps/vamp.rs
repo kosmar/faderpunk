@@ -4,7 +4,6 @@ use embassy_futures::{
 };
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, signal::Signal};
 use heapless::Vec;
-use midly::num::u7;
 use serde::{Deserialize, Serialize};
 
 use libfp::{
@@ -19,12 +18,13 @@ use libfp::{
 use crate::app::{
     App, AppParams, AppStorage, Die, Led, ManagedStorage, ParamStore, SceneEvent,
 };
+use crate::apps::follow_key;
 use crate::apps::genre_palette::{genre_fader_center, GENRE_NAMES, GENRE_PROG_8, NUM_GENRES};
 use crate::apps::groove::{swing_bias, swing_delay_ticks};
 use crate::apps::led_fx::{genre_pair, lerp_u8, spectrum_color};
 
 pub const CHANNELS: usize = 1;
-pub const PARAMS: usize = 15;
+pub const PARAMS: usize = 16;
 
 const LED_BRIGHTNESS: Brightness = Brightness::Mid;
 /// Mid→Low button duck on each chord — same length as Heat Pump metronome duck.
@@ -238,6 +238,13 @@ pub static CONFIG: Config<PARAMS> = Config::new(
     name: "CV Att",
     min: 0,
     max: 100,
+})
+// Following the device tonic turns the global Tonic fader into a live
+// transpose, so the harmony moves with Bassment and Contura. There is no
+// scale-follow counterpart here: APP_MAX_PARAMS is 16 and this is slot 16,
+// and Vamp's Scale defines the progressions, so it stays the patch's own.
+.add_param(Param::bool {
+    name: "Follow device tonic",
 });
 
 pub struct Params {
@@ -256,6 +263,7 @@ pub struct Params {
     range: Range,
     vpo: VoltPerOct,
     cv_att: i32,
+    follow_tonic: bool,
 }
 
 impl AppParams for Params {
@@ -263,10 +271,13 @@ impl AppParams for Params {
         if values.len() < 11 {
             return None;
         }
-        // Three layouts have existed: 16 with a separate Jack and CV Dest, 13
-        // with CV Dest only and CV In implied, and today's 15 with the two
-        // merged. Both older ones fold their pair into the merged enum.
-        let (jack, range, vpo, cv_att) = if values.len() >= 16 {
+        // Four layouts have existed: 16 with a separate Jack and CV Dest, 13
+        // with CV Dest only and CV In implied, 15 with the two merged, and
+        // today's 16 which appends the tonic-follow flag. The two 16s collide
+        // in length, so the tag on the last slot decides: the legacy one ended
+        // on CV Att (an i32), today's ends on the flag (a bool).
+        let legacy_16 = values.len() == 16 && !matches!(values[15], Value::bool(_));
+        let (jack, range, vpo, cv_att) = if legacy_16 {
             let out = usize::from_value(values[11]).min(1) == 0;
             let dest = usize::from_value(values[14]).min(1);
             (
@@ -308,6 +319,13 @@ impl AppParams for Params {
             range,
             vpo,
             cv_att,
+            // Older blobs predate the follow flags. Default them the way a
+            // fresh instance does so a stored patch transposes along too.
+            follow_tonic: if values.len() >= 16 && !legacy_16 {
+                bool::from_value(values[15])
+            } else {
+                true
+            },
         })
     }
 
@@ -328,6 +346,7 @@ impl AppParams for Params {
         vec.push(self.range.into()).unwrap();
         vec.push(self.vpo.into()).unwrap();
         vec.push(self.cv_att.into()).unwrap();
+        vec.push(self.follow_tonic.into()).unwrap();
         vec
     }
 }
@@ -531,10 +550,6 @@ const GENRES: [GenrePreset; NUM_GENRES] = [
         rhythm: &[2, 2, 1, 2, REST_CODE | 3, 2, 1, 2, REST_CODE | 5],
     },
 ];
-
-fn midi_u8(note: MidiNote) -> u8 {
-    u7::from(note).as_int()
-}
 
 fn note_to_pitch(note: u8) -> Pitch {
     // MIDI note 0 = C-1 → octave -1; MIDI 60 = C4 → octave 4.
@@ -885,6 +900,7 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
             range: Range::_0_10V,
             vpo: VoltPerOct::Standard,
             cv_att: 100,
+            follow_tonic: true,
         },
     );
     let storage = ManagedStorage::<Storage>::new(app.app_id, app.layout_id);
@@ -929,6 +945,7 @@ pub async fn run(
         range,
         vpo,
         cv_att,
+        follow_tonic,
     ) = params.query(|p| {
         (
             p.midi_out,
@@ -946,11 +963,16 @@ pub async fn run(
             p.range,
             p.vpo,
             att_from_pct(p.cv_att),
+            p.follow_tonic,
         )
     });
 
-    let root_midi = midi_u8(root);
-    let key = scale_index_to_key(scale_idx);
+    let local_key = scale_index_to_key(scale_idx);
+    let (root0, key0) = follow_key::root_and_key(follow_tonic, false, root, local_key);
+    // Resolved on every chord (see `play_degree`) rather than per millisecond —
+    // a transpose lands on the next chord, which is where a key change belongs.
+    let glob_root = app.make_global(root0);
+    let glob_key = app.make_global(key0);
     let vel12 = velocity_12bit(velocity);
 
     let fader = app.use_faders();
@@ -1393,7 +1415,12 @@ pub async fn run(
                     midi.try_send_note_off(MidiNote::from(*n));
                 }
                 sounding.clear();
-                let notes = build_chord(root_midi, key, degree, voicing, octave);
+                if follow_tonic {
+                    let (r, k) = follow_key::root_and_key(true, false, root, local_key);
+                    glob_root.set(r);
+                    glob_key.set(k);
+                }
+                let notes = build_chord(glob_root.get(), glob_key.get(), degree, voicing, octave);
                 for n in notes.iter() {
                     midi.try_send_note_on(MidiNote::from(*n), vel12);
                     let _ = sounding.push(*n);
@@ -1824,7 +1851,7 @@ pub async fn run(
             if let Some(ref jack) = out_jack {
                 let degree = glob_degree.get();
                 let octave = glob_octave.get();
-                let notes = build_chord(root_midi, key, degree, voicing, octave);
+                let notes = build_chord(glob_root.get(), glob_key.get(), degree, voicing, octave);
                 if let Some(&n) = notes.first() {
                     let counts = note_to_pitch(n).as_counts(range, vpo);
                     if counts != last_pitch_counts {
