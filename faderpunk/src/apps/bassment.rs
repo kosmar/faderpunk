@@ -9,7 +9,6 @@ use embassy_futures::{
 };
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, signal::Signal};
 use heapless::Vec;
-use midly::num::u7;
 use serde::{Deserialize, Serialize};
 
 use libfp::{
@@ -24,6 +23,7 @@ use libfp::{
 use crate::app::{
     App, AppParams, AppStorage, Die, Led, ManagedStorage, ParamStore, SceneEvent,
 };
+use crate::apps::follow_key;
 use crate::apps::genre_palette::{genre_fader_center, GENRE_NAMES, GENRE_PROG_8, NUM_GENRES};
 use crate::apps::groove::{
     feel_curve, feel_lerp_i32, feel_lerp_u16, swing_bias, swing_delay_ticks, FLAT_VEL, SIXTEENTH,
@@ -31,7 +31,7 @@ use crate::apps::groove::{
 use crate::apps::led_fx::{genre_nearest, genre_pair, lerp_i32, lerp_u8, spectrum_color};
 
 pub const CHANNELS: usize = 1;
-pub const PARAMS: usize = 13;
+pub const PARAMS: usize = 15;
 
 const LED_BRIGHTNESS: Brightness = Brightness::Mid;
 const BUTTON_DUCK_MS: u16 = 25;
@@ -102,7 +102,7 @@ struct VoiceProfile {
     ghost_pct: u8,
     /// Gate length scale (0–100); lower = more staccato.
     staccato: u8,
-    /// Extra density reveal bias in 0..=1600 (added before clamp).
+    /// Extra ghost-chance bias in 0..=1600 (added to ghost_pct after feel scaling).
     syncop_bias: u16,
     /// Accent velocity boost 0..=55.
     accent_boost: u8,
@@ -253,7 +253,7 @@ const PATTERNS: [BassPattern; NUM_GENRES] = [
     // 1 Disco — four-on-floor roots with octave pops
     BassPattern {
         hits: 0b0001_0001_0001_0001,
-        hits_fill: 0b1110_1110_1110_1110,
+        hits_fill: 0b1100_0100_0100_0100,
         accent_mask: 0b0001_0000_0001_0000,
         base_vel: 75,
         accent_vel: 110,
@@ -265,7 +265,7 @@ const PATTERNS: [BassPattern; NUM_GENRES] = [
     // 2 House — classic pump i–VII–VI–VII
     BassPattern {
         hits: 0b0001_0001_0001_0001,
-        hits_fill: 0b1110_1110_1110_1110,
+        hits_fill: 0b0100_0100_1100_0100,
         accent_mask: 0b0001_0001_0001_0001,
         base_vel: 80,
         accent_vel: 112,
@@ -301,7 +301,7 @@ const PATTERNS: [BassPattern; NUM_GENRES] = [
     // 5 Hip-Hop — boom-bap walk
     BassPattern {
         hits: 0b0100_0001_0010_0001,
-        hits_fill: 0b1010_1110_1101_1110,
+        hits_fill: 0b1000_0110_0100_0110,
         accent_mask: 0b0000_0001_0000_0001,
         base_vel: 70,
         accent_vel: 110,
@@ -313,7 +313,7 @@ const PATTERNS: [BassPattern; NUM_GENRES] = [
     // 6 Jungle — busy amen energy
     BassPattern {
         hits: 0b0100_1001_0010_0101,
-        hits_fill: 0b1111_0110_1101_1010,
+        hits_fill: 0b1010_0100_1001_0010,
         accent_mask: 0b0000_0001_0000_0001,
         base_vel: 65,
         accent_vel: 108,
@@ -325,7 +325,7 @@ const PATTERNS: [BassPattern; NUM_GENRES] = [
     // 7 UK Garage — skippy 2-step bass
     BassPattern {
         hits: 0b1000_1001_0010_0001,
-        hits_fill: 0b0111_0110_1101_1110,
+        hits_fill: 0b0110_0100_1001_0010,
         accent_mask: 0b0000_0001_0000_0001,
         base_vel: 70,
         accent_vel: 110,
@@ -741,7 +741,15 @@ pub static CONFIG: Config<PARAMS> = Config::new(
     max: 100,
 })
 // 0 = off. Typical synth cutoff is 74; value follows bassline / fill / solo.
-.add_param(Param::MidiCc { name: "Filter CC" });
+.add_param(Param::MidiCc { name: "Filter CC" })
+// Following the device tonic turns the global Tonic fader into a live
+// transpose that moves Bassment together with Contura, Arp and Venn.
+.add_param(Param::bool {
+    name: "Follow device tonic",
+})
+.add_param(Param::bool {
+    name: "Follow device scale",
+});
 
 pub struct Params {
     root: MidiNote,
@@ -760,6 +768,8 @@ pub struct Params {
     cv_att: i32,
     /// Filter cutoff CC number; 0 disables CC output.
     filter_cc: MidiCc,
+    follow_tonic: bool,
+    follow_scale: bool,
 }
 
 impl AppParams for Params {
@@ -790,6 +800,14 @@ impl AppParams for Params {
             } else {
                 MidiCc::from(0u8)
             },
+            // Older blobs predate the follow flags. Default them the way a
+            // fresh instance does so a stored patch transposes along too.
+            follow_tonic: if values.len() > 13 {
+                bool::from_value(values[13])
+            } else {
+                true
+            },
+            follow_scale: values.len() > 14 && bool::from_value(values[14]),
         })
     }
 
@@ -808,6 +826,8 @@ impl AppParams for Params {
         vec.push(self.vpo.into()).unwrap();
         vec.push(self.cv_att.into()).unwrap();
         vec.push(self.filter_cc.into()).unwrap();
+        vec.push(self.follow_tonic.into()).unwrap();
+        vec.push(self.follow_scale.into()).unwrap();
         vec
     }
 }
@@ -913,28 +933,6 @@ fn fill_reveal(fill: u16, density: u16, step: u32) -> Option<u8> {
     }
 }
 
-/// When density is in the upper third and DNA left the step empty, insert
-/// synthetic fill hits so max Density actually feels busy (fills alone are
-/// still capped by the pattern mask).
-fn synth_reveal(density: u16, step: u32, voice_idx: usize) -> Option<u8> {
-    const FLOOR: u16 = 2730;
-    if density < FLOOR {
-        return None;
-    }
-    let span = u32::from(4095u16.saturating_sub(FLOOR));
-    let t = u32::from(density.saturating_sub(FLOOR)).min(span);
-    // Offbeats first; downbeats rarer (cores usually cover them).
-    let chance = if step % 2 == 1 {
-        (t * 92 / span) as u8
-    } else {
-        (t * 55 / span) as u8
-    };
-    if step_chance(step, voice_idx, 17 + (step % 4)) >= chance {
-        return None;
-    }
-    Some(((t * 255) / span).max(80) as u8)
-}
-
 fn ghost_vel_pct(frac: u8, quiet: u16, full: u16) -> u16 {
     quiet + ((full - quiet) as u32 * frac as u32 / 255) as u16
 }
@@ -944,8 +942,7 @@ fn groove_timing_boost(feel: u16, groove_max_pct: i32, step: u32) -> i32 {
     let g = groove_feel(feel, groove_max_pct);
     let t = i32::from(feel_curve(g));
     // Odd 16ths push later; some even 16ths pull early — classic pocket.
-    // Wider throw than before so Feel actually moves the pocket.
-    let signed = if step % 2 == 1 { 5 } else { -2 };
+    let signed = if step % 2 == 1 { 2 } else { -1 };
     (signed * t) / 4095
 }
 
@@ -957,20 +954,11 @@ fn ghost_drag_ticks(density: u16, feel: u16, groove_max_pct: i32) -> u32 {
 }
 
 /// How many 16ths a hit can sustain before the next sounded step (1..=8).
-fn sustain_sixteenths(
-    hits: u16,
-    hits_fill: u16,
-    step: u32,
-    density: u16,
-    voice_idx: usize,
-) -> u32 {
+fn sustain_sixteenths(hits: u16, hits_fill: u16, step: u32, density: u16) -> u32 {
     let mut n = 1u32;
     for look in 1..8u32 {
         let s = step + look;
-        if bit_set(hits, s)
-            || fill_reveal(hits_fill, density, s).is_some()
-            || synth_reveal(density, s, voice_idx).is_some()
-        {
+        if bit_set(hits, s) || fill_reveal(hits_fill, density, s).is_some() {
             break;
         }
         n += 1;
@@ -1002,10 +990,6 @@ fn feel_swing_pct(bias: u8, feel: u16, groove_max_pct: i32) -> i32 {
     // Blend: keep genre DNA but let Groove max open the ceiling.
     let pct = (from_bias * 2 + toward_max) / 3;
     pct.min(groove_cap_pct(groove_max_pct)) as i32
-}
-
-fn midi_u8(note: MidiNote) -> u8 {
-    u7::from(note).as_int()
 }
 
 fn note_to_pitch(note: u8) -> Pitch {
@@ -1118,7 +1102,7 @@ fn resolve_hit(
     voice: &VoiceProfile,
     voice_idx: usize,
     root_midi: u8,
-    scale: usize,
+    key: Key,
     die: &Die,
 ) -> Option<ResolvedHit> {
     let phrase_bar = bar % PHRASE_BARS;
@@ -1134,17 +1118,12 @@ fn resolve_hit(
 
     let core = bit_set(hits, si_step);
     let ghost = fill_reveal(hits_fill, density, si_step);
-    let synth = if !core && ghost.is_none() {
-        synth_reveal(density, step, voice_idx)
-    } else {
-        None
-    };
 
     // Groovyland pickups: quiet lead-ins on the 'e'/'a' before the downbeat when
     // Feel is up and DNA left the slot empty (hash keeps sustain lookahead stable;
     // live Die decides whether the pickup actually fires).
     let mut pickup = false;
-    if !core && ghost.is_none() && synth.is_none() && phrase_bar != 7 {
+    if !core && ghost.is_none() && phrase_bar != 7 {
         let pickup_chance = if matches!(si_step, 14 | 15) {
             12u16 + (groove_t / 80)
         } else if si_step % 4 == 3 && groove_t > 2200 {
@@ -1159,7 +1138,7 @@ fn resolve_hit(
         }
     }
 
-    if !core && ghost.is_none() && synth.is_none() && !pickup {
+    if !core && ghost.is_none() && !pickup {
         return None;
     }
 
@@ -1172,24 +1151,6 @@ fn resolve_hit(
     }
     if phrase_bar == 7 && !core {
         return None;
-    }
-
-    // Air in the pocket: at high Feel, drop soft (non-accent) cores for space —
-    // classic groove negative space, stronger for busy voices.
-    if core
-        && !is_accent
-        && !pickup
-        && groove_t > 2200
-        && phrase_bar != 7
-    {
-        let air = if voice.pocket {
-            ((groove_t - 2200) * 18) / 1895
-        } else {
-            ((groove_t - 2200) * 32) / 1895
-        };
-        if chance_roll(die, step, voice_idx, 19, groove_t) < air.min(40) as u8 {
-            return None;
-        }
     }
 
     // Voice × genre: pocket players stay sparse in busy breaks; busy voices chill in dub/techno.
@@ -1206,24 +1167,30 @@ fn resolve_hit(
         4 | 5 => (ghost_base as u16 * 3) / 4,
         _ => ghost_base as u16,
     };
-    // High groove opens Voice ghost/approach character (except cadence breath).
-    // Extra groovyland bias: Feel unlocks more ghosts/approaches than before.
+    // Feel opens up the Voice's character without replacing it: a voice that
+    // plays no ghosts still plays none at full Feel. Syncopation rides along
+    // here rather than on Density, so the fader means the same for every voice.
+    let feel_scale = 50 + (50 * u32::from(groove_t)) / 4095; // 50..=100
     let ghost_pct = if phrase_bar == 7 {
         0
     } else {
-        let opened = ghost_phrase + ((100u16.saturating_sub(ghost_phrase)) * groove_t / 4095) * 2 / 3;
-        opened.min(100)
+        (((ghost_phrase as u32 * feel_scale) / 100) + u32::from(voice.syncop_bias) / 40).min(100)
+            as u16
     };
     let approach_pct = if phrase_bar == 7 {
         0
     } else {
-        (approach_base as u16 + approach_phrase)
-            .min(100)
-            .saturating_add(((100u16.saturating_sub(approach_base as u16)) * groove_t / 4095) / 2)
-            .min(100)
+        let scaled = (approach_base as u32 * feel_scale) / 100;
+        // Only voices that play approaches at all get the phrase bonus.
+        let phrase_add = if approach_base > 0 {
+            approach_phrase as u32
+        } else {
+            0
+        };
+        (scaled + phrase_add).min(100) as u16
     };
 
-    let fill_frac = ghost.or(synth).or(if pickup { Some(90u8) } else { None });
+    let fill_frac = ghost.or(if pickup { Some(90u8) } else { None });
     let is_ghost = (!core && fill_frac.is_some()) || pickup;
     if is_ghost && !pickup {
         let frac = fill_frac.unwrap_or(0);
@@ -1241,8 +1208,8 @@ fn resolve_hit(
         i32::from(pat_hi.degree[si]),
         g_frac,
     ) as i8;
-    // Synthetic fills / pickups: walk chord tones so empty steps aren't all roots.
-    if (synth.is_some() || pickup) && degree == 0 {
+    // Pickups: walk chord tones so empty steps aren't all roots.
+    if pickup && degree == 0 {
         degree = match chance_roll(die, step, voice_idx, 21, groove_t) % 4 {
             0 => 0,
             1 => 3,
@@ -1297,7 +1264,7 @@ fn resolve_hit(
         };
     }
 
-    let offsets = scale_offsets(scale_index_to_key(scale));
+    let offsets = scale_offsets(key);
     let n = offsets.len().max(1);
     let deg_i = degree.rem_euclid(n as i8) as usize;
     let mut semis = i16::from(offsets[deg_i % n]);
@@ -1309,8 +1276,10 @@ fn resolve_hit(
     let mut note = (i16::from(root_midi) + semis + i16::from(oct) * 12).clamp(0, 127) as u8;
 
     // Approaches: chromatic below, or scale-neighbor (Voice × Groove × Die).
-    if chance_roll(die, step, voice_idx, 11, groove_t) < approach_pct.min(100) as u8
-        && (core || pickup || density > 1800 || groove_t > 1600)
+    // An approach is a passing note. On a core hit it would replace the target
+    // harmony instead of announcing it.
+    if is_ghost
+        && chance_roll(die, step, voice_idx, 11, groove_t) < approach_pct.min(100) as u8
     {
         let flavor = chance_roll(die, step, voice_idx, 29, groove_t);
         if flavor < 55 || voice.pocket {
@@ -1447,7 +1416,7 @@ fn resolve_fill_hit(
     feel: u16,
     voice: &VoiceProfile,
     root_midi: u8,
-    scale: usize,
+    key: Key,
     die: &Die,
     base_vel: u8,
     accent_vel: u8,
@@ -1500,7 +1469,7 @@ fn resolve_fill_hit(
     }
     oct = oct.clamp(-2, 2);
 
-    let offsets = scale_offsets(scale_index_to_key(scale));
+    let offsets = scale_offsets(key);
     let n = offsets.len().max(1);
     let deg_i = degree_rel.rem_euclid(n as i8) as usize;
     let semis = i16::from(offsets[deg_i % n]);
@@ -1565,6 +1534,8 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
             vpo: VoltPerOct::Standard,
             cv_att: 100,
             filter_cc: MidiCc::from(0u8), // off until set
+            follow_tonic: true,
+            follow_scale: false, // Scale stays the patch's own choice
         },
     );
     let storage = ManagedStorage::<Storage>::new(app.app_id, app.layout_id);
@@ -1598,6 +1569,8 @@ pub async fn run(
         midi_channel,
         root,
         scale,
+        follow_tonic,
+        follow_scale,
         genre,
         voice_param,
         groove_max_pct,
@@ -1611,8 +1584,10 @@ pub async fn run(
         (
             p.midi_out,
             p.midi_channel,
-            p.root,
-            p.scale.min(SCALE_NAMES.len() - 1),
+        p.root,
+        p.scale.min(SCALE_NAMES.len() - 1),
+        p.follow_tonic,
+        p.follow_scale,
             p.genre.min(NUM_GENRES - 1),
             p.voice.min(NUM_VOICES - 1),
             p.groove_max_pct.clamp(-100, 100),
@@ -1698,7 +1673,8 @@ pub async fn run(
     let pending_cc = app.make_global(false);
     let pending_cc_val = app.make_global(0u16);
 
-    let root_midi = midi_u8(root);
+    let local_key = scale_index_to_key(scale);
+    let (root_midi, key) = follow_key::root_and_key(follow_tonic, follow_scale, root, local_key);
     midi.send_note_off(MidiNote::from(root_midi)).await;
 
     if muted {
@@ -1719,6 +1695,12 @@ pub async fn run(
         let mut sounding_note: u8 = 0;
         let mut gate_off_at: Option<u32> = None;
         let mut last_fired_slot = u32::MAX;
+        // Following the device Tonic turns the global fader into a live
+        // transpose. Resolving copies GlobalConfig, so do it once per bar —
+        // which also lands a new key on a bar line instead of mid-phrase.
+        let mut cur_root = root_midi;
+        let mut cur_key = key;
+        let mut last_key_bar = u32::MAX;
         // Slot the current fill/break gesture started on, so the release resolves
         // on the *next* downbeat rather than the one it may have started on.
         let mut fill_start_slot = 0u32;
@@ -1797,6 +1779,15 @@ pub async fn run(
                     let slot = pos / SIXTEENTH;
                     let step = (pos / SIXTEENTH) % STEPS_PER_BAR;
                     let bar = slot / STEPS_PER_BAR;
+                    if (follow_tonic || follow_scale) && bar != last_key_bar {
+                        last_key_bar = bar;
+                        (cur_root, cur_key) = follow_key::root_and_key(
+                            follow_tonic,
+                            follow_scale,
+                            root,
+                            local_key,
+                        );
+                    }
                     let phase = pos % SIXTEENTH;
                     let feel_val = if jack_param == JACK_IN_FEEL {
                         mod_u16(glob_feel.get(), glob_cv_val.get())
@@ -1819,19 +1810,21 @@ pub async fn run(
                         i32::from(pat_hi.timing[(step % STEPS_PER_BAR) as usize]),
                         g_frac,
                     );
-                    // Pattern DNA ×2 + pocket boost — all scaled by Groove Feel.
-                    let timing_off = feel_lerp_i32(0, timing_char * 2, gfeel)
-                        + groove_timing_boost(feel_val, gmax, step);
+                    // The DNA was written in the ms domain but this is ticks
+                    // (~21 ms each), so keep it tight — otherwise the bass
+                    // lands on the next step instead of in the pocket.
+                    let timing_off = (feel_lerp_i32(0, timing_char, gfeel)
+                        + groove_timing_boost(feel_val, gmax, step))
+                        .clamp(-2, 2);
                     let delay = ((swing_delay_ticks(step, swing_pct, glob_reversed.get()) as i32)
                         + timing_off)
                         .clamp(0, (SIXTEENTH as i32) - 1) as u32;
 
-                    let mut density = if jack_param == JACK_IN_DENSITY {
+                    let density = if jack_param == JACK_IN_DENSITY {
                         mod_u16(glob_density.get(), glob_cv_val.get())
                     } else {
                         glob_density.get()
                     };
-                    density = density.saturating_add(voice.syncop_bias).min(4095);
 
                     // Fill/break/solo gesture. Figure and shape lock in at press so a
                     // tap stays one phrase. Holding across a bar line escalates to
@@ -1923,8 +1916,8 @@ pub async fn run(
                                 is_break,
                                 feel_val,
                                 voice,
-                                root_midi,
-                                scale,
+                                cur_root,
+                                cur_key,
                                 &die,
                                 base,
                                 accent,
@@ -1943,8 +1936,8 @@ pub async fn run(
                                 gmax,
                                 voice,
                                 voice_idx,
-                                root_midi,
-                                scale,
+                                cur_root,
+                                cur_key,
                                 &die,
                             )
                         };
@@ -1958,15 +1951,7 @@ pub async fn run(
                         let any_ghost = if fill_armed {
                             false
                         } else {
-                            fill_reveal(rot16(pat.hits_fill, rot), density, step)
-                                .or_else(|| {
-                                    if !core {
-                                        synth_reveal(density, step, voice_idx)
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .is_some()
+                            fill_reveal(rot16(pat.hits_fill, rot), density, step).is_some()
                         };
                         let ghost_extra = ghost_drag_ticks(density, feel_val, gmax);
                         let required_delay = if core || !any_ghost {
@@ -2028,7 +2013,6 @@ pub async fn run(
                                         rot16(pat.hits_fill, rot),
                                         step,
                                         density,
-                                        voice_idx,
                                     )
                                 };
                                 let max_ticks = (SIXTEENTH * 8).saturating_sub(1);

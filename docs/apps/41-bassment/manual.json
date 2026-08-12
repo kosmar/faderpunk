@@ -22,7 +22,9 @@
     "Range",
     "V/Oct",
     "CV Att",
-    "Filter CC"
+    "Filter CC",
+    "Follow device tonic",
+    "Follow device scale"
   ],
   "storage": [
     "Feel",
