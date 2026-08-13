@@ -566,12 +566,11 @@ pub async fn run(
                 s.interval,
                 s.len_a,
                 s.len_b,
-                s.logic,
                 s.einv,
                 s.muted,
             )
         });
-        let (pa, pb, ext, iv, la, lb, logic, einv, muted) = s;
+        let (pa, pb, ext, iv, la, lb, einv, muted) = s;
         let len_a = length_from_fader(la);
         let len_b = length_from_fader(lb);
         len_a_glob.set(len_a);
@@ -580,10 +579,13 @@ pub async fn run(
         pulses_b_glob.set(pulses_from_fader(pb, len_b));
         extent_glob.set(extent_from_fader(ext));
         interval_glob.set(interval_from_fader(iv));
-        glob_logic.set(Logic::from_u8(logic) as u8);
         glob_einv.set(einv);
         glob_muted.set(muted);
     }
+    // Spawn on OR: the densest mode. A stored AND/XOR/Accnt from an earlier
+    // session looks like a dead app on a fresh patch.
+    glob_logic.set(Logic::Or as u8);
+    storage.modify_and_save(|s| s.logic = Logic::Or as u8);
     // Host-facing Interval B (configurator / presets) wins on spawn & param reload.
     interval_glob.set(interval_b.min(INTERVAL_MAX_DEGREES as usize) as u8);
 
