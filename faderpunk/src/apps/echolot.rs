@@ -70,7 +70,7 @@ pub static CONFIG: Config<PARAMS> = Config::new(
 )
 .add_param(Param::Enum {
     name: "I/O",
-    variants: &["MIDI→MIDI", "MIDI→CV", "CV→MIDI"],
+    variants: &["MIDI->MIDI", "MIDI->CV", "CV->MIDI"],
 })
 .add_param(Param::Enum {
     name: "Delay mode",
@@ -91,7 +91,7 @@ pub static CONFIG: Config<PARAMS> = Config::new(
 })
 .add_param(Param::Enum {
     name: "Signal",
-    variants: &["Pitch", "Gate", "CV→CC", "Gate→Note"],
+    variants: &["Pitch", "Gate", "CV->CC", "Gate->Note"],
 })
 .add_param(Param::Range {
     name: "Range",

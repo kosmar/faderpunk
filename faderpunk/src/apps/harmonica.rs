@@ -111,13 +111,13 @@ const CHORD_TEMPLATES: &[&[i8]] = &[
 
 pub static CONFIG: Config<PARAMS> = Config::new(
     "Harmonica",
-    "One MIDI/CV root → chord out",
+    "One MIDI/CV root -> chord out",
     Color::Orange,
     AppIcon::Note,
 )
 .add_param(Param::Enum {
     name: "I/O",
-    variants: &["MIDI→MIDI", "MIDI→CV", "CV→MIDI"],
+    variants: &["MIDI->MIDI", "MIDI->CV", "CV->MIDI"],
 })
 .add_param(Param::Range {
     name: "Range",

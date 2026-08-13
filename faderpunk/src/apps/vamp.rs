@@ -172,7 +172,7 @@ fn hit_gate_ticks(segment: u32, feel: u16, swing_delay: u32) -> u32 {
 
 pub static CONFIG: Config<PARAMS> = Config::new(
     "Chord Vamp",
-    "Chord progressions — perform, shift+tap capture, or auto vamp",
+    "Chord progressions - perform, shift+tap capture, or auto vamp",
     Color::Violet,
     AppIcon::NoteGrid,
 )

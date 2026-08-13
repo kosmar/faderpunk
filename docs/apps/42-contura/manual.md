@@ -14,4 +14,4 @@ stretches and shortens the sentence, which moves the contour arch and the
 cadence with it. Gates via MIDI note on/off.
 Phrases mix short, medium, and longer note lengths.
 
-**Follow device tonic** (default on) turns the device Tonic into a live transpose: hold the Scene button and move Fader 5 and Contura moves with Bassment, Chord Vamp, Venn and Arp de Lévy. The note pool is rebuilt on the change, so the cadence resolves in the new key; it takes effect at the next phrase start. **Follow device scale** (default off) swaps the Scale set for the device Scale.
+**Follow device tonic** (default on) turns the device Tonic into a live transpose: hold the Scene button and move Fader 5 and Contura moves with Bassment, Chord Vamp, Venn and Arp de Levy. The note pool is rebuilt on the change, so the cadence resolves in the new key; it takes effect at the next phrase start. **Follow device scale** (default off) swaps the Scale set for the device Scale.

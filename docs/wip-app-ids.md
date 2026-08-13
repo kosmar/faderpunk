@@ -17,7 +17,7 @@ Flash integration branch: **`test/playground`** (count-agnostic; formerly
 | 31 | Golden Gate | `feat/golden-gate` | aka `fibonacci_gate` |
 | 32 | Super LFO | `feat/super-lfo-app` | 2 channels |
 | 33 | Echolot | `feat/echolot` | MIDI/CV delay |
-| 34 | Arp de Lévy | `feat/arp-de-levy` | |
+| 34 | Arp de Levy | `feat/arp-de-levy` | |
 | 35 | Chord Vamp | `feat/vamp` | Chord progressions |
 | 36 | Hold Sam | `feat/hold-sam` | Sample-and-hold / clocked capture |
 | 37 | Harmonica | `feat/harmonica` | Monophonic in → chord out |

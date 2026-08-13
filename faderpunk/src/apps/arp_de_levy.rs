@@ -79,8 +79,8 @@ fn mod_u16(base: u16, in_val: u16) -> u16 {
 }
 
 pub static CONFIG: Config<PARAMS> = Config::new(
-    "Arp de Lévy",
-    "Lévy-flight generative arpeggiator — evolve, texture, and flight character",
+    "Arp de Levy",
+    "Levy-flight generative arpeggiator - evolve, texture, and flight character",
     Color::Rose,
     AppIcon::SoftRandom,
 )

@@ -6,8 +6,8 @@ ELF=target/thumbv8m.main-none-eabihf/release/faderpunk
 [[ -f "$UF2" ]] || { echo "missing UF2"; exit 1; }
 [[ -f "$ELF" && "$ELF" -nt "$UF2" ]] && { echo "ELF newer than UF2"; exit 1; }
 echo "=== preflight ==="
-# Grep the ELF binary (not UF2 / not `strings`): UF2 splits payloads, and
-# `strings` drops non-ASCII so names like "Arp de Lévy" vanish.
+# Grep the ELF binary (not UF2 / not `strings`): UF2 splits payloads. CONFIG
+# names are ASCII-only (libfp asserts it), so plain `rg -aF` matches are exact.
 # Keep in sync with docs/wip-app-ids.md (IDs 29–43; never 28/Sift).
 REQUIRED=(
   "Heat Pump"
@@ -15,7 +15,7 @@ REQUIRED=(
   "Golden Gate"
   "Super LFO"
   "Echolot"
-  "Arp de Lévy"
+  "Arp de Levy"
   "Chord Vamp"
   "Hold Sam"
   "Harmonica"

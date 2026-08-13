@@ -77,11 +77,11 @@ pub static CONFIG: Config<PARAMS> = Config::new(
 .add_param(Param::Enum {
     name: "Mode",
     variants: &[
-        "Pitch→MIDI",
-        "Gate→MIDI",
-        "MIDI→MIDI",
-        "MIDI→CV",
-        "Fader→Both",
+        "Pitch->MIDI",
+        "Gate->MIDI",
+        "MIDI->MIDI",
+        "MIDI->CV",
+        "Fader->Both",
     ],
 })
 .add_param(Param::MidiChannel {

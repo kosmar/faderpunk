@@ -68,7 +68,7 @@ fn mod_u16(base: u16, in_val: u16) -> u16 {
 
 pub static CONFIG: Config<PARAMS> = Config::new(
     "Golden Gate",
-    "Fibonacci-spaced gates — successive ratios approach φ",
+    "Fibonacci-spaced gates - successive ratios approach phi",
     Color::Violet,
     AppIcon::SequenceSquare,
 )
