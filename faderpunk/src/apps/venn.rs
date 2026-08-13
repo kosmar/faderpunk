@@ -616,10 +616,19 @@ pub async fn run(
         let mut cached_root = MidiNote::from(root0);
         let mut cached_pcs = scale_pcs(key0);
         let mut last_cycle = u32::MAX;
+        // Step and gate-off used to test the tick number for exact equality.
+        // The gatekeeper publishes ticks immediately, so a subscriber that
+        // falls behind drops them instead of stalling the device clock — and a
+        // missed gate-off tick left the note and the CV gate stuck high until
+        // the next one happened to land. Track the step instead.
+        let mut last_step: Option<u32> = None;
+        let mut gate_off_done = true;
 
         loop {
             match clock.wait_for_event(ClockDivision::_1).await {
                 ClockEvent::Reset | ClockEvent::Stop => {
+                    last_step = None;
+                    gate_off_done = true;
                     midi.send_note_off(sounding_a).await;
                     midi.send_note_off(sounding_b).await;
                     note_on_a = false;
@@ -645,8 +654,11 @@ pub async fn run(
                     let extent = extent_glob.get();
                     let interval = interval_glob.get();
 
-                    if clkn.is_multiple_of(div) {
-                        let step = clkn / div;
+                    let step_now = clkn / div;
+                    if last_step != Some(step_now) {
+                        last_step = Some(step_now);
+                        gate_off_done = false;
+                        let step = step_now;
                         // Rotation fixed at 0 — Alt latches are Extent / Interval.
                         let a = euclidean_at(len_a, pulses_a, 0, step);
                         let b = euclidean_at(len_b, pulses_b, 0, step);
@@ -738,7 +750,8 @@ pub async fn run(
 
                     // Gate off
                     let gate_off = (div * gatel as u32 / 100).clamp(1, div.saturating_sub(1));
-                    if clkn % div == gate_off {
+                    if !gate_off_done && clkn % div >= gate_off {
+                        gate_off_done = true;
                         if note_on_a {
                             midi.send_note_off(sounding_a).await;
                             note_on_a = false;
