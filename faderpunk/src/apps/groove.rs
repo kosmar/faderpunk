@@ -8,6 +8,37 @@ use super::genre_palette::NUM_GENRES;
 /// 24 PPQN → one 16th note.
 pub const SIXTEENTH: u32 = 6;
 
+/// Steps per bar on the 16th grid.
+pub const STEPS_PER_BAR: u32 = 16;
+
+/// Test bit `step` in a 16-step mask (step 0 = LSB / rightmost).
+#[inline]
+pub fn bit_set(mask: u16, step: u32) -> bool {
+    mask & (1u16 << (step % STEPS_PER_BAR)) != 0
+}
+
+/// Rotate a 16-step mask left by `n` sixteenths.
+#[inline]
+pub fn rot16(mask: u16, n: u32) -> u16 {
+    let n = n % 16;
+    if n == 0 {
+        mask
+    } else {
+        mask.rotate_left(n)
+    }
+}
+
+/// Deterministic 0..99 hash from step + voice + salt.
+#[inline]
+pub fn step_chance(step: u32, voice: usize, salt: u32) -> u8 {
+    let x = step
+        .wrapping_mul(37)
+        .wrapping_add(voice as u32)
+        .wrapping_mul(17)
+        .wrapping_add(salt);
+    (x % 100) as u8
+}
+
 /// Flat core velocity % when Feel is fully attenuated (all voices equal).
 /// Used by Grooves; kept public for the shared API.
 #[allow(dead_code)]

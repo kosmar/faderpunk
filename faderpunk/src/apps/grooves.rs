@@ -19,10 +19,12 @@ use crate::app::{
 };
 use crate::apps::genre_palette::{genre_fader_center, GENRE_NAMES, NUM_GENRES};
 use crate::apps::groove::{
-    feel_curve, feel_lerp_i32, feel_lerp_u16, humanize_curve, swing_bias, swing_delay_ms,
+    feel_curve, feel_lerp_i32, feel_lerp_u16, humanize_curve, step_chance, swing_bias, swing_delay_ms,
     FLAT_VEL, SIXTEENTH,
 };
 use crate::apps::led_fx::{genre_nearest, genre_pair, lerp_i32, lerp_u8, spectrum_color};
+use crate::apps::ornament::{self, ArticContext, GrooveVoice, MAX_HITS};
+use crate::tasks::global_config::get_global_config;
 
 pub const CHANNELS: usize = 1;
 pub const PARAMS: usize = 16;
@@ -1111,6 +1113,14 @@ fn voice_push_family(voice: usize) -> usize {
     }
 }
 
+fn groove_voice_family(voice: usize) -> GrooveVoice {
+    match voice {
+        V_SNARE | V_CLAP => GrooveVoice::Snare,
+        V_HATS | V_OPEN_HAT => GrooveVoice::Hats,
+        _ => GrooveVoice::Kick,
+    }
+}
+
 /// Gate length as % of `GATE %` for each voice.
 fn gate_factor_pct(voice: usize) -> u32 {
     match voice {
@@ -1487,13 +1497,15 @@ pub async fn run(
         let mut origin: u32 = 0;
         let mut origin_set = false;
         // Per-voice schedule for the current 16th (u32::MAX = idle).
-        let mut target_ms = [u32::MAX; VOICES];
-        let mut sched_vel = [0u16; VOICES];
+        let mut target_ms = [[u32::MAX; MAX_HITS]; VOICES];
+        let mut sched_vel = [[0u16; MAX_HITS]; VOICES];
+        let mut sched_len = [0u8; VOICES];
         let mut sched_midi = [false; VOICES];
         let mut sched_cv = [false; VOICES];
         let mut sched_acc = [false; VOICES];
         let mut sched_gh = [false; VOICES];
-        let mut fired = [false; VOICES];
+        let mut sched_gate_pct = [[100u8; MAX_HITS]; VOICES];
+        let mut fired = [[false; MAX_HITS]; VOICES];
         let mut gate_off_wall: [Option<u32>; VOICES] = [None; VOICES];
         // CV runs its own, shorter window so the jack stays a trigger.
         let mut cv_off_wall: [Option<u32>; VOICES] = [None; VOICES];
@@ -1556,8 +1568,9 @@ pub async fn run(
                 if let Some(ref jack) = out_jack {
                     jack.set_value(pulse_idle(range));
                 }
-                target_ms = [u32::MAX; VOICES];
-                fired = [false; VOICES];
+                target_ms = [[u32::MAX; MAX_HITS]; VOICES];
+                sched_len = [0; VOICES];
+                fired = [[false; MAX_HITS]; VOICES];
                 gate_off_wall = [None; VOICES];
                 cv_off_wall = [None; VOICES];
                 cv_on = [false; VOICES];
@@ -1658,8 +1671,9 @@ pub async fn run(
                 origin = clkn;
                 origin_set = true;
                 scheduled_slot = u32::MAX;
-                target_ms = [u32::MAX; VOICES];
-                fired = [false; VOICES];
+                target_ms = [[u32::MAX; MAX_HITS]; VOICES];
+                sched_len = [0; VOICES];
+                fired = [[false; MAX_HITS]; VOICES];
                 glob_reset.set(false);
                 glob_fill_armed.set(false);
                 glob_fill_start.set(false);
@@ -1728,8 +1742,14 @@ pub async fn run(
                 g_frac,
             );
             let timing_off = feel_lerp_i32(0, timing_char, feel_val);
-            let swing =
-                swing_delay_ms(step, swing_pct, glob_reversed.get(), sixteenth_ms);
+            // The device clock already swings its ticker for internal and
+            // external sources. Keep the app's genre swing only while global
+            // swing is neutral, otherwise both delays would stack.
+            let swing = if get_global_config().clock.swing_amount == 0 {
+                swing_delay_ms(step, swing_pct, glob_reversed.get(), sixteenth_ms)
+            } else {
+                0
+            };
             let tightness = lerp_u8(pat_lo.tightness, pat_hi.tightness, g_frac);
             // Ghost window walks on a four-bar phrase, and only once Feel is
             // past the flat zone — below that the bar has to repeat verbatim.
@@ -1742,13 +1762,15 @@ pub async fn run(
             // Schedule once per 16th slot (ms dues released below).
             if slot != scheduled_slot && !glob_muted.get() {
                 scheduled_slot = slot;
-                target_ms = [u32::MAX; VOICES];
-                sched_vel = [0; VOICES];
+                target_ms = [[u32::MAX; MAX_HITS]; VOICES];
+                sched_vel = [[0; MAX_HITS]; VOICES];
+                sched_len = [0; VOICES];
                 sched_midi = [false; VOICES];
                 sched_cv = [false; VOICES];
                 sched_acc = [false; VOICES];
                 sched_gh = [false; VOICES];
-                fired = [false; VOICES];
+                sched_gate_pct = [[100; MAX_HITS]; VOICES];
+                fired = [[false; MAX_HITS]; VOICES];
 
                 let tier = (solo_bar % SOLO_PHRASE_BARS) as usize;
                 let solo_fig = if glob_fill_armed.get()
@@ -1771,6 +1793,26 @@ pub async fn run(
                     None
                 };
                 let gesture = solo_fig.is_some() || fill_fig.is_some();
+                let is_break_gesture =
+                    fill_fig.is_some() && glob_fill_break.get() && !glob_fill_solo.get();
+
+                let artic_ctx = if solo_fig.is_some() {
+                    ArticContext::Solo {
+                        tier: tier as u8,
+                        phrase_bar: solo_bar,
+                        feel: feel_val,
+                    }
+                } else if fill_fig.is_some() {
+                    ArticContext::Fill {
+                        step,
+                        feel: feel_val,
+                    }
+                } else {
+                    ArticContext::Groove {
+                        density,
+                        feel: feel_val,
+                    }
+                };
 
                 let mut kick_acc_hit = false;
                 let mut snare_acc_hit = false;
@@ -2046,8 +2088,29 @@ pub async fn run(
                             .max(1);
                         vels[voice] = midi_vel(pct as u16);
                     }
-                    target_ms[voice] = due;
-                    sched_vel[voice] = vels[voice];
+                    let fam = groove_voice_family(voice);
+                    // Derived voices follow their parent — no extra ornaments.
+                    let plan = if voice <= V_HATS && !is_break_gesture {
+                        let chance = step_chance(step, voice, 0xA7);
+                        ornament::groove_plan(
+                            near,
+                            fam,
+                            artic_ctx,
+                            chance,
+                            voice as u32,
+                            100,
+                        )
+                    } else {
+                        ornament::OrnamentPlan::single_main()
+                    };
+                    sched_len[voice] = plan.len;
+                    let dues = ornament::hit_due_ms(due, &plan, sixteenth_ms);
+                    for hi in 0..plan.len as usize {
+                        target_ms[voice][hi] = dues[hi];
+                        sched_vel[voice][hi] =
+                            ornament::scale_vel(vels[voice], plan.hits[hi]);
+                        sched_gate_pct[voice][hi] = plan.hits[hi].gate_pct;
+                    }
                     sched_cv[voice] = true;
                     sched_midi[voice] = enabled[voice];
                     sched_gh[voice] = ghosts[voice];
@@ -2061,30 +2124,37 @@ pub async fn run(
                 let mut any_fire = false;
                 let mut cv_hits = [false; VOICES];
                 for voice in 0..VOICES {
-                    if fired[voice] || target_ms[voice] == u32::MAX {
-                        continue;
-                    }
-                    if elapsed_ms >= target_ms[voice] {
-                        fired[voice] = true;
-                        let room = sixteenth_ms.saturating_sub(elapsed_ms).max(1);
-                        let glen = voice_gate_ms(
-                            voice,
-                            gatel,
-                            sixteenth_ms,
-                            sched_acc[voice],
-                            sched_gh[voice],
-                        );
-                        gate_off_wall[voice] = Some(wall_ms.wrapping_add(glen));
-                        if sched_cv[voice] {
-                            cv_off_wall[voice] =
-                                Some(wall_ms.wrapping_add(cv_pulse_ms(glen, room)));
-                            cv_on[voice] = true;
-                            cv_hits[voice] = true;
+                    let len = sched_len[voice] as usize;
+                    for hi in 0..len {
+                        if fired[voice][hi] || target_ms[voice][hi] == u32::MAX {
+                            continue;
                         }
-                        if sched_midi[voice] {
-                            fire[voice] = true;
-                            fire_vels[voice] = sched_vel[voice];
-                            any_fire = true;
+                        if elapsed_ms >= target_ms[voice][hi] {
+                            fired[voice][hi] = true;
+                            let room = sixteenth_ms.saturating_sub(elapsed_ms).max(1);
+                            let base_glen = voice_gate_ms(
+                                voice,
+                                gatel,
+                                sixteenth_ms,
+                                sched_acc[voice],
+                                sched_gh[voice],
+                            );
+                            let glen = (base_glen as u64 * u64::from(sched_gate_pct[voice][hi]) / 100)
+                                .max(u64::from(MIN_GATE_MS)) as u32;
+                            gate_off_wall[voice] = Some(wall_ms.wrapping_add(glen));
+                            if sched_cv[voice] {
+                                cv_off_wall[voice] =
+                                    Some(wall_ms.wrapping_add(cv_pulse_ms(glen, room)));
+                                cv_on[voice] = true;
+                                cv_hits[voice] = true;
+                            }
+                            if sched_midi[voice] {
+                                fire[voice] = true;
+                                fire_vels[voice] = sched_vel[voice][hi];
+                                any_fire = true;
+                            }
+                            // One sub-hit per voice per poll — avoids MIDI overwrite.
+                            break;
                         }
                     }
                 }

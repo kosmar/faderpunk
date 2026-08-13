@@ -4,6 +4,7 @@ mod groove;
 mod led_fx;
 mod led_spectrum;
 mod morph;
+mod ornament;
 
 register_apps!(
     1 => control,

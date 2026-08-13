@@ -26,6 +26,7 @@ use libfp::{
 use crate::{
     app::{App, AppParams, AppStorage, Die, Led, ManagedStorage, ParamStore, SceneEvent},
     apps::follow_key,
+    apps::ornament::{self, MAX_HITS},
 };
 
 pub const CHANNELS: usize = 1;
@@ -820,6 +821,31 @@ fn nearest_tonic_index(pool: &[u8], cur: usize, tonic: u8) -> usize {
     best
 }
 
+/// Melodic pool index for a Contura ornament sub-hit (no genre clichés).
+fn contura_ornament_idx(
+    pool_len: usize,
+    base_idx: usize,
+    hi: usize,
+    plan: &ornament::OrnamentPlan,
+    rising: bool,
+    roll: u16,
+) -> usize {
+    if pool_len == 0 {
+        return 0;
+    }
+    let main_i = ornament::main_hit_index(plan);
+    if hi == main_i {
+        return base_idx.min(pool_len - 1);
+    }
+    let step = if rising { 1usize } else { pool_len - 1 };
+    match roll % 4 {
+        0 => base_idx,
+        1 => base_idx.saturating_add(1).min(pool_len - 1),
+        2 => base_idx.saturating_sub(1),
+        _ => (base_idx + step) % pool_len,
+    }
+}
+
 fn pick_next_index(
     die: &Die,
     cur: usize,
@@ -1021,8 +1047,22 @@ pub async fn run(
         let mut last_div_fire: u64 = u64::MAX;
         let mut stall_ms = 0u16;
         let mut prev_gate_high = false;
+        let mut orn_active = false;
+        let mut orn_plan = ornament::OrnamentPlan::empty();
+        let mut orn_dues = [u32::MAX; MAX_HITS];
+        let mut orn_fired = [false; MAX_HITS];
+        let mut orn_start: u64 = 0;
+        let mut orn_base_idx = 0usize;
+        let mut orn_base_remain = 1u8;
+        let mut orn_base_vel = 3200u16;
+        let mut orn_phrase_step = 0u8;
+        let mut orn_feel = FEEL_NEUTRAL;
 
-        let silence = |gated: &mut bool, remain: &mut u8, phrase_step: &mut u8| {
+        let silence = |gated: &mut bool,
+                       remain: &mut u8,
+                       phrase_step: &mut u8,
+                       orn_active: &mut bool,
+                       orn_fired: &mut [bool; MAX_HITS]| {
             pending_fire.set(false);
             pending_note_off.set(false);
             pending_silence.set(true);
@@ -1032,6 +1072,8 @@ pub async fn run(
             *gated = false;
             *remain = 0;
             *phrase_step = 0;
+            *orn_active = false;
+            *orn_fired = [false; MAX_HITS];
             glob_gate_on.set(false);
         };
 
@@ -1055,21 +1097,21 @@ pub async fn run(
 
             if glob_silence_req.get() {
                 glob_silence_req.set(false);
-                silence(&mut gated, &mut remain, &mut phrase_step);
+                silence(&mut gated, &mut remain, &mut phrase_step, &mut orn_active, &mut orn_fired);
             }
 
             let t = ticks();
             if t == last_seen {
                 stall_ms = stall_ms.saturating_add(2);
                 if stall_ms >= 250 && gated {
-                    silence(&mut gated, &mut remain, &mut phrase_step);
+                    silence(&mut gated, &mut remain, &mut phrase_step, &mut orn_active, &mut orn_fired);
                 }
                 continue;
             }
             stall_ms = 0;
 
             if t < last_seen {
-                silence(&mut gated, &mut remain, &mut phrase_step);
+                silence(&mut gated, &mut remain, &mut phrase_step, &mut orn_active, &mut orn_fired);
                 last_seen = t;
                 last_div_fire = u64::MAX;
                 continue;
@@ -1079,6 +1121,99 @@ pub async fn run(
             glob_midi_div.set(div as u32);
             let boundary = t - (t % div);
             last_seen = t;
+
+            let muted = glob_muted.get();
+            let scale_set = glob_scale.get();
+            let octaves = glob_octaves.get();
+            let scale_change =
+                scale_set != last_scale || octaves != last_oct || glob_resets_voice.get();
+
+            // Abort ornaments before pending hits — reset/mute/scale must not leave a stale fire.
+            if glob_reset.get() {
+                glob_reset.set(false);
+                phrase_step = 0;
+                remain = 0;
+                orn_active = false;
+                orn_fired = [false; MAX_HITS];
+                orn_plan = ornament::OrnamentPlan::empty();
+                pending_fire.set(false);
+                if gated {
+                    pending_note_off.set(true);
+                    gated = false;
+                    glob_gate_on.set(false);
+                }
+            } else if scale_change {
+                glob_resets_voice.set(false);
+                orn_active = false;
+                orn_fired = [false; MAX_HITS];
+                orn_plan = ornament::OrnamentPlan::empty();
+                pending_fire.set(false);
+                if gated {
+                    pending_note_off.set(true);
+                    gated = false;
+                    glob_gate_on.set(false);
+                }
+            } else if muted {
+                orn_active = false;
+                orn_fired = [false; MAX_HITS];
+                orn_plan = ornament::OrnamentPlan::empty();
+                pending_fire.set(false);
+                if gated {
+                    pending_note_off.set(true);
+                    gated = false;
+                    glob_gate_on.set(false);
+                }
+            }
+
+            // Pending ornament hits (between boundaries and due-0 on the boundary tick).
+            if orn_active && !muted && !pool.is_empty() {
+                let elapsed = t.saturating_sub(orn_start) as u32;
+                let main_i = ornament::main_hit_index(&orn_plan);
+                let phrase_len_now = phrase_from_fader(glob_phrase.get()).max(1);
+                let rising = contour_rising(orn_feel.contour, orn_phrase_step, phrase_len_now);
+                let plen = pool.len();
+                for hi in 0..orn_plan.len as usize {
+                    if orn_fired[hi] || orn_dues[hi] == u32::MAX {
+                        continue;
+                    }
+                    if elapsed < orn_dues[hi] {
+                        break;
+                    }
+                    orn_fired[hi] = true;
+                    let oidx = contura_ornament_idx(
+                        plen,
+                        orn_base_idx,
+                        hi,
+                        &orn_plan,
+                        rising,
+                        (elapsed as u16).wrapping_add(hi as u16 * 17),
+                    );
+                    if let Some(&note) = pool.get(oidx.min(plen - 1)) {
+                        if gated {
+                            pending_note_off.set(true);
+                        }
+                        if let Some(ref jack) = out_jack {
+                            jack.set_value(note_to_pitch(note).as_counts(range, vpo));
+                        }
+                        let oh = orn_plan.hits[hi];
+                        pending_note.set(note);
+                        pending_vel.set(ornament::scale_vel(orn_base_vel, oh));
+                        pending_fire.set(true);
+                        gated = true;
+                        glob_gate_on.set(true);
+                        glob_button_duck.set(BUTTON_DUCK_MS);
+                        if hi == main_i {
+                            remain = orn_base_remain;
+                            idx = oidx;
+                        }
+                    }
+                    break; // one sub-hit per engine tick
+                }
+                if orn_fired.iter().take(orn_plan.len as usize).all(|f| *f) {
+                    orn_active = false;
+                }
+            }
+
             if boundary == 0 && t < div {
                 continue;
             }
@@ -1087,9 +1222,6 @@ pub async fn run(
             }
             last_div_fire = boundary;
 
-            let muted = glob_muted.get();
-            let scale_set = glob_scale.get();
-            let octaves = glob_octaves.get();
             let interval = if jack_param == JACK_IN_INTERVAL {
                 mod_u16(glob_interval.get(), glob_cv_val.get())
             } else {
@@ -1102,20 +1234,7 @@ pub async fn run(
                 glob_density.get()
             };
 
-            if glob_reset.get() {
-                glob_reset.set(false);
-                phrase_step = 0;
-                remain = 0;
-            }
-
-            if scale_set != last_scale || octaves != last_oct || glob_resets_voice.get() {
-                glob_resets_voice.set(false);
-                if gated {
-                    pending_fire.set(false);
-                    pending_note_off.set(true);
-                    gated = false;
-                    glob_gate_on.set(false);
-                }
+            if scale_change {
                 remain = 0;
                 let plen = rebuild(&mut pool, &mut cached_tonic, scale_set, octaves);
                 last_scale = scale_set;
@@ -1136,11 +1255,6 @@ pub async fn run(
             idx = idx.min(plen - 1);
 
             if muted {
-                if gated {
-                    pending_fire.set(false);
-                    pending_note_off.set(true);
-                    gated = false;
-                }
                 remain = 0;
                 glob_gate_on.set(false);
                 continue;
@@ -1156,6 +1270,15 @@ pub async fn run(
                     glob_gate_on.set(false);
                 }
             } else {
+                if orn_active {
+                    orn_active = false;
+                    orn_fired = [false; MAX_HITS];
+                    if gated {
+                        pending_note_off.set(true);
+                        gated = false;
+                        glob_gate_on.set(false);
+                    }
+                }
                 let r = die.roll();
                 let steps_left = phrase_len.saturating_sub(phrase_step).max(1);
                 if r > density {
@@ -1200,18 +1323,76 @@ pub async fn run(
                         min_duration_for_div(div as u32),
                     )
                     .max(1);
-                    if let Some(&note) = pool.get(idx.min(plen - 1)) {
-                        if let Some(ref jack) = out_jack {
-                            jack.set_value(note_to_pitch(note).as_counts(range, vpo));
-                        }
+                    let gate = ornament::contura_ornament_gate(
+                        feel.ornament,
+                        express,
+                        phrase_step,
+                        phrase_len,
+                        div as u32,
+                    );
+                    let plan = ornament::contura_plan(r, rising, gate);
+                    let base_vel = note_velocity(r, phrase_step, remain, feel);
+                    if plan.len <= 1
+                        || !ornament::contura_plan_fits(&plan, div as u32)
+                    {
+                        if let Some(&note) = pool.get(idx.min(plen - 1)) {
+                            if let Some(ref jack) = out_jack {
+                                jack.set_value(note_to_pitch(note).as_counts(range, vpo));
+                            }
 
-                        pending_note.set(note);
-                        pending_vel.set(note_velocity(r, phrase_step, remain, feel));
-                        pending_fire.set(true);
-                        gated = true;
-                        glob_gate_on.set(true);
-                        // Button duck doubles as activity cue.
-                        glob_button_duck.set(BUTTON_DUCK_MS);
+                            pending_note.set(note);
+                            pending_vel.set(base_vel);
+                            pending_fire.set(true);
+                            gated = true;
+                            glob_gate_on.set(true);
+                            glob_button_duck.set(BUTTON_DUCK_MS);
+                        }
+                    } else {
+                        orn_active = true;
+                        orn_plan = plan;
+                        orn_dues = ornament::hit_due_ticks(0, &plan, div as u32);
+                        orn_fired = [false; MAX_HITS];
+                        orn_start = boundary;
+                        orn_base_idx = idx.min(plen - 1);
+                        orn_base_remain = remain;
+                        orn_base_vel = base_vel;
+                        orn_phrase_step = phrase_step;
+                        orn_feel = feel;
+                        // Due-0 grace fires immediately on this boundary tick.
+                        let main_i = ornament::main_hit_index(&orn_plan);
+                        if orn_plan.len > 0 && orn_dues[0] == 0 {
+                            orn_fired[0] = true;
+                            let oidx = contura_ornament_idx(
+                                plen,
+                                orn_base_idx,
+                                0,
+                                &orn_plan,
+                                rising,
+                                0,
+                            );
+                            if let Some(&note) = pool.get(oidx.min(plen - 1)) {
+                                if gated {
+                                    pending_note_off.set(true);
+                                }
+                                if let Some(ref jack) = out_jack {
+                                    jack.set_value(note_to_pitch(note).as_counts(range, vpo));
+                                }
+                                let oh = orn_plan.hits[0];
+                                pending_note.set(note);
+                                pending_vel.set(ornament::scale_vel(base_vel, oh));
+                                pending_fire.set(true);
+                                gated = true;
+                                glob_gate_on.set(true);
+                                glob_button_duck.set(BUTTON_DUCK_MS);
+                                if main_i == 0 {
+                                    remain = orn_base_remain;
+                                    idx = oidx;
+                                }
+                            }
+                        }
+                        if orn_fired.iter().take(orn_plan.len as usize).all(|f| *f) {
+                            orn_active = false;
+                        }
                     }
                 }
             }

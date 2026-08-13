@@ -71,7 +71,8 @@
             "One enum — a CV In destination and CV Out were never live at once",
             "Range, V/Oct, CV Att",
             "Filter CC — cutoff number (0 = off; 74 is typical); brightness = genre base + Voice bite + accent dynamics, lifted by fill / solo",
-            "Groove max % carries the swing direction in its sign — negative swings the offbeats early"
+            "Groove max % carries the swing direction in its sign — negative swings the offbeats early",
+            "High Density + Feel: genre ornaments (≤3 strokes/onset) — Voice shapes repeat, approach, ghost or octave pickup; filter CC only on the main strike"
           ]
         }
       ]
