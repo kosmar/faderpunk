@@ -49,12 +49,14 @@ const LFO_SYMMETRY: u16 = 2048;
 const LFO_WARP: u16 = 0;
 /// Clock divisions the speed fader spans (slowest 384 ticks … 6 = quarter note).
 const LFO_DIVISIONS: usize = 9;
-/// Five equidistant open-spectrum hues, blue → orange: input on CV, input on
-/// the internal LFO, then the three out modes (CV, Gate, Trigger).
-const MANIFOLD_HUES: [u16; 5] = [240, 188, 135, 83, 30];
+/// Five equidistant hues, blue → orange: input on CV, input on the internal
+/// LFO, then the three out modes (CV, Gate, Trigger). The wheel is walked the
+/// long way round through violet and red rather than green — equal hue steps
+/// through the greens read as one colour to the eye, these five do not.
+const MANIFOLD_HUES: [u16; 5] = [240, 278, 315, 353, 390];
 
 fn manifold_color(step: usize) -> Color {
-    let (r, g, b) = hsv_to_rgb(MANIFOLD_HUES[step.min(4)]);
+    let (r, g, b) = hsv_to_rgb(MANIFOLD_HUES[step.min(4)] % 360);
     Color::Custom(r, g, b)
 }
 

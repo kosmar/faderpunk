@@ -70,7 +70,7 @@
           "heading": "Signal / LEDs",
           "items": [
             "One CV input on channel 0, three outputs B/C/D on channels 1\u20133",
-            "Five equidistant open-spectrum hues from blue to orange, one per operating mode: channel 0 on CV in, channel 0 on the internal LFO, then CV, Gate and Trigger on the outs",
+            "Five equidistant hues from blue through violet and red to orange, one per operating mode: channel 0 on CV in, channel 0 on the internal LFO, then CV, Gate and Trigger on the outs",
             "Channel 0 is blue while CV in is active and one step warmer when the internal LFO runs; each out takes the hue of its current mode, so a mode swap shows up immediately",
             "With nothing patched into the input, channel 0 becomes an internal morphing LFO that feeds B/C/D \u2014 <em>Source</em> forces CV In or Internal LFO instead of that auto fallback",
             "<em>LFO Speed</em> shifts the whole speed range to Slow or Slowest",
