@@ -830,27 +830,27 @@
           <li><strong>Channel 0 short</strong> — freeze the conditioned input value</li>
           <li><strong>Channel 0 Shift + short</strong> — while the internal LFO runs: free-running or clock-synced (the button flashes when sync engages)</li>
           <li><strong>Channels 1–3 short</strong> — mute/unmute that output (Shift not held); fader scrub while the button is held cancels the tap</li>
-          <li><strong>Channels 1–3 Shift + long</strong> — cycle that out through CV → Gate → Trigger; the configurator follows</li>
+          <li><strong>Channels 1–3 Shift + long</strong> — cycle that out through CV → Gate → Trigger; the new mode hue appears immediately and the configurator follows</li>
         </ul>
       </div>
       <div>
         <h3>Signal / LEDs</h3>
         <ul>
           <li>One CV input on channel 0, three outputs B/C/D on channels 1–3</li>
-          <li>Five equidistant open-spectrum hues from blue to orange identify each channel; out LED hue is by channel, not by CV/Gate/Trigger mode</li>
-          <li>Channel 0 is blue while CV in is active and one step warmer when the internal LFO runs; B, C and D take the next three steps ending at orange</li>
+          <li>Five equidistant open-spectrum hues from blue to orange, one per operating mode: channel 0 on CV in, channel 0 on the internal LFO, then CV, Gate and Trigger on the outs</li>
+          <li>Channel 0 is blue while CV in is active and one step warmer when the internal LFO runs; each out takes the hue of its current mode, so a mode swap shows up immediately</li>
           <li>With nothing patched into the input, channel 0 becomes an internal morphing LFO that feeds B/C/D — <em>Source</em> forces CV In or Internal LFO instead of that auto fallback</li>
           <li><em>LFO Speed</em> shifts the whole speed range to Slow or Slowest</li>
           <li>CV mode uses the configured Range; Gate and Trigger modes drive the jack as a digital GPO and ignore Range</li>
           <li>Defaults: B = CV, C = Gate, D = Trigger (±5 V on the CV path)</li>
-          <li>Channel 0 LEDs dim with the active source amplitude in the channel hue</li>
+          <li>Channel 0 LEDs dim with the active source amplitude in the source hue</li>
           <li>CV outs dim with the shaped output level; Gate/Trigger meter the conditioned input while low and flash full when high</li>
-          <li>Button LEDs use the same channel hues and breathe with their signal level: channel 0 stays bright when frozen; channels 1–3 turn off when muted</li>
+          <li>Button LEDs use the same mode hues and breathe with their signal level: channel 0 stays bright when frozen; channels 1–3 turn off when muted</li>
         </ul>
       </div>
     </div>
     <div class="manual">
-      <p><strong>Manual.</strong> One CV in, three shaped outs. Each out is independently CV, Gate or Trigger: CV gets attenuverter / offset / slew, Gate and Trigger get threshold / hysteresis / pulse length. Shift + long press on an out cycles it through the three modes right on the device, and the change is stored as a parameter, so the configurator stays in sync. Channel 0 freezes the conditioned input; B/C/D mute. With nothing patched into the input, channel 0 turns into a morphing LFO and drives B/C/D on its own — the same wave engine as Super LFO, with morph, speed and skew on the three channel 0 fader layers and Shift + short press for clock sync. The *Source* parameter overrides that fallback if you would rather force CV In or Internal LFO, and *LFO Speed* moves the whole rate range down to Slow or Slowest. LEDs use five equidistant hues along the open spectrum from blue to orange — one per channel identity, not per CV/Gate/Trigger mode. Channel 0 is blue while CV in is active and one step warmer when the internal LFO runs; B, C and D take the next three steps ending at orange. All four channels dim with signal amplitude.</p>
+      <p><strong>Manual.</strong> One CV in, three shaped outs. Each out is independently CV, Gate or Trigger: CV gets attenuverter / offset / slew, Gate and Trigger get threshold / hysteresis / pulse length. Shift + long press on an out cycles it through the three modes right on the device, and the change is stored as a parameter, so the configurator stays in sync. Channel 0 freezes the conditioned input; B/C/D mute. With nothing patched into the input, channel 0 turns into a morphing LFO and drives B/C/D on its own — the same wave engine as Super LFO, with morph, speed and skew on the three channel 0 fader layers and Shift + short press for clock sync. The *Source* parameter overrides that fallback if you would rather force CV In or Internal LFO, and *LFO Speed* moves the whole rate range down to Slow or Slowest. LEDs use five equidistant hues along the open spectrum from blue to orange, one per operating mode. Channel 0 is blue while CV in feeds the outs and one step warmer once the internal LFO takes over; the outs take the remaining three steps by mode — CV, then Gate, then Trigger in orange — so a mode swap is visible the moment it lands. All four channels dim with signal amplitude.</p>
     </div>
   </div>
 </section>

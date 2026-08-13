@@ -49,7 +49,8 @@ const LFO_SYMMETRY: u16 = 2048;
 const LFO_WARP: u16 = 0;
 /// Clock divisions the speed fader spans (slowest 384 ticks … 6 = quarter note).
 const LFO_DIVISIONS: usize = 9;
-/// Equidistant open-spectrum hues (blue → orange) for the four channel identities.
+/// Five equidistant open-spectrum hues, blue → orange: input on CV, input on
+/// the internal LFO, then the three out modes (CV, Gate, Trigger).
 const MANIFOLD_HUES: [u16; 5] = [240, 188, 135, 83, 30];
 
 fn manifold_color(step: usize) -> Color {
@@ -101,6 +102,15 @@ impl Mode {
             Mode::Cv => Mode::Gate,
             Mode::Gate => Mode::Trigger,
             Mode::Trigger => Mode::Cv,
+        }
+    }
+
+    /// Button / meter hue for this out type, so a mode swap reads instantly.
+    fn color(self) -> Color {
+        match self {
+            Mode::Cv => manifold_color(2),
+            Mode::Gate => manifold_color(3),
+            Mode::Trigger => manifold_color(4),
         }
     }
 }
@@ -387,7 +397,7 @@ pub async fn run(
 
     let modes = [mode_b, mode_c, mode_d];
     let ranges = [range_b, range_c, range_d];
-    let out_colors = [manifold_color(2), manifold_color(3), manifold_color(4)];
+    let out_colors = [modes[0].color(), modes[1].color(), modes[2].color()];
     // Match glob_lfo_active init: Auto stays on CV-in until the idle timeout.
     let initial_lfo_active = source == Source::Lfo;
 
@@ -756,7 +766,7 @@ pub async fn run(
                 };
                 out_levels[i] = out_level;
 
-                // Meter colour = channel identity. Dim = amplitude of that
+                // Meter colour = out mode. Dim = amplitude of that
                 // channel's signal: CV uses the shaped out; Gate/Trigger flash
                 // full when high and otherwise meter the conditioned input so
                 // amplitude still reads while waiting for a threshold crossing.

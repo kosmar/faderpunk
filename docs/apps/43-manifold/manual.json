@@ -59,7 +59,7 @@
             "<strong>Channel 0 short</strong> \u2014 freeze the conditioned input value",
             "<strong>Channel 0 Shift + short</strong> \u2014 while the internal LFO runs: free-running or clock-synced (the button flashes when sync engages)",
             "<strong>Channels 1\u20133 short</strong> \u2014 mute/unmute that output (Shift not held); fader scrub while the button is held cancels the tap",
-            "<strong>Channels 1\u20133 Shift + long</strong> \u2014 cycle that out through CV \u2192 Gate \u2192 Trigger; the configurator follows"
+            "<strong>Channels 1\u20133 Shift + long</strong> \u2014 cycle that out through CV \u2192 Gate \u2192 Trigger; the new mode hue appears immediately and the configurator follows"
           ]
         }
       ]
@@ -70,15 +70,15 @@
           "heading": "Signal / LEDs",
           "items": [
             "One CV input on channel 0, three outputs B/C/D on channels 1\u20133",
-            "Five equidistant open-spectrum hues from blue to orange identify each channel; out LED hue is by channel, not by CV/Gate/Trigger mode",
-            "Channel 0 is blue while CV in is active and one step warmer when the internal LFO runs; B, C and D take the next three steps ending at orange",
+            "Five equidistant open-spectrum hues from blue to orange, one per operating mode: channel 0 on CV in, channel 0 on the internal LFO, then CV, Gate and Trigger on the outs",
+            "Channel 0 is blue while CV in is active and one step warmer when the internal LFO runs; each out takes the hue of its current mode, so a mode swap shows up immediately",
             "With nothing patched into the input, channel 0 becomes an internal morphing LFO that feeds B/C/D \u2014 <em>Source</em> forces CV In or Internal LFO instead of that auto fallback",
             "<em>LFO Speed</em> shifts the whole speed range to Slow or Slowest",
             "CV mode uses the configured Range; Gate and Trigger modes drive the jack as a digital GPO and ignore Range",
             "Defaults: B = CV, C = Gate, D = Trigger (\u00b15 V on the CV path)",
-            "Channel 0 LEDs dim with the active source amplitude in the channel hue",
+            "Channel 0 LEDs dim with the active source amplitude in the source hue",
             "CV outs dim with the shaped output level; Gate/Trigger meter the conditioned input while low and flash full when high",
-            "Button LEDs use the same channel hues and breathe with their signal level: channel 0 stays bright when frozen; channels 1\u20133 turn off when muted"
+            "Button LEDs use the same mode hues and breathe with their signal level: channel 0 stays bright when frozen; channels 1\u20133 turn off when muted"
           ]
         }
       ]
@@ -98,8 +98,8 @@
       "fnDescription": "Short tap holds the conditioned input value; all outputs stop moving.",
       "fnPlusShiftTitle": "LFO Clock Sync",
       "fnPlusShiftDescription": "While the internal LFO runs, toggles between free-running and clock-synced. The button flashes when sync engages; a stopped transport parks the wave.",
-      "ledTop": "Input amplitude in the channel hue (blue for CV in, one step warmer while the internal LFO runs)",
-      "ledBottom": "Input amplitude in the channel hue (blue for CV in, one step warmer while the internal LFO runs)",
+      "ledTop": "Input amplitude in the source hue (blue for CV in, one step warmer while the internal LFO runs)",
+      "ledBottom": "Input amplitude in the source hue (blue for CV in, one step warmer while the internal LFO runs)",
       "ledTopPlusShift": ""
     },
     {
@@ -115,8 +115,8 @@
       "fnDescription": "Short tap without Shift mutes the output. Scrubbing the fader while the button is held prevents the tap, and Shift is reserved for the mode swap.",
       "fnPlusShiftTitle": "Out Mode",
       "fnPlusShiftDescription": "Shift + long press cycles this out through CV \u2192 Gate \u2192 Trigger. The mode is stored as a parameter, so the configurator follows.",
-      "ledTop": "Channel hue \u00d7 amplitude (CV out / Gate\u2013Trigger input or flash)",
-      "ledBottom": "Channel hue \u00d7 amplitude (CV out / Gate\u2013Trigger input or flash)",
+      "ledTop": "Mode hue \u00d7 amplitude (CV out / Gate\u2013Trigger input or flash)",
+      "ledBottom": "Mode hue \u00d7 amplitude (CV out / Gate\u2013Trigger input or flash)",
       "ledTopPlusShift": ""
     },
     {
@@ -132,8 +132,8 @@
       "fnDescription": "Short tap without Shift mutes the output. Scrubbing the fader while the button is held prevents the tap, and Shift is reserved for the mode swap.",
       "fnPlusShiftTitle": "Out Mode",
       "fnPlusShiftDescription": "Shift + long press cycles this out through CV \u2192 Gate \u2192 Trigger. The mode is stored as a parameter, so the configurator follows.",
-      "ledTop": "Channel hue \u00d7 amplitude (CV out / Gate\u2013Trigger input or flash)",
-      "ledBottom": "Channel hue \u00d7 amplitude (CV out / Gate\u2013Trigger input or flash)",
+      "ledTop": "Mode hue \u00d7 amplitude (CV out / Gate\u2013Trigger input or flash)",
+      "ledBottom": "Mode hue \u00d7 amplitude (CV out / Gate\u2013Trigger input or flash)",
       "ledTopPlusShift": ""
     },
     {
@@ -149,8 +149,8 @@
       "fnDescription": "Short tap without Shift mutes the output. Scrubbing the fader while the button is held prevents the tap, and Shift is reserved for the mode swap.",
       "fnPlusShiftTitle": "Out Mode",
       "fnPlusShiftDescription": "Shift + long press cycles this out through CV \u2192 Gate \u2192 Trigger. The mode is stored as a parameter, so the configurator follows.",
-      "ledTop": "Channel hue \u00d7 amplitude (CV out / Gate\u2013Trigger input or flash)",
-      "ledBottom": "Channel hue \u00d7 amplitude (CV out / Gate\u2013Trigger input or flash)",
+      "ledTop": "Mode hue \u00d7 amplitude (CV out / Gate\u2013Trigger input or flash)",
+      "ledBottom": "Mode hue \u00d7 amplitude (CV out / Gate\u2013Trigger input or flash)",
       "ledTopPlusShift": ""
     }
   ]
