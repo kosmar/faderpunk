@@ -878,6 +878,7 @@ pub async fn run(
                                 b = buf.get();
                             }
                         }
+                        let stepped_from = prev_pos;
                         prev_pos = Some(pos);
 
                         if !muted.get() && b.extent > 0 {
@@ -885,7 +886,7 @@ pub async fn run(
                                 if !e.used || e.dur == u16::MAX {
                                     continue;
                                 }
-                                if e.start == pos {
+                                if crossed(stepped_from, pos, e.start) {
                                     alloc_voice(&midi, &voices, e.note, e.vel, e.gen, e, window)
                                         .await;
                                     flash_until.set(tick.wrapping_add(CAPTURE_FLASH_TICKS));
@@ -894,7 +895,7 @@ pub async fn run(
 
                             let mut vs = voices.get();
                             for v in vs.iter_mut() {
-                                if v.0 != 0 && v.1 == pos {
+                                if v.0 != 0 && crossed(stepped_from, pos, v.1) {
                                     midi.send_note_off(MidiNote::from(v.0)).await;
                                     *v = (0, 0, 0);
                                 }
@@ -1477,6 +1478,22 @@ async fn all_notes_off(
     }
     if let Some(j) = out_jack {
         j.set_value(0);
+    }
+}
+
+/// Did the loop just advance across `target`?
+///
+/// Clock ticks can be skipped — the gatekeeper publishes immediately, so a
+/// subscriber that falls behind drops ticks rather than stalling the device
+/// clock — and `pos` then jumps over the position it was supposed to land on.
+/// An `== pos` test misses that and leaves the note sounding until its voice
+/// slot is stolen, so compare against the whole span since the last tick.
+fn crossed(prev: Option<u16>, pos: u16, target: u16) -> bool {
+    match prev {
+        Some(pp) if pp < pos => target > pp && target <= pos,
+        // Wrapped around the loop window.
+        Some(pp) if pp > pos => target > pp || target <= pos,
+        _ => target == pos,
     }
 }
 
