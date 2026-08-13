@@ -1,5 +1,5 @@
 use embassy_futures::{
-    join::{join, join5},
+    join::{join, join3, join4},
     select::{select, select3},
 };
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, signal::Signal};
@@ -10,18 +10,21 @@ use libfp::{
     ext::FromValue,
     latch::LatchLayer,
     utils::{
-        attenuverter, clickless, division_at, lfo_step, quant_step, signal_brightness, slew_lin,
+        attenuverter, clickless, division_at, lfo_step, signal_brightness, slew_lin,
         split_unsigned_value, SlewState,
     },
-    AppIcon, Brightness, ClockDivision, Color, Config, Curve, Param, Range, Value, APP_MAX_PARAMS,
+    AppIcon, Brightness, Color, Config, Curve, Param, Range, Value, APP_MAX_PARAMS,
 };
 
 use crate::{
     app::{
-        App, AppParams, AppStorage, ClockEvent, GateJack, Led, Leds, ManagedStorage, OutJack,
-        ParamStore, SceneEvent,
+        App, AppParams, AppStorage, GateJack, Led, Leds, ManagedStorage, OutJack, ParamStore,
+        SceneEvent,
     },
-    apps::morph::{morph_sample, MorphChaos},
+    apps::{
+        led_fx::hsv_to_rgb,
+        morph::{morph_sample, MorphChaos},
+    },
     tasks::leds::LedMode,
 };
 
@@ -46,6 +49,21 @@ const LFO_SYMMETRY: u16 = 2048;
 const LFO_WARP: u16 = 0;
 /// Clock divisions the speed fader spans (slowest 384 ticks … 6 = quarter note).
 const LFO_DIVISIONS: usize = 9;
+/// Equidistant open-spectrum hues (blue → orange) for the four channel identities.
+const MANIFOLD_HUES: [u16; 5] = [240, 188, 135, 83, 30];
+
+fn manifold_color(step: usize) -> Color {
+    let (r, g, b) = hsv_to_rgb(MANIFOLD_HUES[step.min(4)]);
+    Color::Custom(r, g, b)
+}
+
+fn ch0_color(lfo_active: bool) -> Color {
+    if lfo_active {
+        manifold_color(1)
+    } else {
+        manifold_color(0)
+    }
+}
 
 const fn pulse_ms_to_fader(ms: u16) -> u16 {
     let ms = if ms < 1 {
@@ -78,13 +96,11 @@ impl Mode {
         }
     }
 
-    /// Button / meter colour for this out type. CV keeps the app colour;
-    /// Gate and Trigger use fixed hues so the three outs read at a glance.
-    fn color(self, app_color: Color) -> Color {
+    fn next(self) -> Self {
         match self {
-            Mode::Cv => app_color,
-            Mode::Gate => Color::Yellow,
-            Mode::Trigger => Color::Orange,
+            Mode::Cv => Mode::Gate,
+            Mode::Gate => Mode::Trigger,
+            Mode::Trigger => Mode::Cv,
         }
     }
 }
@@ -361,22 +377,19 @@ pub async fn run(
     params: &ParamStore<Params>,
     storage: &ManagedStorage<Storage>,
 ) {
-    let (led_color, in_range, mode_b, range_b, mode_c, range_c, mode_d, range_d) =
-        params.query(|p| {
-            (
-                p.color, p.in_range, p.mode_b, p.range_b, p.mode_c, p.range_c, p.mode_d, p.range_d,
-            )
-        });
+    let (in_range, mode_b, range_b, mode_c, range_c, mode_d, range_d) = params.query(|p| {
+        (
+            p.in_range, p.mode_b, p.range_b, p.mode_c, p.range_c, p.mode_d, p.range_d,
+        )
+    });
     let source = params.query(|p| p.source);
     let lfo_speed_mult = 2u32.pow(params.query(|p| p.lfo_speed_mult).min(31) as u32);
 
     let modes = [mode_b, mode_c, mode_d];
     let ranges = [range_b, range_c, range_d];
-    let out_colors = [
-        modes[0].color(led_color),
-        modes[1].color(led_color),
-        modes[2].color(led_color),
-    ];
+    let out_colors = [manifold_color(2), manifold_color(3), manifold_color(4)];
+    // Match glob_lfo_active init: Auto stays on CV-in until the idle timeout.
+    let initial_lfo_active = source == Source::Lfo;
 
     let buttons = app.use_buttons();
     let faders = app.use_faders();
@@ -396,22 +409,24 @@ pub async fn run(
 
     let glob_fader_at_down = app.make_global([0u16; 4]);
     let glob_fader_moved = app.make_global([false; 4]);
+    let glob_long_press = app.make_global([false; 4]);
+
+    // Signalled when an out mode changes: run() has to return so the jack is
+    // reconfigured between CV out and gate out.
+    let restart = Signal::<NoopRawMutex, ()>::new();
 
     // Internal LFO: runs whenever `Source` resolves to it, so an unpatched
     // Manifold still has something to shape.
     let die = app.use_die();
-    let mut clk = app.use_clock();
-    let ticker = clk.get_ticker();
+    // clock_ticker, never use_clock: this task can park on a MAX jack write
+    // while gate outs fire, and an undrained CLOCK_PUBSUB subscriber stalls the
+    // gatekeeper's blocking Start/Stop/Reset publish — that kills the device
+    // clock, not just this app.
+    let ticker = app.clock_ticker();
     let glob_lfo_active = app.make_global(source == Source::Lfo);
     let glob_lfo_pos = app.make_global(0.0f32);
     let glob_lfo_step = app.make_global(0.0682f32);
-    let glob_quant_step = app.make_global(0.07f32);
     let glob_div = app.make_global(24u32);
-    let glob_count = app.make_global(20u32);
-    let glob_tick = app.make_global(false);
-    let glob_phase_origin = app.make_global(0u64);
-    // Transport hold while clocked: Stop parks the wave, Start/Tick releases it.
-    let glob_clock_held = app.make_global(false);
     let glob_chaos = app.make_global(MorphChaos::new());
     let glob_btn_flash_0 = app.make_global(0u16);
 
@@ -419,12 +434,7 @@ pub async fn run(
     let time_calc = || {
         let speed = storage.query(|s| s.lfo_speed);
         glob_lfo_step.set(lfo_step(speed));
-        let div = division_at(speed, LFO_DIVISIONS);
-        if div != glob_div.get() {
-            glob_div.set(div);
-            glob_phase_origin.set(0);
-        }
-        glob_quant_step.set(quant_step(glob_count.get(), div));
+        glob_div.set(division_at(speed, LFO_DIVISIONS));
     };
     time_calc();
 
@@ -462,7 +472,13 @@ pub async fn run(
         make_jack_for_mode(app, 3, modes[2], ranges[2]).await,
     ];
 
-    paint_buttons(&leds, led_color, out_colors, false, muted);
+    paint_buttons(
+        &leds,
+        ch0_color(initial_lfo_active),
+        out_colors,
+        false,
+        muted,
+    );
 
     let fut1 = async {
         let mut in_slew_state = SlewState::new();
@@ -486,7 +502,11 @@ pub async fn run(
         // Starts idle so an unpatched Manifold comes up on the internal LFO
         // instead of waiting out the timeout on a dead jack.
         let mut in_idle_ms = IN_IDLE_MS;
-        let mut tick_count = 0u32;
+        // Polled clock state: last seen 24 PPQN counter, milliseconds since it
+        // last moved, and the measured tick period for intra-tick interpolation.
+        let mut last_tick = ticker();
+        let mut ms_since_tick = 0u16;
+        let mut tick_period_ms = 21u16;
 
         loop {
             app.delay_millis(1).await;
@@ -517,28 +537,48 @@ pub async fn run(
             let (morph, skew, lfo_clocked) =
                 storage.query(|s| (s.morph, s.skew, s.lfo_clocked));
 
-            let is_frozen = glob_frozen.get();
-            let clock_held = lfo_active && lfo_clocked && glob_clock_held.get();
-            let held = is_frozen || clock_held;
+            let tick = ticker();
+            if tick != last_tick {
+                // Plausible tick gaps only: ignore the counter reset to u64::MAX
+                // and anything slower than 2 s, which would be a stopped clock.
+                if (1..500).contains(&ms_since_tick) && tick > last_tick {
+                    tick_period_ms = ms_since_tick;
+                }
+                last_tick = tick;
+                ms_since_tick = 0;
+            } else {
+                ms_since_tick = ms_since_tick.saturating_add(1);
+            }
+
+            let held = glob_frozen.get();
 
             let source_val = if lfo_active {
                 time_calc();
 
-                tick_count = tick_count.saturating_add(1);
-                if glob_tick.get() {
-                    glob_count.set(tick_count);
-                    tick_count = 0;
-                    glob_tick.set(false);
-                }
-
-                let step = if lfo_clocked {
-                    glob_quant_step.get()
+                let next_pos = if lfo_clocked {
+                    // Phase locked to the tick counter, interpolated inside the
+                    // tick so coarse divisions still move smoothly. A stopped
+                    // transport stops the counter, which parks the wave by
+                    // itself — no separate hold state.
+                    if tick == u64::MAX {
+                        0.0
+                    } else {
+                        let ticks_per_cycle =
+                            (glob_div.get() as u64).saturating_mul(lfo_speed_mult as u64).max(1);
+                        let frac =
+                            (ms_since_tick as f32 / tick_period_ms.max(1) as f32).min(1.0);
+                        let pos_ticks = (tick % ticks_per_cycle) as f32 + frac;
+                        (pos_ticks * 4096.0 / ticks_per_cycle as f32) % 4096.0
+                    }
                 } else {
-                    glob_lfo_step.get()
-                } / lfo_speed_mult as f32;
-
-                let pos = glob_lfo_pos.get();
-                let next_pos = if held { pos } else { (pos + step) % 4096.0 };
+                    let step = glob_lfo_step.get() / lfo_speed_mult as f32;
+                    let pos = glob_lfo_pos.get();
+                    if held {
+                        pos
+                    } else {
+                        (pos + step) % 4096.0
+                    }
+                };
 
                 let mut chaos = glob_chaos.get();
                 chaos.tick_walks(&die);
@@ -580,8 +620,10 @@ pub async fn run(
             }
             let input_val = if frozen { frozen_value } else { source_val };
 
+            let ch0_led_color = ch0_color(lfo_active);
+
             // Channel 0: active source amplitude.
-            paint_bipolar_level(&leds, 0, led_color, input_val);
+            paint_bipolar_level(&leds, 0, ch0_led_color, input_val);
 
             let muted = glob_muted.get();
             for i in 0..3 {
@@ -714,10 +756,10 @@ pub async fn run(
                 };
                 out_levels[i] = out_level;
 
-                // Meter colour = out type. Dim = amplitude of that channel's
-                // signal: CV uses the shaped out; Gate/Trigger flash full when
-                // high and otherwise meter the conditioned input so amplitude
-                // still reads while waiting for a threshold crossing.
+                // Meter colour = channel identity. Dim = amplitude of that
+                // channel's signal: CV uses the shaped out; Gate/Trigger flash
+                // full when high and otherwise meter the conditioned input so
+                // amplitude still reads while waiting for a threshold crossing.
                 match modes[i] {
                     Mode::Cv => {
                         paint_bipolar_level(&leds, i + 1, out_color, out_level);
@@ -740,7 +782,7 @@ pub async fn run(
                 leds.set(
                     0,
                     Led::Button,
-                    led_color,
+                    ch0_led_color,
                     if held {
                         BUTTON_BRIGHTNESS
                     } else {
@@ -935,6 +977,49 @@ pub async fn run(
                 arr[chan] = false;
                 arr
             });
+            glob_long_press.modify(|l| {
+                let mut arr = *l;
+                arr[chan] = false;
+                arr
+            });
+        }
+    };
+
+    // Shift + long press on B / C / D cycles that out through CV → Gate →
+    // Trigger. The mode is a configurator param, so it goes through
+    // ParamStore::update and the host sees the change; run() then restarts to
+    // reconfigure the jack.
+    let button_long = async {
+        loop {
+            let (chan, shift) = buttons.wait_for_any_long_press().await;
+
+            glob_long_press.modify(|l| {
+                let mut arr = *l;
+                arr[chan] = true;
+                arr
+            });
+
+            if !shift || !(1..=3).contains(&chan) {
+                continue;
+            }
+
+            let i = chan - 1;
+            // Restart only once the button is released. The long-press guard
+            // that keeps the release from toggling mute lives in this run's
+            // globals, so a restart while the button is still down would hand
+            // the release to a fresh run that mutes the channel instead.
+            // wait_for_up subscribes when the join first polls it, i.e. before
+            // the param write, so the release cannot slip through in between.
+            join(
+                buttons.wait_for_up(chan),
+                params.update(|p| match i {
+                    0 => p.mode_b = p.mode_b.next(),
+                    1 => p.mode_c = p.mode_c.next(),
+                    _ => p.mode_d = p.mode_d.next(),
+                }),
+            )
+            .await;
+            restart.signal(());
         }
     };
 
@@ -942,7 +1027,7 @@ pub async fn run(
         loop {
             let (chan, shift) = buttons.wait_for_any_up().await;
 
-            if glob_fader_moved.get()[chan] {
+            if glob_fader_moved.get()[chan] || glob_long_press.get()[chan] {
                 continue;
             }
 
@@ -953,21 +1038,27 @@ pub async fn run(
                         s.lfo_clocked
                     });
                     if clocked {
-                        // Already stopped when engaging sync → hold immediately.
-                        if !crate::state::is_clock_running().await {
-                            glob_clock_held.set(true);
-                        }
-                        leds.set_mode(0, Led::Button, LedMode::Flash(led_color, Some(4)));
+                        leds.set_mode(
+                            0,
+                            Led::Button,
+                            LedMode::Flash(ch0_color(glob_lfo_active.get()), Some(4)),
+                        );
                         glob_btn_flash_0.set(BUTTON_FLASH_MS);
-                    } else {
-                        glob_clock_held.set(false);
                     }
                 }
                 0 => {
                     let frozen = glob_frozen.toggle();
-                    paint_buttons(&leds, led_color, out_colors, frozen, glob_muted.get());
+                    paint_buttons(
+                        &leds,
+                        ch0_color(glob_lfo_active.get()),
+                        out_colors,
+                        frozen,
+                        glob_muted.get(),
+                    );
                 }
-                1..=3 => {
+                // Shift stays reserved for the mode swap: a shift-held tap must
+                // never fall through to mute.
+                1..=3 if !shift => {
                     let i = chan - 1;
                     let muted = storage.modify_and_save(|s| {
                         s.muted[i] = !s.muted[i];
@@ -978,54 +1069,20 @@ pub async fn run(
                         arr[i] = muted;
                         arr
                     });
-                    paint_buttons(&leds, led_color, out_colors, glob_frozen.get(), muted_all);
+                    paint_buttons(
+                        &leds,
+                        ch0_color(glob_lfo_active.get()),
+                        out_colors,
+                        glob_frozen.get(),
+                        muted_all,
+                    );
                 }
                 _ => {}
             }
         }
     };
 
-    let fut3 = join(button_down, button_up);
-
-    let clock_handler = async {
-        loop {
-            match clk.wait_for_event(ClockDivision::_1).await {
-                ClockEvent::Tick(_) => {
-                    let clocked = storage.query(|s| s.lfo_clocked);
-                    if clocked {
-                        glob_clock_held.set(false);
-                        if !glob_frozen.get() {
-                            // Phase lock: derive position from the tick counter so
-                            // the wave cannot drift away from the transport.
-                            let ticks_per_cycle =
-                                (glob_div.get() as u64).saturating_mul(lfo_speed_mult as u64);
-                            if ticks_per_cycle > 0 {
-                                let phase_in_cycle =
-                                    ticker().wrapping_sub(glob_phase_origin.get()) % ticks_per_cycle;
-                                glob_lfo_pos
-                                    .set(phase_in_cycle as f32 * 4096.0 / ticks_per_cycle as f32);
-                            }
-                        }
-                    }
-                    glob_tick.set(true);
-                }
-                ClockEvent::Start => {
-                    if storage.query(|s| s.lfo_clocked) {
-                        glob_clock_held.set(false);
-                    }
-                }
-                ClockEvent::Stop => {
-                    if storage.query(|s| s.lfo_clocked) {
-                        glob_clock_held.set(true);
-                    }
-                }
-                ClockEvent::Reset => {
-                    glob_phase_origin.set(0);
-                    glob_lfo_pos.set(0.0);
-                }
-            }
-        }
-    };
+    let fut3 = join3(button_down, button_up, button_long);
 
     let scene_handler = async {
         loop {
@@ -1072,12 +1129,18 @@ pub async fn run(
 
                     time_calc();
 
-                    paint_buttons(&leds, led_color, out_colors, glob_frozen.get(), muted);
+                    paint_buttons(
+                        &leds,
+                        ch0_color(glob_lfo_active.get()),
+                        out_colors,
+                        glob_frozen.get(),
+                        muted,
+                    );
                 }
                 SceneEvent::SaveScene(scene) => storage.save_to_scene(scene).await,
             }
         }
     };
 
-    join5(fut1, fut2, fut3, scene_handler, clock_handler).await;
+    select(join4(fut1, fut2, fut3, scene_handler), restart.wait()).await;
 }
