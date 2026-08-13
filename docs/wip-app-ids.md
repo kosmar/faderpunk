@@ -26,6 +26,7 @@ Flash integration branch: **`test/playground`** (count-agnostic; formerly
 | 40 | Venn | `feat/venn` | Dual Euclidean + boolean logic |
 | 41 | Bassment | `feat/bassment` | Multi-genre basslines × bassist voices |
 | 42 | Contura | `feat/contura` | Melodic contour over selectable 12-TET scale sets |
+| 43 | Manifold | `feat/manifold` | 1→3 CV morph utility (freeze / mute / mode cycle) |
 
-Next free WIP ID: **43**
+Next free WIP ID: **44**
 

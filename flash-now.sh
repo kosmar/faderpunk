@@ -8,7 +8,7 @@ ELF=target/thumbv8m.main-none-eabihf/release/faderpunk
 echo "=== preflight ==="
 # Grep the ELF binary (not UF2 / not `strings`): UF2 splits payloads, and
 # `strings` drops non-ASCII so names like "Arp de Lévy" vanish.
-# Keep in sync with docs/wip-app-ids.md (IDs 29–42; never 28/Sift).
+# Keep in sync with docs/wip-app-ids.md (IDs 29–43; never 28/Sift).
 REQUIRED=(
   "Heat Pump"
   "Grooves"
@@ -24,6 +24,7 @@ REQUIRED=(
   "Venn"
   "Bassment"
   "Contura"
+  "Manifold"
 )
 for name in "${REQUIRED[@]}"; do
   rg -aF --quiet "$name" "$ELF" || {
