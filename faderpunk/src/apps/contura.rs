@@ -45,7 +45,8 @@ const JACK_OUT: usize = 0;
 const JACK_IN_DENSITY: usize = 1;
 const JACK_IN_INTERVAL: usize = 2;
 const JACK_IN_RESET: usize = 3;
-const JACK_COUNT: usize = 4;
+const JACK_IN_PHRASE: usize = 4;
+const JACK_COUNT: usize = 5;
 /// ~+1.5 V on ±5 V jack — same gate threshold as Grooves / Bassment.
 const TRIG_HIGH: u16 = 2458;
 
@@ -433,6 +434,7 @@ pub static CONFIG: Config<PARAMS> = Config::new(
         "CV In Density",
         "CV In Interval",
         "CV In Reset",
+        "CV In Phrase",
     ],
 })
 .add_param(Param::i32 {
@@ -1127,6 +1129,14 @@ pub async fn run(
             let boundary = t - (t % div);
             last_seen = t;
 
+            // Read before the ornament block: a live phrase length shapes the
+            // contour arch and the cadence window, and the ornament path needs
+            // the same value the step path will use.
+            let phrase_f = if jack_param == JACK_IN_PHRASE {
+                mod_u16(glob_phrase.get(), glob_cv_val.get())
+            } else {
+                glob_phrase.get()
+            };
             let muted = glob_muted.get();
             let scale_set = glob_scale.get();
             let octaves = glob_octaves.get();
@@ -1174,7 +1184,7 @@ pub async fn run(
             if orn_active && !muted && !pool.is_empty() {
                 let elapsed = t.saturating_sub(orn_start) as u32;
                 let main_i = ornament::main_hit_index(&orn_plan);
-                let phrase_len_now = phrase_from_fader(glob_phrase.get()).max(1);
+                let phrase_len_now = phrase_from_fader(phrase_f).max(1);
                 let rising = contour_rising(orn_feel.contour, orn_phrase_step, phrase_len_now);
                 let plen = pool.len();
                 for hi in 0..orn_plan.len as usize {
@@ -1234,7 +1244,6 @@ pub async fn run(
             } else {
                 glob_interval.get()
             };
-            let phrase_f = glob_phrase.get();
             let density_f = if jack_param == JACK_IN_DENSITY {
                 mod_u16(glob_density.get(), glob_cv_val.get())
             } else {
