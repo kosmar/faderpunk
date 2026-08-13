@@ -1088,6 +1088,14 @@ pub async fn run(
                             break;
                         }
                         Either::Second(_) => {
+                            // Hold+Fader gesture: a plain hold must sustain. The
+                            // target includes CV in, so chasing it unconditionally
+                            // retriggers the held note whenever the input moves —
+                            // or merely jitters across a quantizer step.
+                            if !fader_moved_while_held.get() {
+                                glide_frames_left = 0;
+                                continue;
+                            }
                             let target = resolve_pitch(
                                 mode,
                                 &quantizer,
