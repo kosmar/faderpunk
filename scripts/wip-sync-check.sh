@@ -74,11 +74,12 @@ if (
     or "Venn" not in rule
     or "Bassment" not in rule
     or "Contura" not in rule
+    or "Manifold" not in rule
 ):
-    print("FAIL playground-flash.mdc missing Control Issues / Venn / Bassment / Contura")
+    print("FAIL playground-flash.mdc missing Control Issues / Venn / Bassment / Contura / Manifold")
     fail = 1
 else:
-    print("OK  playground-flash.mdc lists CI + Venn + Bassment + Contura")
+    print("OK  playground-flash.mdc lists CI + Venn + Bassment + Contura + Manifold")
 
 # Genre axis (shared Grooves/Vamp)
 palette = Path("faderpunk/src/apps/genre_palette.rs").read_text()
