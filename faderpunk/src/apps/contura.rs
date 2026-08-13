@@ -18,8 +18,11 @@ use midly::num::u7;
 use serde::{Deserialize, Serialize};
 
 use libfp::{
-    ext::FromValue, latch::LatchLayer, quantizer::Pitch, utils::attenuate_bipolar, AppIcon,
-    Brightness, Color, Config, MidiChannel, MidiNote, MidiOut, Note, Param, Range, Value,
+    ext::FromValue,
+    latch::LatchLayer,
+    quantizer::Pitch,
+    utils::{attenuate_bipolar, signal_brightness, split_unsigned_value},
+    AppIcon, Brightness, Color, Config, MidiChannel, MidiNote, MidiOut, Note, Param, Range, Value,
     VoltPerOct, APP_MAX_PARAMS,
 };
 
@@ -34,7 +37,7 @@ pub const PARAMS: usize = 12;
 
 const LED_BRIGHTNESS: Brightness = Brightness::Mid;
 const OCTAVE_BLINK_MS: u16 = 250;
-const BUTTON_DUCK_MS: u16 = 25;
+const BUTTON_DUCK_MS: u16 = 80;
 
 /// Jack duty and its CV In destination in one param, as in Grooves — a CV In
 /// destination and CV Out were never live at the same time.
@@ -993,6 +996,8 @@ pub async fn run(
     let glob_fader_moved = app.make_global(false);
     let glob_octave_blink = app.make_global(0u16);
     let glob_button_duck = app.make_global(0u16);
+    // Pool-index fraction (0 = lowest note, 4095 = highest) for top/bottom pitch meter.
+    let glob_pitch_led = app.make_global(2047u16);
     let long_press_fired = app.make_global(false);
     let glob_shift_chord = app.make_global(false);
     // Scale/octave change: clock path note-offs before pool rebuild.
@@ -1202,6 +1207,8 @@ pub async fn run(
                         gated = true;
                         glob_gate_on.set(true);
                         glob_button_duck.set(BUTTON_DUCK_MS);
+                        let pf = if plen > 1 { (oidx as u16 * 4095) / (plen as u16 - 1) } else { 2047 };
+                        glob_pitch_led.set(pf);
                         if hi == main_i {
                             remain = orn_base_remain;
                             idx = oidx;
@@ -1346,6 +1353,8 @@ pub async fn run(
                             gated = true;
                             glob_gate_on.set(true);
                             glob_button_duck.set(BUTTON_DUCK_MS);
+                            let pf = if plen > 1 { (idx as u16 * 4095) / (plen as u16 - 1) } else { 2047 };
+                            glob_pitch_led.set(pf);
                         }
                     } else {
                         orn_active = true;
@@ -1384,6 +1393,8 @@ pub async fn run(
                                 gated = true;
                                 glob_gate_on.set(true);
                                 glob_button_duck.set(BUTTON_DUCK_MS);
+                                let pf = if plen > 1 { (oidx as u16 * 4095) / (plen as u16 - 1) } else { 2047 };
+                                glob_pitch_led.set(pf);
                                 if main_i == 0 {
                                     remain = orn_base_remain;
                                     idx = oidx;
@@ -1593,8 +1604,6 @@ pub async fn run(
     };
 
     let fut_leds = async {
-        let mut last_layer = LatchLayer::Main;
-        let mut last_gate = false;
         loop {
             app.delay_millis(8).await;
 
@@ -1607,51 +1616,81 @@ pub async fn run(
             };
             glob_latch.set(layer);
 
-            if glob_octave_blink.get() > 0 {
+            // Octave blink keeps Top for OCTAVE_BLINK_MS after shift+short.
+            let oct_blink = if glob_octave_blink.get() > 0 {
                 let left = glob_octave_blink.get().saturating_sub(8);
                 glob_octave_blink.set(left);
                 if left == 0 {
                     leds.unset(0, Led::Top);
                 }
-            }
-            if glob_button_duck.get() > 0 {
-                let left = glob_button_duck.get().saturating_sub(8);
-                glob_button_duck.set(left);
-                if !glob_muted.get() {
-                    let bright = if left > 0 {
-                        Brightness::Low
-                    } else {
-                        LED_BRIGHTNESS
-                    };
-                    leds.set(0, Led::Button, set_color(glob_scale.get()), bright);
-                }
-            }
+                left > 0
+            } else {
+                false
+            };
 
-            let gate = glob_gate_on.get();
-            if layer != last_layer {
-                match layer {
-                    LatchLayer::Alt => {
-                        leds.set(0, Led::Bottom, Color::White, Brightness::Low);
-                    }
-                    LatchLayer::Third => {
-                        leds.set(0, Led::Bottom, set_color(glob_scale.get()), Brightness::Low);
-                    }
-                    LatchLayer::Main => {
-                        if !gate {
-                            leds.unset(0, Led::Bottom);
-                        }
-                    }
-                }
-            }
-            if layer == LatchLayer::Main && gate != last_gate {
-                if gate {
-                    leds.set(0, Led::Top, led_color, Brightness::Mid);
+            // Button duck: brief Off flash on each note trigger.
+            let duck_active = {
+                let d = glob_button_duck.get();
+                if d > 0 {
+                    glob_button_duck.set(d.saturating_sub(8));
+                    true
                 } else {
-                    leds.unset(0, Led::Top);
+                    false
+                }
+            };
+
+            let muted = glob_muted.get();
+            let scale_col = set_color(glob_scale.get());
+            let gate = glob_gate_on.get();
+            let pitch_m = split_unsigned_value(glob_pitch_led.get());
+
+            match layer {
+                LatchLayer::Alt => {
+                    // Phrase-length fader — white: fader low → Bottom bright, high → Top bright.
+                    let val = glob_phrase.get();
+                    let m = split_unsigned_value(val);
+                    leds.set(0, Led::Top, Color::White, Brightness::Custom(m[0]));
+                    leds.set(0, Led::Bottom, Color::White, Brightness::Custom(m[1]));
+                    if !muted {
+                        let bright = if duck_active { Brightness::Off } else { signal_brightness(val, false) };
+                        leds.set(0, Led::Button, Color::White, bright);
+                    }
+                }
+                LatchLayer::Third => {
+                    // Density fader — scale color.
+                    let val = glob_density.get();
+                    let m = split_unsigned_value(val);
+                    leds.set(0, Led::Top, scale_col, Brightness::Custom(m[0]));
+                    leds.set(0, Led::Bottom, scale_col, Brightness::Custom(m[1]));
+                    if !muted {
+                        let bright = if duck_active { Brightness::Off } else { signal_brightness(val, false) };
+                        leds.set(0, Led::Button, scale_col, bright);
+                    }
+                }
+                LatchLayer::Main => {
+                    // Pitch meter on Top/Bottom during gate; Top defers to octave blink.
+                    if gate {
+                        if !oct_blink {
+                            leds.set(0, Led::Top, led_color, Brightness::Custom(pitch_m[0]));
+                        }
+                        leds.set(0, Led::Bottom, led_color, Brightness::Custom(pitch_m[1]));
+                    } else {
+                        if !oct_blink {
+                            leds.unset(0, Led::Top);
+                        }
+                        leds.unset(0, Led::Bottom);
+                    }
+                    // Button: interval-fader gradient, dims to Off on each note trigger.
+                    if !muted {
+                        let bright = if duck_active {
+                            Brightness::Off
+                        } else {
+                            signal_brightness(glob_interval.get(), false)
+                        };
+                        leds.set(0, Led::Button, scale_col, bright);
+                    }
                 }
             }
-            last_gate = gate;
-            last_layer = layer;
         }
     };
 
