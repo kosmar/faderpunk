@@ -2198,7 +2198,7 @@ pub async fn run(
                 pending_note_on.set(false);
                 pending_cc.set(false);
                 if let Some(n) = sounding.take() {
-                    midi.try_send_note_off(MidiNote::from(n));
+                    midi.send_note_off(MidiNote::from(n)).await;
                 }
                 continue;
             }
@@ -2213,7 +2213,7 @@ pub async fn run(
             if pending_note_off.get() {
                 pending_note_off.set(false);
                 if let Some(n) = sounding.take() {
-                    midi.try_send_note_off(MidiNote::from(n));
+                    midi.send_note_off(MidiNote::from(n)).await;
                 }
             }
 
@@ -2222,7 +2222,7 @@ pub async fn run(
                 if !glob_muted.get() {
                     let n = pending_note.get();
                     if let Some(prev) = sounding {
-                        midi.try_send_note_off(MidiNote::from(prev));
+                        midi.send_note_off(MidiNote::from(prev)).await;
                     }
                     midi.try_send_note_on(MidiNote::from(n), pending_vel.get());
                     sounding = Some(n);

@@ -2223,7 +2223,7 @@ pub async fn run(
                 pending_offs.set([false; VOICES]);
                 for voice in 0..VOICES {
                     if sounding[voice] && (all_off || offs[voice]) {
-                        midi[voice].try_send_note_off(notes[voice]);
+                        midi[voice].send_note_off(notes[voice]).await;
                         sounding[voice] = false;
                     }
                 }
@@ -2242,7 +2242,7 @@ pub async fn run(
                             continue;
                         }
                         if sounding[voice] {
-                            midi[voice].try_send_note_off(notes[voice]);
+                            midi[voice].send_note_off(notes[voice]).await;
                         }
                         midi[voice].try_send_note_on(notes[voice], vels[voice]);
                         sounding[voice] = true;

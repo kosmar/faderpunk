@@ -458,7 +458,7 @@ async fn revoice(
     let harm_vel = harm_vel.max(VEL_FLOOR);
     for &n in old.iter() {
         if !new.contains(&n) {
-            midi.try_send_note_off(MidiNote::from(n));
+            midi.send_note_off(MidiNote::from(n)).await;
         }
     }
     // Voices dropped by a chord change must not arrive late.
@@ -508,7 +508,7 @@ async fn all_notes_off(
 ) {
     pending.clear();
     for &n in sounding.iter() {
-        midi.try_send_note_off(MidiNote::from(n));
+        midi.send_note_off(MidiNote::from(n)).await;
     }
     sounding.clear();
 }

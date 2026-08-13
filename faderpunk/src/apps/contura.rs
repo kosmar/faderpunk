@@ -1436,21 +1436,15 @@ pub async fn run(
                 pending_fire.set(false);
                 pending_note_off.set(false);
                 if let Some(n) = note_on.take() {
-                    let _ = midi.try_send_note_off(MidiNote::from(n));
+                    midi.send_note_off(MidiNote::from(n)).await;
                 }
                 continue;
             }
 
             if pending_note_off.get() {
+                pending_note_off.set(false);
                 if let Some(n) = note_on.take() {
-                    if midi.try_send_note_off(MidiNote::from(n)) {
-                        pending_note_off.set(false);
-                    } else {
-                        // Keep flag so we retry when the queue frees.
-                        note_on = Some(n);
-                    }
-                } else {
-                    pending_note_off.set(false);
+                    midi.send_note_off(MidiNote::from(n)).await;
                 }
             }
 
@@ -1467,8 +1461,11 @@ pub async fn run(
                     continue;
                 }
                 if let Some(old) = note_on {
-                    if old != note && !midi.try_send_note_off(MidiNote::from(old)) {
-                        continue;
+                    if old != note {
+                        midi.send_note_off(MidiNote::from(old)).await;
+                        // Cleared before the NoteOn: if that one drops we retry
+                        // next pass, and the old note must not be silenced twice.
+                        note_on = None;
                     }
                 }
                 if midi.try_send_note_on(MidiNote::from(note), pending_vel.get()) {

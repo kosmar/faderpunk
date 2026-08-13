@@ -530,6 +530,12 @@ impl MidiOutput {
     /// Non-blocking NoteOn — drops if `APP_MIDI_CHANNEL` is full instead of
     /// stalling Core 1 (dense melodic apps + busy playground).
     /// Returns `false` if the app MIDI queue is full (caller may retry).
+    ///
+    /// There is deliberately no NoteOff counterpart: a dropped NoteOn is
+    /// silence, but a dropped NoteOff hangs the note with no later message to
+    /// correct it, and `APP_MIDI_CHANNEL` is shared by all 16 channels, so any
+    /// busy neighbour can cause the drop. Send the matching NoteOff with
+    /// [`Self::send_note_off`] from an async voice task.
     pub fn try_send_note_on(&self, note_number: MidiNote, velocity: u16) -> bool {
         // Soft mute must not swallow NoteOn (CV still plays → USB NoteOff-only).
         if crate::tasks::midi::perf_local_hard_muted() {
@@ -538,21 +544,6 @@ impl MidiOutput {
         let message = MidiMessage::NoteOn {
             key: note_number.into(),
             vel: scale_bits_12_7(velocity),
-        };
-        let event = LiveEvent::Midi {
-            channel: self.midi_channel,
-            message,
-        };
-        let msg = MidiMsg::new(event, self.midi_out, MidiEventSource::Local);
-        self.midi_sender.try_send((self.start_channel, msg)).is_ok()
-    }
-
-    /// Non-blocking NoteOff. Prefer this in high-rate voice engines.
-    /// Returns `false` if the app MIDI queue is full (caller may retry).
-    pub fn try_send_note_off(&self, note_number: MidiNote) -> bool {
-        let message = MidiMessage::NoteOff {
-            key: note_number.into(),
-            vel: 0.into(),
         };
         let event = LiveEvent::Midi {
             channel: self.midi_channel,

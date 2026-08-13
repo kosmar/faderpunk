@@ -897,7 +897,7 @@ pub async fn run(
                 pending_fire.set(false);
                 pending_note_off.set(false);
                 if let Some(n) = note_on.take() {
-                    midi.try_send_note_off(n);
+                    midi.send_note_off(n).await;
                 }
                 if let Some(ref jack) = out_jack {
                     jack.set_value(0);
@@ -909,7 +909,7 @@ pub async fn run(
             if pending_note_off.get() {
                 pending_note_off.set(false);
                 if let Some(n) = note_on.take() {
-                    midi.try_send_note_off(n);
+                    midi.send_note_off(n).await;
                 }
                 // Gate / Velocity drop with the note; Pitch holds until next hit / silence.
                 if glob_cv_out.get() != OUT_PITCH {
@@ -1241,7 +1241,7 @@ async fn fire_note(
     };
 
     if let Some(prev) = note_on.take() {
-        midi.try_send_note_off(prev);
+        midi.send_note_off(prev).await;
     }
     midi.try_send_note_on(n, velocity);
     *note_on = Some(n);

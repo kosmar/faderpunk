@@ -1404,7 +1404,7 @@ pub async fn run(
 
         let release_all = async |sounding: &mut Vec<u8, SOUNDING_CAP>| {
             for n in sounding.iter() {
-                midi.try_send_note_off(MidiNote::from(*n));
+                midi.send_note_off(MidiNote::from(*n)).await;
             }
             sounding.clear();
         };
@@ -1412,7 +1412,7 @@ pub async fn run(
         let play_degree =
             async |sounding: &mut Vec<u8, SOUNDING_CAP>, degree: u8, octave: u8, record: bool| {
                 for n in sounding.iter() {
-                    midi.try_send_note_off(MidiNote::from(*n));
+                    midi.send_note_off(MidiNote::from(*n)).await;
                 }
                 sounding.clear();
                 if follow_tonic {
