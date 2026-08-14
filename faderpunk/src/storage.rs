@@ -714,24 +714,11 @@ impl<P: AppParams> ParamStore<P> {
         accessor(&*guard)
     }
 
-    /// Changes a param from inside the app — e.g. a panel gesture that picks a
-    /// value the user could otherwise only set from the configurator — and
-    /// persists it. Marks the layout dirty rather than pushing the change over
-    /// MIDI: an unsolicited message on the config connection has no way to be
-    /// told apart from a reply to whatever the host just asked (see the `#640`
-    /// review), so the host instead learns about it next time it calls
-    /// `GetChangedAppParams`, which reads the *current* values rather than a
-    /// value snapshotted here.
+    /// Change a param from inside the app and persist it to FRAM.
     ///
-    /// Does not restart `run()` — unlike a host-driven `SetAppParams`, which
-    /// only restarts on an applied change. A gesture already runs inside
-    /// `run()`, so restarting it out from under itself would be wrong; a
-    /// param that must be re-derived by other in-flight state should re-derive
-    /// it at the same point the gesture applies it, not rely on a restart.
-    ///
-    /// No built-in app calls this yet — see AGENTS.md/the `#640` decision on
-    /// why device-driven param edits are deliberately rare. Kept available
-    /// (and mirrored in `fpapp-sdk`) for the apps that do want it.
+    /// Same call shape as the full AppParams writeback (#640), but without the
+    /// host push: the configurator stays stale until that lands. Apps can call
+    /// this now; swapping in the real #640 implementation later is a drop-in.
     #[allow(dead_code)]
     pub async fn update<F>(&self, modifier: F)
     where
@@ -742,7 +729,8 @@ impl<P: AppParams> ParamStore<P> {
             modifier(&mut inner);
         }
         self.save().await;
-        mark_params_dirty(self.layout_id);
+        // #640 adds: try_send AppState on APP_PARAM_PUSH_CHANNEL so the host
+        // tracks on-device edits live.
     }
 
     pub async fn param_handler(&self) {
