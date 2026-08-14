@@ -36,12 +36,8 @@ SECTIONS {
 
 } INSERT AFTER .vector_table;
 
-/* move .text to start /after/ the boot info.
- * ALIGN(8): .text contains inputs requiring 8-byte alignment; the raw
- * start_block end (0x1000013c) is only 4-aligned. rust-lld warned
- * ("address of section .text is not a multiple of alignment") and the
- * misalignment caused flaky app-task spawns that moved around with every
- * code change (heat_pump/fibonacci_gate/bernoulli "cursed pool" symptom). */
+/* Move .text after the boot info and satisfy its current 8-byte
+ * output-section alignment requirement. */
 _stext = ALIGN(ADDR(.start_block) + SIZEOF(.start_block), 8);
 
 SECTIONS {

@@ -1,7 +1,7 @@
 use defmt::info;
 use embassy_futures::{
     join::join3,
-    select::{select, select3, Either, Either3},
+    select::{select, select3, select4, Either, Either3, Either4},
     yield_now,
 };
 use embassy_rp::{
@@ -320,6 +320,15 @@ pub static MIDI_CLOCK_CHANNEL: Channel<
     MIDI_CLOCK_CHANNEL_SIZE,
 > = Channel::new();
 
+/// Reliable queue for Start/Stop/Continue/Reset. Transport is kept separate so
+/// it cannot be dropped or delayed behind a backlog of timing clock ticks.
+const MIDI_TRANSPORT_CHANNEL_SIZE: usize = 4;
+pub static MIDI_TRANSPORT_CHANNEL: Channel<
+    CriticalSectionRawMutex,
+    MidiClockMsg,
+    MIDI_TRANSPORT_CHANNEL_SIZE,
+> = Channel::new();
+
 // Channel for apps (Core 1) to send MIDI to the distributor task (Core 1)
 pub static APP_MIDI_CHANNEL: Channel<ThreadModeRawMutex, (usize, MidiMsg), MIDI_CHANNEL_SIZE> =
     Channel::new();
@@ -577,6 +586,7 @@ pub async fn midi_out_task<'a>(
     let mut config_receiver = GLOBAL_CONFIG_WATCH.receiver().unwrap();
     let midi_receiver = MIDI_CHANNEL.receiver();
     let clock_receiver = MIDI_CLOCK_CHANNEL.receiver();
+    let transport_receiver = MIDI_TRANSPORT_CHANNEL.receiver();
 
     let config = config_receiver.get().await;
     let mut disabled_outs_for_local = config.midi.outs.map(|c| {
@@ -593,24 +603,30 @@ pub async fn midi_out_task<'a>(
     });
 
     loop {
-        // Realtime clock first: drain any pending ticks before touching the
-        // note/CC queue so heavy app traffic can never delay or starve them.
+        // Realtime first, transport ahead of ticks so a Stop cannot sit behind
+        // stale clock ticks, and both ahead of the note/CC queue so heavy app
+        // traffic can never delay or starve them.
+        if let Ok(transport_msg) = transport_receiver.try_receive() {
+            write_clock_msg(usb_tx, &mut uart0_tx, &mut uart1_tx, transport_msg).await;
+            continue;
+        }
         if let Ok(clock_msg) = clock_receiver.try_receive() {
             write_clock_msg(usb_tx, &mut uart0_tx, &mut uart1_tx, clock_msg).await;
             continue;
         }
 
-        match select3(
+        match select4(
+            transport_receiver.receive(),
             clock_receiver.receive(),
             midi_receiver.receive(),
             config_receiver.changed(),
         )
         .await
         {
-            Either3::First(clock_msg) => {
-                write_clock_msg(usb_tx, &mut uart0_tx, &mut uart1_tx, clock_msg).await;
+            Either4::First(msg) | Either4::Second(msg) => {
+                write_clock_msg(usb_tx, &mut uart0_tx, &mut uart1_tx, msg).await;
             }
-            Either3::Second(midi_out_msg) => {
+            Either4::Third(midi_out_msg) => {
                 match midi_out_msg {
                     MidiOutEvent::Event(MidiMsg::Live {
                         event,
@@ -734,7 +750,7 @@ pub async fn midi_out_task<'a>(
                     }
                 }
             }
-            Either3::Third(new_config) => {
+            Either4::Fourth(new_config) => {
                 disabled_outs_for_local = new_config.midi.outs.map(|c| {
                     matches!(
                         c,

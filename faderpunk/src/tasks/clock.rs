@@ -27,13 +27,12 @@ use crate::{
     state::{is_clock_running, update_state},
     tasks::{
         max::{MaxCmd, MAX_CHANNEL},
-        midi::{MidiClockMsg, MIDI_CLOCK_CHANNEL},
+        midi::{MidiClockMsg, MIDI_CLOCK_CHANNEL, MIDI_TRANSPORT_CHANNEL},
     },
     Spawner, GLOBAL_CONFIG_WATCH,
 };
 
 const CLOCK_PUBSUB_SIZE: usize = 16;
-// 16 apps + 1 metronome
 const CLOCK_PUBSUB_SUBSCRIBERS: usize = 16;
 // Only the gatekeeper publishes to CLOCK_PUBSUB
 const CLOCK_PUBSUB_PUBLISHERS: usize = 5;
@@ -44,11 +43,15 @@ const INTERNAL_PPQN: u8 = 24;
 /// How long METRONOME_HIGH stays true after each beat (ms).
 const METRONOME_HIGH_MS: u64 = 25;
 
-/// Mirror of the gatekeeper tick count for apps that only ever poll it.
-/// Subscribing to [`CLOCK_PUBSUB`] just to count ticks costs a subscriber slot
-/// that then has to be drained; polling this costs nothing.
-pub static TICK_COUNTER: AtomicU64 = AtomicU64::new(u64::MAX);
 pub static METRONOME_HIGH: AtomicBool = AtomicBool::new(true);
+
+/// Current gatekeeper tick, mirrored for readers that only need the count.
+///
+/// A [`CLOCK_PUBSUB`] subscription costs a queue slot and obliges the reader to
+/// keep draining it; anything that only wants "which tick is it" can poll this
+/// instead and never influence the gatekeeper. `u64::MAX` means "not started" —
+/// the first tick after a Start/Reset is 0.
+pub static TICK_COUNTER: AtomicU64 = AtomicU64::new(u64::MAX);
 
 type AuxInputs = (
     Peri<'static, PIN_1>,
@@ -358,6 +361,7 @@ async fn metronome() {
 async fn run_clock_gatekeeper() {
     let clock_publisher = CLOCK_PUBSUB.publisher().unwrap();
     let midi_clock_sender = MIDI_CLOCK_CHANNEL.sender();
+    let midi_transport_sender = MIDI_TRANSPORT_CHANNEL.sender();
     let clock_in_receiver = CLOCK_IN_CHANNEL.receiver();
     let mut config_receiver = GLOBAL_CONFIG_WATCH.receiver().unwrap();
 
@@ -421,6 +425,8 @@ async fn run_clock_gatekeeper() {
                             || matches!(source, ClockSrc::Atom | ClockSrc::Meteor | ClockSrc::Cube)
                         {
                             tick_counter = tick_counter.wrapping_add(1);
+                            // Publish the count before the pubsub so a poller
+                            // never reads a tick the subscribers already saw.
                             TICK_COUNTER.store(tick_counter, Ordering::Relaxed);
                             // Never await on the tick path: a subscriber that
                             // sleeps while holding its slot fills the queue,
@@ -475,12 +481,21 @@ async fn run_clock_gatekeeper() {
 
                 if should_send_midi {
                     if let Some(rt_event) = midi_rt_event {
-                        let msg = MidiClockMsg::new(rt_event, midi_target);
-                        // Dedicated realtime queue: never contended by app
-                        // note/CC traffic, so ticks are not dropped under
-                        // load. try_send keeps the gatekeeper non-blocking;
-                        // the queue only fills if all outputs stall entirely.
-                        let _ = midi_clock_sender.try_send(msg);
+                        match rt_event {
+                            // Clock ticks are lossy rather than allowing a
+                            // stalled MIDI output to block clock generation.
+                            SystemRealtime::TimingClock => {
+                                let msg =
+                                    MidiClockMsg::new(SystemRealtime::TimingClock, midi_target);
+                                let _ = midi_clock_sender.try_send(msg);
+                            }
+                            // Transport is rare and must not be silently
+                            // discarded or queued behind stale clock ticks.
+                            transport_event => {
+                                let msg = MidiClockMsg::new(transport_event, midi_target);
+                                midi_transport_sender.send(msg).await;
+                            }
+                        }
                     }
                 }
             }
