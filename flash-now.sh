@@ -25,6 +25,8 @@ REQUIRED=(
   "Bassment"
   "Contura"
   "Manifold"
+  "Giant Steps"
+  "Axis Matrix"
 )
 for name in "${REQUIRED[@]}"; do
   rg -aF --quiet "$name" "$ELF" || {

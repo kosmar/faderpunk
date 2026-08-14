@@ -1,3 +1,4 @@
+mod coltrane_geo;
 mod follow_key;
 mod genre_palette;
 mod groove;
@@ -49,4 +50,6 @@ register_apps!(
     41 => bassment,
     42 => contura,
     43 => manifold,
+    44 => giant_steps,
+    45 => axis_matrix,
 );

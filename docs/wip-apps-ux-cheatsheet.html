@@ -88,7 +88,7 @@
 <body>
 
 <h1>Faderpunk WIP Apps — UX Cheatsheet</h1>
-<p class="sub">Synced to <code>test/playground</code> (IDs 29–43) · 14 Aug 2026 · A4 print</p>
+<p class="sub">Synced to <code>test/playground</code> (IDs 29–45) · 14 Aug 2026 · A4 print</p>
 
 <div class="legend">
   <div><strong>Main</strong> — Fader alone</div>
@@ -851,6 +851,86 @@
     </div>
     <div class="manual">
       <p><strong>Manual.</strong> One CV in, three shaped outs. Each out is independently CV, Gate or Trigger: CV gets attenuverter / offset / slew, Gate and Trigger get threshold / hysteresis / pulse length. Shift + long press on an out cycles it through the three modes right on the device, and the change is stored as a parameter, so the configurator stays in sync. Channel 0 freezes the conditioned input; B/C/D mute. With nothing patched into the input, channel 0 turns into a morphing LFO and drives B/C/D on its own — the same wave engine as Super LFO, with morph, speed and skew on the three channel 0 fader layers and Shift + short press for clock sync. The *Source* parameter overrides that fallback if you would rather force CV In or Internal LFO, and *LFO Speed* moves the whole rate range down to Slow or Slowest. LEDs use five equidistant hues running from blue through violet and red to orange, one per operating mode. Channel 0 is blue while CV in feeds the outs and one step warmer once the internal LFO takes over; the outs take the remaining three steps by mode — CV, then Gate, then Trigger in orange — so a mode swap is visible the moment it lands. All four channels dim with signal amplitude.</p>
+    </div>
+  </div>
+</section>
+
+<!-- GIANT STEPS -->
+<section class="app">
+  <div class="app-head">
+    <span class="id">ID 44</span>
+    <h2>Giant Steps <span class="tag draft">draft</span></h2>
+    <span class="desc">Clock-driven chord sequencer over Coltrane tonal center geometry</span>
+  </div>
+  <div class="app-body">
+    <div class="cols">
+      <div>
+        <h3>Faders</h3>
+        <ul>
+          <li><strong>Main</strong> — approach density: bottom = centers only (3 chords), middle = V-I (6), top = full ii-V-I (9)</li>
+          <li><strong>Alt</strong> (Shift) — reserved</li>
+          <li><strong>Third</strong> (Btn hold) — live velocity override</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Buttons</h3>
+        <ul>
+          <li><strong>Short tap</strong> — reset cycle to step 0</li>
+          <li><strong>Hold</strong> — toggle reverse direction</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Signal / LEDs</h3>
+        <ul>
+          <li>Three tonal center hues: blue, green, orange — LED shows the current center</li>
+          <li>CV Out tracks root pitch of the current step</li>
+          <li>CV In Density modulates approach depth; CV In Reset triggers cycle reset on rising edge</li>
+          <li>Button ducks briefly on each chord trigger</li>
+        </ul>
+      </div>
+    </div>
+    <div class="manual">
+      <p><strong>Manual.</strong> Clock-driven chord sequencer cycling through three tonal centers spaced by a configurable interval (default major 3rd). Density fader controls approach depth: centers only, V-I or full ii-V-I. Chord qualities follow Coltrane convention: Maj7 on centers, Dom7 on dominants, m7 on subdominant approaches. Voicing param sets close triad, 7th, drop-2 or quartal stacking. Button tap resets the cycle to step 0; hold toggles reverse. Direction param adds pendulum and random modes on top. CV out tracks the root pitch of the current step; CV in modulates density or triggers reset. LEDs show three distinct hues for the three tonal centers (blue, green, orange). Button ducks briefly on each chord trigger.</p>
+    </div>
+  </div>
+</section>
+
+<!-- AXIS MATRIX -->
+<section class="app">
+  <div class="app-head">
+    <span class="id">ID 45</span>
+    <h2>Axis Matrix <span class="tag draft">draft</span></h2>
+    <span class="desc">Playable Coltrane tonal center navigator - fader position, clock trigger</span>
+  </div>
+  <div class="app-body">
+    <div class="cols">
+      <div>
+        <h3>Faders</h3>
+        <ul>
+          <li><strong>Main</strong> — center position: three zones with snap; approach chords sound in the transition zones at boundaries</li>
+          <li><strong>Alt</strong> (Shift) — harmonic function: bottom = root (Maj7), middle = dominant (Dom7), top = subdominant approach (m7)</li>
+          <li><strong>Third</strong> (Btn hold) — live velocity override</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Buttons</h3>
+        <ul>
+          <li><strong>Short tap</strong> — toggle latch (chord holds until next tap)</li>
+          <li><strong>Hold</strong> — toggle drone mode (sustain indefinitely, immediate fader response)</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Signal / LEDs</h3>
+        <ul>
+          <li>Three tonal center hues: blue, green, orange — brightness dims as fader drifts from center</li>
+          <li>CV Out tracks root pitch of current position</li>
+          <li>CV In Position modulates center selection; CV In Function modulates harmonic function</li>
+          <li>Button blinks when latched, stays bright when droning, ducks on chord trigger</li>
+        </ul>
+      </div>
+    </div>
+    <div class="manual">
+      <p><strong>Manual.</strong> Playable Coltrane tonal center navigator. Main fader positions across three centers with snap zones and approach-chord transitions at the boundaries. Alt fader selects the harmonic function at the current center: root (Maj7), dominant (Dom7) or subdominant approach (m7). Clock triggers the chord at the current grid position. Button tap toggles latch (chord sustains until next tap regardless of fader movement). Hold enters drone mode: the chord sustains indefinitely and updates immediately on fader movement, ignoring the clock. LEDs show the current center hue (blue, green, orange) and dim as the fader drifts from the center, visualising gravitational pull. Button blinks when latched, stays bright when droning.</p>
     </div>
   </div>
 </section>
