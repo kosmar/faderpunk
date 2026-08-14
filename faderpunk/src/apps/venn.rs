@@ -421,7 +421,7 @@ impl AppParams for Params {
 ///
 /// Outputs:
 ///   Jack0 = logic result + melodic line (Note A + step→extent)
-///   Jack1 = coupled companion + line + Interval
+///   Jack1 = Layer B + line + Interval (Accnt: coincidences only)
 #[derive(Serialize, Deserialize)]
 pub struct Storage {
     pulses_a: u16,
@@ -582,10 +582,9 @@ pub async fn run(
         glob_einv.set(einv);
         glob_muted.set(muted);
     }
-    // Spawn on OR: the densest mode. A stored AND/XOR/Accnt from an earlier
-    // session looks like a dead app on a fresh patch.
-    glob_logic.set(Logic::Or as u8);
-    storage.modify_and_save(|s| s.logic = Logic::Or as u8);
+    // `run` is restarted whenever a param changes, so the stored mode has to be
+    // restored here — forcing OR made every configurator edit reset the logic.
+    glob_logic.set(storage.query(|s| Logic::from_u8(s.logic) as u8));
     // Host-facing Interval B (configurator / presets) wins on spawn & param reload.
     interval_glob.set(interval_b.min(INTERVAL_MAX_DEGREES as usize) as u8);
 
@@ -665,10 +664,14 @@ pub async fn run(
                         let a = euclidean_at(len_a, pulses_a, 0, step);
                         let b = euclidean_at(len_b, pulses_b, 0, step);
 
+                        // Ch2 stays Layer B so the logic result on Ch1 is the only
+                        // thing the mode changes. Deriving Ch2 from the logic too
+                        // made OR/AND/XOR emit the same onset set (`a || b`), just
+                        // swapped between the two voices — inaudible over MIDI.
                         let (mut out0, mut out1) = match logic {
-                            Logic::Or => (a || b, a && b),
-                            Logic::And => (a && b, a ^ b),
-                            Logic::Xor => (a ^ b, a && b),
+                            Logic::Or => (a || b, b),
+                            Logic::And => (a && b, b),
+                            Logic::Xor => (a ^ b, b),
                             Logic::Accnt => (a, a && b),
                         };
                         if einv {
