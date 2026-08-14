@@ -35,6 +35,8 @@ pub const PARAMS: usize = 13;
 const REVERSE_FADE_MS: u16 = 500;
 /// Hold off periodic button LED writes so LedMode::Flash can finish (~3 cycles @ 60fps).
 const BUTTON_FLASH_MS: u16 = 850;
+/// Audio/CV tick interval (ms). Matches stock LFO; lowers Core 1 load vs 1 ms.
+const AUDIO_MS: u16 = 8;
 const DEST_COUNT: usize = 9;
 /// CV-only first, then latch mirrors (Shift+Button cycle order).
 const DEST_RATE_MOD: usize = 0;
@@ -432,6 +434,7 @@ pub async fn run(
     let glob_btn_flash_0 = app.make_global(0u16);
     let glob_btn_flash_1 = app.make_global(0u16);
     let glob_shift_focus = app.make_global(0xffu8);
+    let glob_storage_dirty = app.make_global(false);
     let die = app.use_die();
     let glob_chaos = app.make_global(MorphChaos::new());
 
@@ -469,12 +472,13 @@ pub async fn run(
             glob_div.set(div);
             glob_phase_origin.set(0);
         }
-        glob_quant_speed.set(quant_step(glob_count.get(), div));
+        let wall_ms = glob_count.get().max(1).saturating_mul(AUDIO_MS as u32);
+        glob_quant_speed.set(quant_step(wall_ms, div));
     };
 
     let fut_audio = async {
         loop {
-            app.delay_millis(1).await;
+            app.delay_millis(AUDIO_MS as u64).await;
 
             // Latch layers per channel (Button+Fader = Third).
             let latch_0 = if buttons.is_shift_pressed() && !buttons.is_button_pressed(0) {
@@ -507,18 +511,18 @@ pub async fn run(
                     (((REVERSE_FADE_MS - elapsed) as u32 * 255) / REVERSE_FADE_MS as u32) as u8
                 };
                 leds.set(1, Led::Button, Color::White, Brightness::Custom(bright));
-                let next = fade_left.saturating_sub(1);
+                let next = fade_left.saturating_sub(AUDIO_MS);
                 glob_reverse_fade.set(next);
             }
 
             // Countdown flash hold-offs (audio loop would otherwise clobber LedMode::Flash).
             let flash_0 = glob_btn_flash_0.get();
             if flash_0 > 0 {
-                glob_btn_flash_0.set(flash_0.saturating_sub(1));
+                glob_btn_flash_0.set(flash_0.saturating_sub(AUDIO_MS));
             }
             let flash_1 = glob_btn_flash_1.get();
             if flash_1 > 0 {
-                glob_btn_flash_1.set(flash_1.saturating_sub(1));
+                glob_btn_flash_1.set(flash_1.saturating_sub(AUDIO_MS));
             }
 
             let in_mute = storage.query(|s| s.in_mute);
@@ -594,10 +598,11 @@ pub async fn run(
             let clock_held = sync && glob_clock_held.get();
             let held = frozen || clock_held;
 
+            let audio_ms = AUDIO_MS as f32;
             let base_step = if sync {
-                quant_speed / speed_mult as f32
+                quant_speed * audio_ms / speed_mult as f32
             } else {
-                lfo_speed / speed_mult as f32
+                lfo_speed * audio_ms / speed_mult as f32
             };
 
             // Internal rate modulator: sine LFO scales primary step (0 = steady).
@@ -649,10 +654,12 @@ pub async fn run(
                 (phase_a * 2) % 4096
             };
 
-            // Evolve random-walk once per tick (not per morph lerp endpoint).
+            // Evolve random-walk AUDIO_MS times so drift stays ~1 kHz despite 8 ms loop.
             {
                 let mut chaos = glob_chaos.get();
-                chaos.tick_walks(&die);
+                for _ in 0..AUDIO_MS {
+                    chaos.tick_walks(&die);
+                }
                 glob_chaos.set(chaos);
             }
 
@@ -814,15 +821,18 @@ pub async fn run(
                 {
                     match latch_layer {
                         LatchLayer::Main => {
-                            storage.modify_and_save(|s| s.morph = new_value);
+                            storage.modify(|s| s.morph = new_value);
+                            glob_storage_dirty.set(true);
                         }
                         LatchLayer::Alt => {
                             glob_shift_focus.set(0);
-                            storage.modify_and_save(|s| s.layer_attenuation = new_value);
+                            storage.modify(|s| s.layer_attenuation = new_value);
+                            glob_storage_dirty.set(true);
                         }
                         LatchLayer::Third => {
                             fader_moved_0.set(true);
-                            storage.modify_and_save(|s| s.skew = new_value);
+                            storage.modify(|s| s.skew = new_value);
+                            glob_storage_dirty.set(true);
                         }
                     }
                 }
@@ -844,16 +854,19 @@ pub async fn run(
                 {
                     match latch_layer {
                         LatchLayer::Main => {
-                            storage.modify_and_save(|s| s.symmetry = new_value);
+                            storage.modify(|s| s.symmetry = new_value);
+                            glob_storage_dirty.set(true);
                         }
                         LatchLayer::Alt => {
                             glob_shift_focus.set(1);
-                            storage.modify_and_save(|s| s.layer_speed = new_value);
+                            storage.modify(|s| s.layer_speed = new_value);
+                            glob_storage_dirty.set(true);
                             time_calc(2047);
                         }
                         LatchLayer::Third => {
                             fader_moved_1.set(true);
-                            storage.modify_and_save(|s| s.warp = new_value);
+                            storage.modify(|s| s.warp = new_value);
+                            glob_storage_dirty.set(true);
                         }
                     }
                 }
@@ -1035,15 +1048,28 @@ pub async fn run(
         }
     };
 
+    let storage_flush = async {
+        loop {
+            app.delay_millis(40).await;
+            if glob_storage_dirty.get() {
+                glob_storage_dirty.set(false);
+                storage.modify_and_save(|_s| {});
+            }
+        }
+    };
+
     join(
-        join5(
-            fut_audio,
-            fader_handler,
-            button_handler,
-            long_press_handler,
-            scene_handler,
+        join(
+            join5(
+                fut_audio,
+                fader_handler,
+                button_handler,
+                long_press_handler,
+                scene_handler,
+            ),
+            clock_handler,
         ),
-        clock_handler,
+        storage_flush,
     )
     .await;
 }
