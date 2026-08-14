@@ -357,7 +357,9 @@ impl Default for Params {
         Self {
             midi_channel: MidiChannel::default(),
             note_a: MidiNote::from(32),
-            interval_b: 1,
+            // P5 — close intervals like m2 make the two voices hard to tell apart,
+            // which also hides the logic mode.
+            interval_b: 7,
             midi_out: MidiOut::default(),
             division: 8, // 1/16
             gatel: 50,
@@ -443,9 +445,9 @@ impl Default for Storage {
             // Mid-ish defaults: length 16, pulses ~7 / ~3
             pulses_a: 1792,
             pulses_b: 768,
-            // ~octave of melodic span; ~m2 interval (1/12 of fader)
+            // ~octave of melodic span; P5 interval (7/12 of fader)
             extent: 2048,
-            interval: 341,
+            interval: 2389,
             len_a: 1840, // ~16
             len_b: 1840,
             logic: Logic::Or as u8,
