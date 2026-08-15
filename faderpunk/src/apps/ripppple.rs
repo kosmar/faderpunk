@@ -18,7 +18,9 @@ use libfp::{
 };
 
 use crate::{
-    app::{App, AppParams, AppStorage, Led, Leds, ManagedStorage, ParamStore, SceneEvent},
+    app::{
+        App, AppParams, AppStorage, Led, Leds, ManagedStorage, MidiOutput, ParamStore, SceneEvent,
+    },
     apps::{
         led_fx::hsv_to_rgb,
         morph::{morph_sample, MorphChaos},
@@ -27,7 +29,21 @@ use crate::{
 };
 
 pub const CHANNELS: usize = 4;
-pub const PARAMS: usize = 14;
+pub const PARAMS: usize = 16;
+
+/// `Ch Map` packs one MIDI channel per wave into a nibble (wave 0 = bits 0..3,
+/// nibble + 1 = channel 1..16). A whole map of 0 means "every wave follows the
+/// base MIDI Channel", which is the shipped default.
+const CH_MAP_FOLLOW: i32 = 0;
+const CH_MAP_MAX: i32 = (1 << (4 * CHANNELS)) - 1;
+/// `CC Map` packs one CC number per wave into 7 bits (wave 0 = bits 0..6). A
+/// whole map of 0 means "every wave follows the base MIDI CC" via the
+/// base + offset derivation, which is the shipped default.
+const CC_MAP_FOLLOW: i32 = 0;
+const CC_MAP_MAX: i32 = (1 << (7 * CHANNELS)) - 1;
+/// Keeps the literal bounds in `CONFIG` honest against the packing above.
+const _: () = assert!(CH_MAP_FOLLOW == 0 && CH_MAP_MAX == 65_535);
+const _: () = assert!(CC_MAP_FOLLOW == 0 && CC_MAP_MAX == 268_435_455);
 
 /// DSP loop period. 8 ms rather than 1 ms: a 1 kHz loop that also mirrors MIDI
 /// starves the config SysEx path in dense layouts.
@@ -242,7 +258,19 @@ pub static CONFIG: Config<PARAMS> = Config::new(
     name: "MIDI Channel",
 })
 .add_param(Param::MidiCc { name: "MIDI CC" })
-.add_param(Param::MidiNrpn);
+.add_param(Param::MidiNrpn)
+// Literal bounds: the catalog generator reads these as syntax, and a path
+// expression would come out as an enum tag instead of a number.
+.add_param(Param::i32 {
+    name: "Ch Map",
+    min: 0,
+    max: 65_535,
+})
+.add_param(Param::i32 {
+    name: "CC Map",
+    min: 0,
+    max: 268_435_455,
+});
 
 pub struct Params {
     color: Color,
@@ -260,6 +288,51 @@ pub struct Params {
     /// Base CC; the four channels take base + 0..=3.
     midi_cc: MidiCc,
     nrpn: bool,
+    /// Four packed nibbles, one channel per wave. See `CH_MAP_FOLLOW`.
+    ch_map: i32,
+    /// Four packed 7-bit fields, one CC per wave. See `CC_MAP_FOLLOW`.
+    cc_map: i32,
+}
+
+impl Default for Params {
+    fn default() -> Self {
+        Self {
+            color: Color::Cyan,
+            in_range: Range::_Neg5_5V,
+            range_b: Range::_Neg5_5V,
+            range_c: Range::_Neg5_5V,
+            range_d: Range::_Neg5_5V,
+            target: [0; 3],
+            source: Source::Auto,
+            lfo_speed_mult: 0,
+            midi_out: MidiOut([false; 3]),
+            midi_channel: MidiChannel::default(),
+            midi_cc: MidiCc::from(32u8),
+            nrpn: false,
+            ch_map: CH_MAP_FOLLOW,
+            cc_map: CC_MAP_FOLLOW,
+        }
+    }
+}
+
+impl Params {
+    /// Resolve the sending MIDI channel for one wave.
+    fn channel_for(&self, wave: usize) -> MidiChannel {
+        if self.ch_map == CH_MAP_FOLLOW {
+            return self.midi_channel;
+        }
+        let nibble = ((self.ch_map >> (4 * wave)) & 0xF) as u8;
+        MidiChannel::from(nibble + 1)
+    }
+
+    /// Resolve the CC number for one wave.
+    fn cc_for(&self, wave: usize, nrpn: bool) -> MidiCc {
+        if self.cc_map == CC_MAP_FOLLOW {
+            return channel_cc(self.midi_cc, wave, nrpn);
+        }
+        let field = ((self.cc_map >> (7 * wave)) & 0x7F) as u16;
+        MidiCc::from(field.min(midi_cc_limit(nrpn)))
+    }
 }
 
 /// Highest CC number the transport can carry: NRPN uses the full 14-bit
@@ -309,6 +382,14 @@ impl AppParams for Params {
             midi_channel: at(11).map(MidiChannel::from_value).unwrap_or_default(),
             midi_cc: at(12).map(MidiCc::from_value).unwrap_or(MidiCc::from(32u8)),
             nrpn: at(13).map(bool::from_value).unwrap_or(false),
+            ch_map: at(14)
+                .map(i32::from_value)
+                .unwrap_or(CH_MAP_FOLLOW)
+                .clamp(CH_MAP_FOLLOW, CH_MAP_MAX),
+            cc_map: at(15)
+                .map(i32::from_value)
+                .unwrap_or(CC_MAP_FOLLOW)
+                .clamp(CC_MAP_FOLLOW, CC_MAP_MAX),
         })
     }
 
@@ -328,6 +409,8 @@ impl AppParams for Params {
         vec.push(self.midi_channel.into()).unwrap();
         vec.push(self.midi_cc.into()).unwrap();
         vec.push(Value::MidiNrpn(self.nrpn)).unwrap();
+        vec.push(self.ch_map.into()).unwrap();
+        vec.push(self.cc_map.into()).unwrap();
         vec
     }
 }
@@ -386,7 +469,7 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
             midi_out: MidiOut([false; 3]),
             midi_channel: MidiChannel::default(),
             midi_cc: MidiCc::from(32u8.saturating_add(app.start_channel as u8)),
-            nrpn: false,
+            ..Default::default()
         },
     );
     let storage = ManagedStorage::<Storage>::new(app.app_id, app.layout_id);
@@ -416,8 +499,10 @@ pub async fn run(
     let (in_range, range_b, range_c, range_d) =
         params.query(|p| (p.in_range, p.range_b, p.range_c, p.range_d));
     let source = params.query(|p| p.source);
-    let (midi_out, midi_chan, midi_cc, nrpn) =
-        params.query(|p| (p.midi_out, p.midi_channel, p.midi_cc, p.nrpn));
+    let (midi_out, nrpn) = params.query(|p| (p.midi_out, p.nrpn));
+    let midi_chans = params.query(|p| core::array::from_fn::<_, CHANNELS, _>(|w| p.channel_for(w)));
+    let midi_ccs =
+        params.query(|p| core::array::from_fn::<_, CHANNELS, _>(|w| p.cc_for(w, p.nrpn)));
     let lfo_speed_mult = 2u32.pow(params.query(|p| p.lfo_speed_mult).min(31) as u32);
 
     // Configurator "Target B/C/D" are start values; applied once per run() (a
@@ -437,13 +522,8 @@ pub async fn run(
     ];
     let initial_lfo_active = source == Source::Lfo;
 
-    let midi = app.use_midi_output(midi_out, midi_chan, nrpn);
-    let midi_ccs = [
-        channel_cc(midi_cc, 0, nrpn),
-        channel_cc(midi_cc, 1, nrpn),
-        channel_cc(midi_cc, 2, nrpn),
-        channel_cc(midi_cc, 3, nrpn),
-    ];
+    let midi: [MidiOutput; CHANNELS] =
+        core::array::from_fn(|w| app.use_midi_output(midi_out, midi_chans[w], nrpn));
 
     let buttons = app.use_buttons();
     let faders = app.use_faders();
@@ -638,7 +718,7 @@ pub async fn run(
             if midi_due && midi_slot == 0 {
                 let gate_val = midi_gate(root_val, nrpn);
                 if gate_val != last_midi[0] {
-                    midi.try_send_cc(midi_ccs[0], root_val);
+                    midi[0].try_send_cc(midi_ccs[0], root_val);
                     last_midi[0] = gate_val;
                 }
             }
@@ -707,7 +787,7 @@ pub async fn run(
                 if midi_due && midi_slot == i + 1 {
                     let gate_val = midi_gate(level, nrpn);
                     if gate_val != last_midi[i + 1] {
-                        midi.try_send_cc(midi_ccs[i + 1], level);
+                        midi[i + 1].try_send_cc(midi_ccs[i + 1], level);
                         last_midi[i + 1] = gate_val;
                     }
                 }

@@ -23,7 +23,9 @@
     "MIDI Out",
     "MIDI Channel",
     "MIDI CC",
-    "MIDI NRPN"
+    "MIDI NRPN",
+    "Ch Map",
+    "CC Map"
   ],
   "storage": [
     "Depth",
