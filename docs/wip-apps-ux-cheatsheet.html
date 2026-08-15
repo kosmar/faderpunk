@@ -88,7 +88,7 @@
 <body>
 
 <h1>Faderpunk WIP Apps — UX Cheatsheet</h1>
-<p class="sub">Synced to <code>test/playground</code> (IDs 29–45) · 14 Aug 2026 · A4 print</p>
+<p class="sub">Synced to <code>test/playground</code> (IDs 29–45) · 15 Aug 2026 · A4 print</p>
 
 <div class="legend">
   <div><strong>Main</strong> — Fader alone</div>
@@ -867,30 +867,33 @@
       <div>
         <h3>Faders</h3>
         <ul>
-          <li><strong>Main</strong> — approach density: bottom = centers only (3 chords), middle = V-I (6), top = full ii-V-I (9)</li>
+          <li><strong>Main</strong> — approach density: bottom = centers only (3 chords), middle = V–I (6), top = full ii–V–I (9)</li>
           <li><strong>Alt</strong> (Shift) — reserved</li>
-          <li><strong>Third</strong> (Btn hold) — live velocity override</li>
+          <li><strong>Third</strong> (Btn hold) — Feel: swing and velocity dynamics, bottom = straight and flat</li>
         </ul>
       </div>
       <div>
         <h3>Buttons</h3>
         <ul>
-          <li><strong>Short tap</strong> — reset cycle to step 0</li>
+          <li><strong>Short tap</strong> — mute (silences held chords, parks CV at 0 V)</li>
           <li><strong>Hold</strong> — toggle reverse direction</li>
+          <li><strong>Shift + tap</strong> — reset cycle to step 0</li>
+          <li><strong>Shift + hold</strong> — cycle Interval: minor 3rd, major 3rd, 4th, tritone</li>
         </ul>
       </div>
       <div>
         <h3>Signal / LEDs</h3>
         <ul>
-          <li>Three tonal center hues: blue, green, orange — LED shows the current center</li>
+          <li>Three tonal center hues rotated around the app colour — LED shows the current center</li>
           <li>CV Out tracks root pitch of the current step</li>
           <li>CV In Density modulates approach depth; CV In Reset triggers cycle reset on rising edge</li>
           <li>Button ducks briefly on each chord trigger</li>
+          <li>Reverse fades the button white to none; Interval flashes one colour per step</li>
         </ul>
       </div>
     </div>
     <div class="manual">
-      <p><strong>Manual.</strong> Clock-driven chord sequencer cycling through three tonal centers spaced by a configurable interval (default major 3rd). Density fader controls approach depth: centers only, V-I or full ii-V-I. Chord qualities follow Coltrane convention: Maj7 on centers, Dom7 on dominants, m7 on subdominant approaches. Voicing param sets close triad, 7th, drop-2 or quartal stacking. Button tap resets the cycle to step 0; hold toggles reverse. Direction param adds pendulum and random modes on top. CV out tracks the root pitch of the current step; CV in modulates density or triggers reset. LEDs show three distinct hues for the three tonal centers (blue, green, orange). Button ducks briefly on each chord trigger.</p>
+      <p><strong>Manual.</strong> Clock-driven chord sequencer cycling through three tonal centers spaced by a configurable interval (default major 3rd). Density fader controls approach depth: centers only, V–I or full ii–V–I. Chord qualities follow Coltrane convention: Maj7 on centers, Dom7 on dominants, m7 on subdominant approaches. Voicing param sets close triad, 7th, drop-2 or quartal stacking, and each chord is revoiced to move as little as possible from the one before it. Button tap mutes, cutting anything still held; hold toggles reverse. Shift + tap resets the cycle to step 0, shift + hold cycles the interval through minor 3rd, major 3rd, 4th and tritone. Direction param adds pendulum and random modes on top. CV out tracks the root pitch of the current step and parks at 0 V while muted; CV in modulates density or triggers reset. Hold the button and move the fader for Feel. At the bottom the sequence is straight and flat, exactly as before; further up the off-beats swing and the dynamics open out, accenting the tonic while the approach chords lighten. Feel steps aside when the device’s own swing is active so the two never stack. Motion decides how far the harmony is allowed to wander. Straight is the plain engine. Rubato lets the tonic lean, holding twice as long while the ii and V keep passing. Sheets breaks each chord into a fast run up and back down instead of a block. Free adds tritone substitutions on roughly every third dominant. LEDs show three distinct hues for the three tonal centers, rotated around the app colour. The button ducks briefly on each chord trigger, fades white to none when reverse toggles, and flashes a colour per step when the interval cycles.</p>
     </div>
   </div>
 </section>
@@ -909,28 +912,31 @@
         <ul>
           <li><strong>Main</strong> — center position: three zones with snap; approach chords sound in the transition zones at boundaries</li>
           <li><strong>Alt</strong> (Shift) — harmonic function: bottom = root (Maj7), middle = dominant (Dom7), top = subdominant approach (m7)</li>
-          <li><strong>Third</strong> (Btn hold) — live velocity override</li>
+          <li><strong>Third</strong> (Btn hold) — Feel: swing and velocity dynamics, bottom = straight and flat</li>
         </ul>
       </div>
       <div>
         <h3>Buttons</h3>
         <ul>
-          <li><strong>Short tap</strong> — toggle latch (chord holds until next tap)</li>
+          <li><strong>Short tap</strong> — mute (silences held chords, parks CV at 0 V)</li>
           <li><strong>Hold</strong> — toggle drone mode (sustain indefinitely, immediate fader response)</li>
+          <li><strong>Shift + tap</strong> — toggle latch (chord holds until tapped again)</li>
+          <li><strong>Shift + hold</strong> — cycle Interval: minor 3rd, major 3rd, 4th, tritone</li>
         </ul>
       </div>
       <div>
         <h3>Signal / LEDs</h3>
         <ul>
-          <li>Three tonal center hues: blue, green, orange — brightness dims as fader drifts from center</li>
+          <li>Three tonal center hues rotated around the app colour — brightness dims as fader drifts from center</li>
           <li>CV Out tracks root pitch of current position</li>
           <li>CV In Position modulates center selection; CV In Function modulates harmonic function</li>
           <li>Button blinks when latched, stays bright when droning, ducks on chord trigger</li>
+          <li>Interval flashes one colour per step</li>
         </ul>
       </div>
     </div>
     <div class="manual">
-      <p><strong>Manual.</strong> Playable Coltrane tonal center navigator. Main fader positions across three centers with snap zones and approach-chord transitions at the boundaries. Alt fader selects the harmonic function at the current center: root (Maj7), dominant (Dom7) or subdominant approach (m7). Clock triggers the chord at the current grid position. Button tap toggles latch (chord sustains until next tap regardless of fader movement). Hold enters drone mode: the chord sustains indefinitely and updates immediately on fader movement, ignoring the clock. LEDs show the current center hue (blue, green, orange) and dim as the fader drifts from the center, visualising gravitational pull. Button blinks when latched, stays bright when droning.</p>
+      <p><strong>Manual.</strong> Playable Coltrane tonal center navigator. Main fader positions across three centers with snap zones and approach-chord transitions at the boundaries. Alt fader selects the harmonic function at the current center: root (Maj7), dominant (Dom7) or subdominant approach (m7). Clock triggers the chord at the current grid position, and each chord is revoiced to move as little as possible from the one before it. Button tap mutes, cutting anything still held; hold enters drone mode, where the chord sustains indefinitely and updates immediately on fader movement, ignoring the clock. Shift + tap toggles latch (the chord sustains until tapped again regardless of fader movement), shift + hold cycles the interval through minor 3rd, major 3rd, 4th and tritone. Hold the button and move the fader for Feel. At the bottom the playing is straight and flat, exactly as before; further up the off-beats swing and the dynamics open out, accenting the root chord while the approach chords lighten. Feel steps aside when the device’s own swing is active so the two never stack. Motion decides how far the harmony is allowed to wander. Straight is the plain engine. Rubato lets the root chord lean, holding twice as long while the dominant and subdominant keep passing. Sheets breaks each chord into a fast run up and back down instead of a block. Free adds tritone substitutions on roughly every third dominant. Drone keeps its immediate feel and ignores the rhythmic side of Motion. LEDs show the current center hue, rotated around the app colour, and dim as the fader drifts from the center, visualising gravitational pull. The button blinks when latched, stays bright when droning, and flashes a colour per step when the interval cycles.</p>
     </div>
   </div>
 </section>
