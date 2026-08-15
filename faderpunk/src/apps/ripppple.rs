@@ -27,7 +27,7 @@ use crate::{
 };
 
 pub const CHANNELS: usize = 4;
-pub const PARAMS: usize = 11;
+pub const PARAMS: usize = 14;
 
 /// DSP loop period. 8 ms rather than 1 ms: a 1 kHz loop that also mirrors MIDI
 /// starves the config SysEx path in dense layouts.
@@ -218,6 +218,18 @@ pub static CONFIG: Config<PARAMS> = Config::new(
     variants: &[Range::_0_10V, Range::_Neg5_5V],
 })
 .add_param(Param::Enum {
+    name: "Target B",
+    variants: &["Rate", "Depth", "Shape"],
+})
+.add_param(Param::Enum {
+    name: "Target C",
+    variants: &["Rate", "Depth", "Shape"],
+})
+.add_param(Param::Enum {
+    name: "Target D",
+    variants: &["Rate", "Depth", "Shape"],
+})
+.add_param(Param::Enum {
     name: "Source",
     variants: &["Auto", "CV In", "Internal LFO"],
 })
@@ -238,6 +250,9 @@ pub struct Params {
     range_b: Range,
     range_c: Range,
     range_d: Range,
+    /// Start value of the per-stage modulation target (Ch1..Ch3); runtime state
+    /// lives in `Storage::dest`.
+    target: [usize; 3],
     source: Source,
     lfo_speed_mult: usize,
     midi_out: MidiOut,
@@ -279,14 +294,21 @@ impl AppParams for Params {
             range_b: at(2).map(Range::from_value).unwrap_or(Range::_Neg5_5V),
             range_c: at(3).map(Range::from_value).unwrap_or(Range::_Neg5_5V),
             range_d: at(4).map(Range::from_value).unwrap_or(Range::_Neg5_5V),
-            source: at(5)
+            target: [
+                at(5).map(usize::from_value).unwrap_or(0).min(2),
+                at(6).map(usize::from_value).unwrap_or(0).min(2),
+                at(7).map(usize::from_value).unwrap_or(0).min(2),
+            ],
+            source: at(8)
                 .map(|v| Source::from_usize(usize::from_value(v)))
                 .unwrap_or(Source::Auto),
-            lfo_speed_mult: at(6).map(usize::from_value).unwrap_or(0),
-            midi_out: at(7).map(MidiOut::from_value).unwrap_or(MidiOut([false; 3])),
-            midi_channel: at(8).map(MidiChannel::from_value).unwrap_or_default(),
-            midi_cc: at(9).map(MidiCc::from_value).unwrap_or(MidiCc::from(32u8)),
-            nrpn: at(10).map(bool::from_value).unwrap_or(false),
+            lfo_speed_mult: at(9).map(usize::from_value).unwrap_or(0),
+            midi_out: at(10)
+                .map(MidiOut::from_value)
+                .unwrap_or(MidiOut([false; 3])),
+            midi_channel: at(11).map(MidiChannel::from_value).unwrap_or_default(),
+            midi_cc: at(12).map(MidiCc::from_value).unwrap_or(MidiCc::from(32u8)),
+            nrpn: at(13).map(bool::from_value).unwrap_or(false),
         })
     }
 
@@ -297,6 +319,9 @@ impl AppParams for Params {
         vec.push(self.range_b.into()).unwrap();
         vec.push(self.range_c.into()).unwrap();
         vec.push(self.range_d.into()).unwrap();
+        for t in self.target {
+            vec.push(Value::Enum(t)).unwrap();
+        }
         vec.push(Value::Enum(self.source as usize)).unwrap();
         vec.push(Value::Enum(self.lfo_speed_mult)).unwrap();
         vec.push(self.midi_out.into()).unwrap();
@@ -355,6 +380,7 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
             range_b: Range::_Neg5_5V,
             range_c: Range::_Neg5_5V,
             range_d: Range::_Neg5_5V,
+            target: [0; 3],
             source: Source::Auto,
             lfo_speed_mult: 0,
             midi_out: MidiOut([false; 3]),
@@ -393,6 +419,15 @@ pub async fn run(
     let (midi_out, midi_chan, midi_cc, nrpn) =
         params.query(|p| (p.midi_out, p.midi_channel, p.midi_cc, p.nrpn));
     let lfo_speed_mult = 2u32.pow(params.query(|p| p.lfo_speed_mult).min(31) as u32);
+
+    // Configurator "Target B/C/D" are start values; applied once per run() (a
+    // host param edit restarts run). A scene load overrides storage later.
+    let p_target = params.query(|p| p.target);
+    storage.modify_and_save(|s| {
+        for (slot, t) in s.dest.iter_mut().zip(p_target.iter()) {
+            *slot = (*t).min(2) as u8;
+        }
+    });
 
     let ranges = [range_b, range_c, range_d];
     let bipolar = [
@@ -903,6 +938,11 @@ pub async fn run(
                     Led::Button,
                     LedMode::Flash(Dest::from_u8(next).color(), Some(4)),
                 );
+                // Mirror into the param so configurator / Presetpunk follow the
+                // device. `ParamStore::update` only saves and pushes; it does not
+                // restart run(), so the LFO phases keep running through a target
+                // change.
+                params.update(|p| p.target[i] = next as usize).await;
             }
         }
     };

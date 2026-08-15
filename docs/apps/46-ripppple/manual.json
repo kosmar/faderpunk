@@ -15,6 +15,9 @@
     "Range B",
     "Range C",
     "Range D",
+    "Target B",
+    "Target C",
+    "Target D",
     "Source",
     "LFO Speed",
     "MIDI Out",
@@ -57,6 +60,7 @@
             "<strong>Channel 0 Shift + short</strong> \u2014 clock sync for the root, available only while the internal LFO runs",
             "<strong>Channels 1\u20133 short</strong> \u2014 mute/unmute that stage; a fader scrub while the button is held cancels the tap",
             "<strong>Channels 1\u20133 long</strong> \u2014 cycle the modulation target through Rate \u2192 Depth \u2192 Shape; the channel hue follows and the button LED flashes",
+            "The same three targets are also the params <em>Target B</em>, <em>Target C</em> and <em>Target D</em> in the configurator \u2014 the param sets the start value, a long press changes it live and pushes the new name back",
             "<strong>Channels 1\u20133 Shift + long</strong> \u2014 cycle the output range of that stage"
           ]
         }
@@ -103,7 +107,7 @@
     },
     {
       "jackTitle": "Output B",
-      "jackDescription": "First stage of the chain, modulated by the root. Range B sets 0\u201310 V or \u00b15 V.",
+      "jackDescription": "First stage of the chain, modulated by the root. Range B sets 0\u201310 V or \u00b15 V, Target B picks Rate, Depth or Shape.",
       "faderTitle": "Modulation Depth",
       "faderDescription": "How strongly the root drives the modulation target of this stage. At zero the stage free-runs.",
       "faderPlusShiftTitle": "Base Rate",
@@ -111,7 +115,7 @@
       "faderPlusFnTitle": "Morph",
       "faderPlusFnDescription": "Wave of this stage, from ramp through triangle, sine and square into chaos.",
       "fnTitle": "Mute / Modulation Target",
-      "fnDescription": "Short tap mutes the output with a click-free ramp. A long press cycles the modulation target through Rate \u2192 Depth \u2192 Shape; the channel hue follows and the button flashes.",
+      "fnDescription": "Short tap mutes the output with a click-free ramp. A long press cycles the modulation target through Rate \u2192 Depth \u2192 Shape; the channel hue follows and the button flashes. The same choice is the param \u201cTarget B\u201d in the configurator.",
       "fnPlusShiftTitle": "Out Range",
       "fnPlusShiftDescription": "Shift + long press cycles the output range of this stage. The range is stored as a parameter, so the configurator follows.",
       "ledTop": "Bipolar meter of the stage output, hued by the active modulation target",
@@ -120,7 +124,7 @@
     },
     {
       "jackTitle": "Output C",
-      "jackDescription": "Second stage, modulated by the output of channel 1. Range C sets 0\u201310 V or \u00b15 V.",
+      "jackDescription": "Second stage, modulated by the output of channel 1. Range C sets 0\u201310 V or \u00b15 V, Target C picks Rate, Depth or Shape.",
       "faderTitle": "Modulation Depth",
       "faderDescription": "How strongly the previous stage drives the modulation target of this stage.",
       "faderPlusShiftTitle": "Base Rate",
@@ -137,7 +141,7 @@
     },
     {
       "jackTitle": "Output D",
-      "jackDescription": "Third and last stage, modulated by the output of channel 2. Range D sets 0\u201310 V or \u00b15 V.",
+      "jackDescription": "Third and last stage, modulated by the output of channel 2. Range D sets 0\u201310 V or \u00b15 V, Target D picks Rate, Depth or Shape.",
       "faderTitle": "Modulation Depth",
       "faderDescription": "How strongly the previous stage drives the modulation target of this stage.",
       "faderPlusShiftTitle": "Base Rate",
