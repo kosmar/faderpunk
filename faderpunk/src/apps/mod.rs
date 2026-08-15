@@ -52,4 +52,5 @@ register_apps!(
     43 => manifold,
     44 => giant_steps,
     45 => axis_matrix,
+    46 => ripppple,
 );

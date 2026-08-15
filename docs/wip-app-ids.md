@@ -29,6 +29,7 @@ Flash integration branch: **`test/playground`** (count-agnostic; formerly
 | 43 | Manifold | `feat/manifold` | 1→3 CV morph utility (freeze / mute / mode cycle) |
 | 44 | Giant Steps | `feat/giant-steps` | Clock-driven Coltrane changes sequencer |
 | 45 | Axis Matrix | `feat/axis-matrix` | Playable Coltrane tonal center navigator |
+| 46 | Ripppple | `feat/ripppple` | Cascading LFO chain, each stage modulates the next |
 
-Next free WIP ID: **46**
+Next free WIP ID: **47**
 

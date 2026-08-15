@@ -1,0 +1,156 @@
+{
+  "id": 46,
+  "slug": "ripppple",
+  "name": "Ripppple",
+  "status": "wip",
+  "tag": "draft",
+  "description": "Cascading LFO chain, each stage modulates the next",
+  "color": "Cyan",
+  "icon": "Sine",
+  "channels_count": 4,
+  "cv_jack": true,
+  "params": [
+    "Color",
+    "In Range",
+    "Range B",
+    "Range C",
+    "Range D",
+    "Source",
+    "LFO Speed",
+    "MIDI Out",
+    "MIDI Channel",
+    "MIDI CC",
+    "MIDI NRPN"
+  ],
+  "storage": [
+    "Depth",
+    "Rate",
+    "Shape",
+    "Destination",
+    "Muted",
+    "LFO Speed",
+    "Morph",
+    "Skew",
+    "LFO Clocked",
+    "Symmetry"
+  ],
+  "columns": [
+    {
+      "sections": [
+        {
+          "heading": "Faders",
+          "items": [
+            "<strong>Main</strong> \u2014 root LFO speed on channel 0; modulation depth on channels 1\u20133",
+            "<strong>Alt</strong> (Shift) \u2014 morph of the root wave on channel 0; base rate of the stage on channels 1\u20133",
+            "<strong>Third</strong> (own button held) \u2014 skew of the root wave on channel 0; morph of the stage on channels 1\u20132",
+            "<strong>Channel 3 Third</strong> \u2014 symmetry, shared by every stage instead of a private morph"
+          ]
+        }
+      ]
+    },
+    {
+      "sections": [
+        {
+          "heading": "Buttons",
+          "items": [
+            "<strong>Channel 0 short</strong> \u2014 freeze the root value; the whole chain stops moving",
+            "<strong>Channel 0 Shift + short</strong> \u2014 clock sync for the root, available only while the internal LFO runs",
+            "<strong>Channels 1\u20133 short</strong> \u2014 mute/unmute that stage; a fader scrub while the button is held cancels the tap",
+            "<strong>Channels 1\u20133 long</strong> \u2014 cycle the modulation target through Rate \u2192 Depth \u2192 Shape; the channel hue follows and the button LED flashes",
+            "<strong>Channels 1\u20133 Shift + long</strong> \u2014 cycle the output range of that stage"
+          ]
+        }
+      ]
+    },
+    {
+      "sections": [
+        {
+          "heading": "Signal / LEDs",
+          "items": [
+            "Channel 0 is the root: a CV input that falls back to an internal LFO when nothing is patched",
+            "Channel 1 is modulated by the root, channel 2 by the output of channel 1, channel 3 by the output of channel 2",
+            "Every stage sees only its direct predecessor, so the chain diverges further towards the back",
+            "<em>Rate</em> bends the tempo of the stage exponentially, roughly \u00b13 octaves",
+            "<em>Depth</em> is amplitude modulation \u2014 the stage ducks towards silence as its predecessor swings negative",
+            "<em>Shape</em> pushes the wave of the stage along the morph axis",
+            "<em>Source</em> forces CV In or Internal LFO instead of the auto fallback; <em>LFO Speed</em> shifts the root range to Slow or Slowest",
+            "Top and bottom LEDs are a bipolar meter of the stage output",
+            "The hue of channels 1\u20133 encodes the active modulation target; channel 0 changes hue depending on whether the CV input or the internal LFO drives it",
+            "Muted channels are heavily dimmed and their button LED goes dark",
+            "All four channels can mirror their level as MIDI CC or NRPN, using the base CC plus the channel offset"
+          ]
+        }
+      ]
+    }
+  ],
+  "channels": [
+    {
+      "jackTitle": "CV In",
+      "jackDescription": "Root input. Set In Range to 0\u201310 V for unipolar sources or \u00b15 V for bipolar ones. With nothing patched, the internal LFO takes over after about a second of a static input.",
+      "faderTitle": "LFO Speed",
+      "faderDescription": "Rate of the internal root LFO, or its clock division when sync is on.",
+      "faderPlusShiftTitle": "Morph",
+      "faderPlusShiftDescription": "Morphs the root wave from ramp through triangle, sine and square into chaos.",
+      "faderPlusFnTitle": "Skew",
+      "faderPlusFnDescription": "Skews the root wave towards rising or falling.",
+      "fnTitle": "Freeze",
+      "fnDescription": "Short tap holds the root value \u2014 the value itself, not just the phase, so stepped morph nodes hold too. The whole chain freezes with it.",
+      "fnPlusShiftTitle": "LFO Clock Sync",
+      "fnPlusShiftDescription": "While the internal LFO runs, toggles between free-running and clock-synced. The button flashes when sync engages; a stopped transport parks the wave.",
+      "ledTop": "Root level in the source hue \u2014 one hue for CV in, another while the internal LFO runs",
+      "ledBottom": "Root level in the source hue \u2014 one hue for CV in, another while the internal LFO runs",
+      "ledTopPlusShift": ""
+    },
+    {
+      "jackTitle": "Output B",
+      "jackDescription": "First stage of the chain, modulated by the root. Range B sets 0\u201310 V or \u00b15 V.",
+      "faderTitle": "Modulation Depth",
+      "faderDescription": "How strongly the root drives the modulation target of this stage. At zero the stage free-runs.",
+      "faderPlusShiftTitle": "Base Rate",
+      "faderPlusShiftDescription": "Free-running rate of this stage before any rate modulation.",
+      "faderPlusFnTitle": "Morph",
+      "faderPlusFnDescription": "Wave of this stage, from ramp through triangle, sine and square into chaos.",
+      "fnTitle": "Mute / Modulation Target",
+      "fnDescription": "Short tap mutes the output with a click-free ramp. A long press cycles the modulation target through Rate \u2192 Depth \u2192 Shape; the channel hue follows and the button flashes.",
+      "fnPlusShiftTitle": "Out Range",
+      "fnPlusShiftDescription": "Shift + long press cycles the output range of this stage. The range is stored as a parameter, so the configurator follows.",
+      "ledTop": "Bipolar meter of the stage output, hued by the active modulation target",
+      "ledBottom": "Bipolar meter of the stage output, hued by the active modulation target",
+      "ledTopPlusShift": ""
+    },
+    {
+      "jackTitle": "Output C",
+      "jackDescription": "Second stage, modulated by the output of channel 1. Range C sets 0\u201310 V or \u00b15 V.",
+      "faderTitle": "Modulation Depth",
+      "faderDescription": "How strongly the previous stage drives the modulation target of this stage.",
+      "faderPlusShiftTitle": "Base Rate",
+      "faderPlusShiftDescription": "Free-running rate of this stage before any rate modulation.",
+      "faderPlusFnTitle": "Morph",
+      "faderPlusFnDescription": "Wave of this stage, from ramp through triangle, sine and square into chaos.",
+      "fnTitle": "Mute / Modulation Target",
+      "fnDescription": "Short tap mutes the output. A long press cycles the modulation target through Rate \u2192 Depth \u2192 Shape.",
+      "fnPlusShiftTitle": "Out Range",
+      "fnPlusShiftDescription": "Shift + long press cycles the output range of this stage.",
+      "ledTop": "Bipolar meter of the stage output, hued by the active modulation target",
+      "ledBottom": "Bipolar meter of the stage output, hued by the active modulation target",
+      "ledTopPlusShift": ""
+    },
+    {
+      "jackTitle": "Output D",
+      "jackDescription": "Third and last stage, modulated by the output of channel 2. Range D sets 0\u201310 V or \u00b15 V.",
+      "faderTitle": "Modulation Depth",
+      "faderDescription": "How strongly the previous stage drives the modulation target of this stage.",
+      "faderPlusShiftTitle": "Base Rate",
+      "faderPlusShiftDescription": "Free-running rate of this stage before any rate modulation.",
+      "faderPlusFnTitle": "Symmetry",
+      "faderPlusFnDescription": "Shared by every stage: bends the wave symmetry of the whole chain. This channel trades its private morph for it.",
+      "fnTitle": "Mute / Modulation Target",
+      "fnDescription": "Short tap mutes the output. A long press cycles the modulation target through Rate \u2192 Depth \u2192 Shape.",
+      "fnPlusShiftTitle": "Out Range",
+      "fnPlusShiftDescription": "Shift + long press cycles the output range of this stage.",
+      "ledTop": "Bipolar meter of the stage output, hued by the active modulation target",
+      "ledBottom": "Bipolar meter of the stage output, hued by the active modulation target",
+      "ledTopPlusShift": ""
+    }
+  ]
+}
