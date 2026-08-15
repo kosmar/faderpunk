@@ -504,14 +504,12 @@ pub async fn run(
                 if hold_boundaries > 0 {
                     hold_boundaries -= 1;
                 } else {
-                    // Device-global swing already pushes the tick stream.
-                    let feel = if get_global_config().clock.swing_amount == 0 {
-                        glob_feel.get()
-                    } else {
-                        0
-                    };
+                    // Feel shares its timing budget with the device-global swing.
+                    let gs = get_global_config().clock.swing_amount;
                     // Parity comes off the clock grid, not the app's start.
-                    let delay = feel_swing_ticks(feel, div as u32, (boundary / div) as u32) as u64;
+                    let delay =
+                        feel_swing_ticks(glob_feel.get(), div as u32, (boundary / div) as u32, gs)
+                            as u64;
                     if delay == 0 {
                         fire = true;
                     } else {

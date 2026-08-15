@@ -19,8 +19,8 @@ use crate::app::{
 };
 use crate::apps::genre_palette::{genre_fader_center, GENRE_NAMES, NUM_GENRES};
 use crate::apps::groove::{
-    feel_curve, feel_lerp_i32, feel_lerp_u16, humanize_curve, step_chance, swing_bias, swing_delay_ms,
-    FLAT_VEL, SIXTEENTH,
+    device_swing_permille, device_swing_reverses, feel_curve, feel_lerp_i32, feel_lerp_u16,
+    humanize_curve, step_chance, swing_bias, swing_delay_ms, FLAT_VEL, SIXTEENTH,
 };
 use crate::apps::led_fx::{genre_nearest, genre_pair, lerp_i32, lerp_u8, spectrum_color};
 use crate::apps::ornament::{self, ArticContext, GrooveVoice, MAX_HITS};
@@ -1742,14 +1742,16 @@ pub async fn run(
                 g_frac,
             );
             let timing_off = feel_lerp_i32(0, timing_char, feel_val);
-            // The device clock already swings its ticker for internal and
-            // external sources. Keep the app's genre swing only while global
-            // swing is neutral, otherwise both delays would stack.
-            let swing = if get_global_config().clock.swing_amount == 0 {
-                swing_delay_ms(step, swing_pct, glob_reversed.get(), sixteenth_ms)
-            } else {
-                0
-            };
+            // Grooves lives on the 16th grid, so it overlaps the device swing
+            // window. Cap the genre swing by what the clock already spends and
+            // follow its direction instead of pulling against it.
+            let gs = get_global_config().clock.swing_amount;
+            // swing_delay_ms tops out at ⅔ of a 16th, i.e. 667 per-mille.
+            let remaining = 667u32.saturating_sub(device_swing_permille(SIXTEENTH, gs));
+            let pct_cap = (remaining * 100) / 667;
+            let eff_pct = swing_pct.min(pct_cap as i32);
+            let rev = glob_reversed.get() ^ device_swing_reverses(gs);
+            let swing = swing_delay_ms(step, eff_pct, rev, sixteenth_ms);
             let tightness = lerp_u8(pat_lo.tightness, pat_hi.tightness, g_frac);
             // Ghost window walks on a four-bar phrase, and only once Feel is
             // past the flat zone — below that the bar has to repeat verbatim.

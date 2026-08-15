@@ -26,8 +26,9 @@ use crate::app::{
 use crate::apps::follow_key;
 use crate::apps::genre_palette::{genre_fader_center, GENRE_NAMES, GENRE_PROG_8, NUM_GENRES};
 use crate::apps::groove::{
-    bit_set, feel_curve, feel_lerp_i32, feel_lerp_u16, rot16, step_chance, swing_bias,
-    swing_delay_ticks, FLAT_VEL, SIXTEENTH, STEPS_PER_BAR,
+    bit_set, device_swing_permille, device_swing_reverses, feel_curve, feel_lerp_i32,
+    feel_lerp_u16, rot16, step_chance, swing_bias, swing_delay_ticks, FLAT_VEL, SIXTEENTH,
+    STEPS_PER_BAR,
 };
 use crate::apps::led_fx::{genre_nearest, genre_pair, lerp_i32, lerp_u8, spectrum_color};
 use crate::apps::ornament::{self, ArticContext, GrooveVoice, MAX_HITS};
@@ -1737,7 +1738,7 @@ pub async fn run(
         let mut cur_key = key;
         let mut last_key_bar = u32::MAX;
         let mut last_swing_bar = u32::MAX;
-        let mut global_swing_neutral = true;
+        let mut global_swing = 0i8;
         // Slot the current fill/break gesture started on, so the release resolves
         // on the *next* downbeat rather than the one it may have started on.
         let mut fill_start_slot = 0u32;
@@ -1823,8 +1824,7 @@ pub async fn run(
             let bar = slot / STEPS_PER_BAR;
             if bar != last_swing_bar {
                 last_swing_bar = bar;
-                global_swing_neutral =
-                    get_global_config().clock.swing_amount == 0;
+                global_swing = get_global_config().clock.swing_amount;
             }
             if (follow_tonic || follow_scale) && bar != last_key_bar {
                 last_key_bar = bar;
@@ -1863,14 +1863,15 @@ pub async fn run(
             let timing_off = (feel_lerp_i32(0, timing_char, gfeel)
                 + groove_timing_boost(feel_val, gmax, step))
                 .clamp(-2, 2);
-            // The device clock already swings its ticker for internal
-            // and external sources. Keep the app's genre swing only
-            // while global swing is neutral, otherwise both delays stack.
-            let app_swing = if global_swing_neutral {
-                swing_delay_ticks(step, swing_pct, glob_reversed.get())
-            } else {
-                0
-            };
+            // The bass sits on the 16th grid, so it shares the swing
+            // window with the device clock. Cap the genre swing by what
+            // the clock already spends and follow its direction.
+            // swing_delay_ticks tops out at 5 of 6 ticks → 833 per-mille.
+            let remaining =
+                833u32.saturating_sub(device_swing_permille(SIXTEENTH, global_swing));
+            let pct_cap = ((remaining * 100) / 833) as i32;
+            let rev = glob_reversed.get() ^ device_swing_reverses(global_swing);
+            let app_swing = swing_delay_ticks(step, swing_pct.min(pct_cap), rev);
             let delay = ((app_swing as i32) + timing_off)
                 .clamp(0, (SIXTEENTH as i32) - 1) as u32;
 

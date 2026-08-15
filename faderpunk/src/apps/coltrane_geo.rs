@@ -3,6 +3,7 @@
 //! Coltrane Changes geometry: tonal center cycles, approach patterns, chord
 //! building. Shared by Giant Steps and Axis Matrix.
 
+use crate::apps::groove::{device_swing_permille, device_swing_reverses};
 use heapless::Vec;
 use libfp::Color;
 use smart_leds::RGB8;
@@ -211,7 +212,7 @@ pub fn feel_velocity(base_vel12: u16, feel: u16, strong: bool, roll: u16) -> u16
     let b = base_vel12 as i32;
     let s = (feel.min(4095) as i32 * 255) / 4095;
     // Per-mille of the base velocity at full Feel.
-    let shape = if strong { 250 } else { -300 };
+    let shape = if strong { 400 } else { -500 };
     let mut v = b + (b * shape * s) / (1000 * 255);
     let jitter = ((roll.min(4095) as i32 * 2000) / 4095) - 1000;
     let jb = (b * jitter) / 1000;
@@ -219,13 +220,29 @@ pub fn feel_velocity(base_vel12: u16, feel: u16, strong: bool, roll: u16) -> u16
     v.clamp(1, 4095) as u16
 }
 
-/// MPC-style swing delay in clock ticks for `step`: odd steps get pushed back
-/// by up to a third of the division at full Feel.
-pub fn feel_swing_ticks(feel: u16, div_ticks: u32, step: u32) -> u32 {
-    if feel == 0 || step.is_multiple_of(2) || div_ticks < 2 {
+/// MPC-style swing delay in clock ticks for `step`: one parity gets pushed back
+/// by up to a third of the division at full Feel. That third is a budget shared
+/// with the device clock — whatever the global swing already displaces is
+/// subtracted — and a negative `swing_amount` flips which parity is delayed so
+/// Feel leans with the clock instead of against it.
+pub fn feel_swing_ticks(feel: u16, div_ticks: u32, step: u32, swing_amount: i8) -> u32 {
+    if feel == 0 || div_ticks < 2 {
         return 0;
     }
-    let d = (div_ticks * feel.min(4095) as u32) / (4095 * 3);
+    let delay_this = if device_swing_reverses(swing_amount) {
+        step.is_multiple_of(2)
+    } else {
+        !step.is_multiple_of(2)
+    };
+    if !delay_this {
+        return 0;
+    }
+    let budget_permille = 333u32.saturating_sub(device_swing_permille(div_ticks, swing_amount));
+    if budget_permille == 0 {
+        return 0;
+    }
+    // div_ticks <= 96, budget <= 333, feel <= 4095 → well inside u32.
+    let d = (div_ticks * budget_permille * feel.min(4095) as u32) / (4095 * 1000);
     d.min(div_ticks - 1)
 }
 
