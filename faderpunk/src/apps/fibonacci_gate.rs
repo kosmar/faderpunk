@@ -59,7 +59,7 @@ const DEST_COUNT: usize = 3;
 const TRIG_HIGH: u16 = 2458;
 
 fn att_from_pct(pct: i32) -> u16 {
-    ((pct.clamp(0, 100) as u32 * 4095) / 100) as u16
+    ((pct.clamp(0, 400) as u32 * 4095) / 100) as u16
 }
 
 fn mod_u16(base: u16, in_val: u16) -> u16 {
@@ -118,7 +118,7 @@ pub static CONFIG: Config<PARAMS> = Config::new(
 .add_param(Param::i32 {
     name: "CV Att",
     min: 0,
-    max: 100,
+    max: 400,
 })
 .add_param(Param::Enum {
     name: "Mode",
@@ -152,7 +152,7 @@ impl AppParams for Params {
                 usize::from_value(values[7]).min(1),
                 Range::from_value(values[8]),
                 usize::from_value(values[9]).min(DEST_COUNT - 1),
-                i32::from_value(values[10]).clamp(0, 100),
+                i32::from_value(values[10]).clamp(0, 400),
             )
         } else {
             (CV_JACK_OUT, Range::_0_10V, DEST_DEPTH, 100)

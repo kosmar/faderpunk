@@ -398,7 +398,7 @@ pub static CONFIG: Config<PARAMS> = Config::new(
 .add_param(Param::i32 {
     name: "CV Att",
     min: 0,
-    max: 100,
+    max: 400,
 });
 
 pub struct Params {
@@ -461,7 +461,7 @@ impl AppParams for Params {
             midi_out: MidiOut::from_value(values[12]),
             jack: usize::from_value(values[13]).min(JACK_COUNT - 1),
             range: Range::from_value(values[14]),
-            cv_att: i32::from_value(values[15]).clamp(0, 100),
+            cv_att: i32::from_value(values[15]).clamp(0, 400),
         })
     }
 
@@ -484,7 +484,7 @@ impl AppParams for Params {
 }
 
 fn att_from_pct(pct: i32) -> u16 {
-    ((pct.clamp(0, 100) as u32 * 4095) / 100) as u16
+    ((pct.clamp(0, 400) as u32 * 4095) / 100) as u16
 }
 
 fn mod_u16(base: u16, in_val: u16) -> u16 {

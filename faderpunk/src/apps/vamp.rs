@@ -78,7 +78,7 @@ const START_MODE_NAMES: &[&str] = &["Perform", "Auto"];
 const TRIG_HIGH: u16 = 2458;
 
 fn att_from_pct(pct: i32) -> u16 {
-    ((pct.clamp(0, 100) as u32 * 4095) / 100) as u16
+    ((pct.clamp(0, 400) as u32 * 4095) / 100) as u16
 }
 
 fn mod_u16(base: u16, in_val: u16) -> u16 {
@@ -237,7 +237,7 @@ pub static CONFIG: Config<PARAMS> = Config::new(
 .add_param(Param::i32 {
     name: "CV Att",
     min: 0,
-    max: 100,
+    max: 400,
 })
 // Following the device tonic turns the global Tonic fader into a live
 // transpose, so the harmony moves with Bassment and Contura. There is no
@@ -284,21 +284,21 @@ impl AppParams for Params {
                 if out { JACK_OUT } else { JACK_IN_MACRO + dest },
                 Range::from_value(values[12]),
                 VoltPerOct::from_value(values[13]),
-                i32::from_value(values[15]).clamp(0, 100),
+                i32::from_value(values[15]).clamp(0, 400),
             )
         } else if values.len() >= 15 {
             (
                 usize::from_value(values[11]).min(JACK_COUNT - 1),
                 Range::from_value(values[12]),
                 VoltPerOct::from_value(values[13]),
-                i32::from_value(values[14]).clamp(0, 100),
+                i32::from_value(values[14]).clamp(0, 400),
             )
         } else if values.len() >= 13 {
             (
                 JACK_IN_MACRO + usize::from_value(values[11]).min(1),
                 Range::_Neg5_5V,
                 VoltPerOct::Standard,
-                i32::from_value(values[12]).clamp(0, 100),
+                i32::from_value(values[12]).clamp(0, 400),
             )
         } else {
             (JACK_IN_MACRO, Range::_Neg5_5V, VoltPerOct::Standard, 100)

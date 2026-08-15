@@ -440,7 +440,7 @@ pub static CONFIG: Config<PARAMS> = Config::new(
 .add_param(Param::i32 {
     name: "CV Att",
     min: 0,
-    max: 100,
+    max: 400,
 });
 
 pub struct Params {
@@ -490,12 +490,12 @@ impl AppParams for Params {
             let dest = usize::from_value(values[11]).min(2);
             (
                 if out { JACK_OUT } else { JACK_IN_DENSITY + dest },
-                i32::from_value(values[12]).clamp(0, 100),
+                i32::from_value(values[12]).clamp(0, 400),
             )
         } else if values.len() >= PARAMS {
             (
                 usize::from_value(values[10]).min(JACK_COUNT - 1),
-                i32::from_value(values[11]).clamp(0, 100),
+                i32::from_value(values[11]).clamp(0, 400),
             )
         } else {
             (JACK_OUT, 100)
@@ -535,7 +535,7 @@ impl AppParams for Params {
 }
 
 fn att_from_pct(pct: i32) -> u16 {
-    ((pct.clamp(0, 100) as u32 * 4095) / 100) as u16
+    ((pct.clamp(0, 400) as u32 * 4095) / 100) as u16
 }
 
 fn mod_u16(base: u16, in_val: u16) -> u16 {

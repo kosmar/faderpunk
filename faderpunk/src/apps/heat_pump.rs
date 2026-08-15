@@ -112,7 +112,7 @@ pub static CONFIG: Config<PARAMS> = Config::new(
 .add_param(Param::i32 {
     name: "CV Att",
     min: 0,
-    max: 100,
+    max: 400,
 });
 
 pub struct Params {
@@ -179,7 +179,7 @@ impl AppParams for Params {
             midi_out,
             jack_mode: jack_mode.min(1),
             dest: dest.min(DEST_COUNT - 1),
-            cv_att: cv_att.clamp(0, 100),
+            cv_att: cv_att.clamp(0, 400),
         })
     }
 
@@ -246,7 +246,7 @@ fn idle_level(invert: bool) -> f32 {
 }
 
 fn att_from_pct(pct: i32) -> u16 {
-    ((pct.clamp(0, 100) as u32 * 4095) / 100) as u16
+    ((pct.clamp(0, 400) as u32 * 4095) / 100) as u16
 }
 
 fn mod_u16(base: u16, in_val: u16) -> u16 {

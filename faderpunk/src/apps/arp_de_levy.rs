@@ -71,7 +71,7 @@ const OUT_COUNT: usize = 3;
 const TRIG_HIGH: u16 = 2458;
 
 fn att_from_pct(pct: i32) -> u16 {
-    ((pct.clamp(0, 100) as u32 * 4095) / 100) as u16
+    ((pct.clamp(0, 400) as u32 * 4095) / 100) as u16
 }
 
 fn mod_u16(base: u16, in_val: u16) -> u16 {
@@ -125,7 +125,7 @@ pub static CONFIG: Config<PARAMS> = Config::new(
 .add_param(Param::i32 {
     name: "CV Att",
     min: 0,
-    max: 100,
+    max: 400,
 })
 // Arp already follows the device scale for its degree math; this adds the
 // tonic, so the global Tonic fader transposes it with the rest of the set.
@@ -180,7 +180,7 @@ impl AppParams for Params {
                 Range::from_value(values[7]),
                 usize::from_value(values[8]).min(OUT_COUNT - 1),
                 usize::from_value(values[9]).min(DEST_COUNT - 1),
-                i32::from_value(values[10]).clamp(0, 100),
+                i32::from_value(values[10]).clamp(0, 400),
             )
         } else if values.len() >= 10 {
             // Pre-CV-Out layout: Jack, Range, Dest, Att.
@@ -189,7 +189,7 @@ impl AppParams for Params {
                 Range::from_value(values[7]),
                 OUT_PITCH,
                 usize::from_value(values[8]).min(DEST_COUNT - 1),
-                i32::from_value(values[9]).clamp(0, 100),
+                i32::from_value(values[9]).clamp(0, 400),
             )
         } else {
             (CV_JACK_OUT, Range::_0_10V, OUT_PITCH, DEST_MUTATION, 100)

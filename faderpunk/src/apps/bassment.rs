@@ -729,7 +729,7 @@ pub static CONFIG: Config<PARAMS> = Config::new(
 .add_param(Param::i32 {
     name: "CV Att",
     min: 0,
-    max: 100,
+    max: 400,
 })
 // 0 = off. Typical synth cutoff is 74; value follows bassline / fill / solo.
 .add_param(Param::MidiCc { name: "Filter CC" })
@@ -785,7 +785,7 @@ impl AppParams for Params {
             jack: usize::from_value(values[8]).min(JACK_COUNT - 1),
             range: Range::from_value(values[9]),
             vpo: VoltPerOct::from_value(values[10]),
-            cv_att: i32::from_value(values[11]).clamp(0, 100),
+            cv_att: i32::from_value(values[11]).clamp(0, 400),
             filter_cc: if values.len() > 12 {
                 MidiCc::from_value(values[12])
             } else {
@@ -824,7 +824,7 @@ impl AppParams for Params {
 }
 
 fn att_from_pct(pct: i32) -> u16 {
-    ((pct.clamp(0, 100) as u32 * 4095) / 100) as u16
+    ((pct.clamp(0, 400) as u32 * 4095) / 100) as u16
 }
 
 /// Filter cutoff as a 12-bit MIDI CC, built the way the rest of the line is:
