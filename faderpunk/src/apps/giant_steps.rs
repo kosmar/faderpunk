@@ -49,9 +49,9 @@ fn cv_idle(range: Range) -> u16 {
 }
 
 const DIV_LABELS: &[&str] = &[
-    "1/1", "1/2", "1/4", "1/8", "1/16", "1/32", "1/4t", "1/8t", "1/16t", "1/32t", "1/64t",
+    "1/1", "1/2", "1/4", "1/4t", "1/8", "1/8t", "1/16", "1/16t", "1/32", "1/32t", "1/64t",
 ];
-const RESOLUTION: [u32; 11] = [96, 48, 24, 12, 6, 3, 16, 8, 4, 2, 1];
+const RESOLUTION: [u32; 11] = [96, 48, 24, 16, 12, 8, 6, 4, 3, 2, 1];
 
 const JACK_OUT: usize = 0;
 const JACK_IN_DENSITY: usize = 1;
@@ -154,7 +154,7 @@ impl Default for Params {
             midi_out: MidiOut([true, false, false]),
             midi_channel: MidiChannel::default(),
             root: MidiNote::from(48),
-            division: 3,
+            division: 4,
             interval: 1,
             voicing: 1,
             direction: 0,
@@ -224,7 +224,7 @@ pub struct Storage {
     muted: bool,
     interval_idx: u8,
     feel: u16,
-    time_mult: u16,
+    time_fader: u16,
 }
 
 impl Default for Storage {
@@ -234,7 +234,8 @@ impl Default for Storage {
             muted: false,
             interval_idx: 1,
             feel: 0,
-            time_mult: 2048,
+            // Sentinel: never touched, so the Config Division sets the start.
+            time_fader: u16::MAX,
         }
     }
 }
@@ -264,17 +265,14 @@ fn density_from_fader(v: u16) -> u8 {
     ((v as u32 * 7) / 4096).min(6) as u8
 }
 
-/// Fader domain -> 5 speed zones over the base division; 1..=96 ticks.
-fn div_from_time_mult(base_div: u32, v: u16) -> u32 {
-    let zone = ((v as u32 * 5) / 4096).min(4);
-    let d = match zone {
-        0 => base_div * 4,
-        1 => base_div * 2,
-        3 => base_div / 2,
-        4 => base_div / 4,
-        _ => base_div,
-    };
-    d.clamp(1, 96)
+/// Fader domain -> absolute division; bottom = 1/1, top = 1/64t.
+fn div_from_fader(v: u16) -> u32 {
+    RESOLUTION[((v as u32 * 11) / 4096).min(10) as usize]
+}
+
+/// Centre of the fader zone belonging to a division index.
+fn fader_from_div_idx(idx: usize) -> u16 {
+    ((idx as u32 * 4096 + 2048) / 11).min(4095) as u16
 }
 
 fn note_to_pitch(note: u8) -> Pitch {
@@ -372,19 +370,25 @@ pub async fn run(
         None
     };
 
-    let (density0, muted0, feel0, time_mult0) =
-        storage.query(|s| (s.density_saved, s.muted, s.feel, s.time_mult));
-    let base_div = RESOLUTION[division.min(RESOLUTION.len() - 1)];
+    let (density0, muted0, feel0, time_fader0) =
+        storage.query(|s| (s.density_saved, s.muted, s.feel, s.time_fader));
+    let div_idx = division.min(RESOLUTION.len() - 1);
+    // Untouched storage: Config Division is the power-on position.
+    let (time_fader0, div0) = if time_fader0 == u16::MAX {
+        (fader_from_div_idx(div_idx), RESOLUTION[div_idx])
+    } else {
+        (time_fader0, div_from_fader(time_fader0))
+    };
 
     let glob_density = app.make_global(density0);
     let glob_feel = app.make_global(feel0);
-    let glob_time_mult = app.make_global(time_mult0);
+    let glob_time_fader = app.make_global(time_fader0);
     // Config Interval is the start value; Shift+Long cycles from there.
     let glob_interval_idx = app.make_global(interval_param.min(3) as u8);
     let glob_btn_flash = app.make_global(0u16);
     let glob_rev_fade = app.make_global(0u16);
     let glob_rev_fade_up = app.make_global(false);
-    let glob_div = app.make_global(div_from_time_mult(base_div, time_mult0));
+    let glob_div = app.make_global(div0);
     let glob_muted = app.make_global(muted0);
     let glob_latch = app.make_global(LatchLayer::Main);
     let glob_fader_moved = app.make_global(false);
@@ -676,8 +680,8 @@ pub async fn run(
             glob_fader_moved.set(true);
 
             let target = match layer {
-                LatchLayer::Third => glob_feel.get(),
-                LatchLayer::Alt => glob_time_mult.get(),
+                LatchLayer::Third => glob_time_fader.get(),
+                LatchLayer::Alt => glob_feel.get(),
                 _ => glob_density.get(),
             };
 
@@ -686,12 +690,12 @@ pub async fn run(
                     LatchLayer::Main => {
                         glob_density.set(v);
                     }
-                    LatchLayer::Third => {
+                    LatchLayer::Alt => {
                         glob_feel.set(v);
                     }
-                    LatchLayer::Alt => {
-                        glob_time_mult.set(v);
-                        glob_div.set(div_from_time_mult(base_div, v));
+                    LatchLayer::Third => {
+                        glob_time_fader.set(v);
+                        glob_div.set(div_from_fader(v));
                     }
                 }
                 glob_fader_dirty.set(true);
@@ -753,7 +757,7 @@ pub async fn run(
                 st.muted = glob_muted.get();
                 st.interval_idx = glob_interval_idx.get();
                 st.feel = glob_feel.get();
-                st.time_mult = glob_time_mult.get();
+                st.time_fader = glob_time_fader.get();
             });
         }
     };
@@ -832,23 +836,27 @@ pub async fn run(
         loop {
             match app.wait_for_scene_event().await {
                 SceneEvent::LoadScene(_) => {
-                    let (d, m, iv, f, tm) = storage.query(|s| {
+                    let (d, m, iv, f, tf) = storage.query(|s| {
                         (
                             s.density_saved,
                             s.muted,
                             s.interval_idx,
                             s.feel,
-                            s.time_mult,
+                            s.time_fader,
                         )
                     });
                     glob_density.set(d);
                     glob_muted.set(m);
                     glob_interval_idx.set(iv.min(3));
                     glob_feel.set(f);
-                    glob_time_mult.set(tm);
-                    let div = params.query(|p| p.division);
-                    let base = RESOLUTION[div.min(RESOLUTION.len() - 1)];
-                    glob_div.set(div_from_time_mult(base, tm));
+                    let idx = params.query(|p| p.division).min(RESOLUTION.len() - 1);
+                    let (tf, div) = if tf == u16::MAX {
+                        (fader_from_div_idx(idx), RESOLUTION[idx])
+                    } else {
+                        (tf, div_from_fader(tf))
+                    };
+                    glob_time_fader.set(tf);
+                    glob_div.set(div);
                 }
                 SceneEvent::SaveScene(_) => {}
             }
