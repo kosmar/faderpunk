@@ -368,6 +368,31 @@ manually in a Chromium browser with a live device connection.
 9. **Commit messages**: Conventional-commit subject; body must note AI authorship
    on the user's behalf. Never merge/approve/accept PRs — only open them for the
    user.
+10. **Editing generated artifacts**: never hand-edit a file that a generator
+    owns — `docs/wip-apps-ux-cheatsheet.html` (from `docs/apps/*/manual.{json,md}`
+    via `scripts/assemble-cheatsheet.py`), `configurator/src/demo/catalog.ts`
+    and the protocol bindings (from `./gen-bindings.sh`), and the Scopepunk
+    export (`scripts/export-scopepunk-ux.py`). Edit the source, then re-run the
+    generator; otherwise the next run silently reverts the change. Note that
+    `docs/apps/*/manual.md` needs `git add -f` if a global gitignore rule
+    excludes `*.md`.
+11. **Gate ownership**: whoever makes an edit runs `cargo fmt` and `clippy` for
+    it. Do not re-run the full gate set after an agent has already reported it
+    green — run it once more only before building the UF2.
+
+### Parallel agents
+
+When several agents work in the same checkout at once, give each one a disjoint
+set of files and keep shared, whole-tree operations in one place:
+
+- **Generators run in exactly one place** — the coordinating agent, after the
+  others have finished. Two agents running `assemble-cheatsheet.py` or
+  `gen-bindings.sh` against half-finished sources produce garbage.
+- **Format scoped, not workspace-wide**: `cargo fmt -p faderpunk` rather than
+  `cargo fmt --all`, so an agent does not rewrite a file another one is editing.
+- **Expect foreign breakage**: a `clippy` failure may come from someone else's
+  half-written file. Check the path before "fixing" it.
+- Overlapping edits, shared modules and ordered migrations stay sequential.
 
 ## File Structure Summary
 
