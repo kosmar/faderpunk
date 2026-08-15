@@ -20,7 +20,7 @@ use crate::app::{
 use crate::apps::genre_palette::{genre_fader_center, GENRE_NAMES, NUM_GENRES};
 use crate::apps::groove::{
     device_swing_permille, device_swing_reverses, feel_curve, feel_lerp_i32, feel_lerp_u16,
-    humanize_curve, step_chance, swing_bias, swing_delay_ms, FLAT_VEL, SIXTEENTH,
+    humanize_curve, rot16, step_chance, swing_bias, swing_delay_ms, FLAT_VEL, SIXTEENTH,
 };
 use crate::apps::led_fx::{genre_nearest, genre_pair, lerp_i32, lerp_u8, spectrum_color};
 use crate::apps::ornament::{self, ArticContext, GrooveVoice, MAX_HITS};
@@ -51,17 +51,34 @@ const GHOST_ROTATE_FEEL: u16 = 1024;
 /// 16 sixteenths per 4/4 bar.
 const STEPS_PER_BAR: u32 = 16;
 
-/// Jack duty and its modifier in one param: the CV Out level shape and the CV
-/// In destination are mutually exclusive, so they share a single enum.
-const JACK_OUT_ANY: usize = 0;
-const JACK_OUT_STACKED: usize = 1;
-const JACK_IN_DENSITY: usize = 2;
-const JACK_IN_FEEL: usize = 3;
-const JACK_IN_RESET: usize = 4;
-const JACK_COUNT: usize = 5;
+/// Jack duty, level shape and output range in one param: the CV Out shape and
+/// the CV In destination are mutually exclusive, and the range only means
+/// anything for an output — folding all three in frees a param slot for the
+/// Drummer. CV In keeps its fixed bipolar input range.
+const JACK_OUT_ANY_UNI: usize = 0;
+const JACK_OUT_ANY_BI: usize = 1;
+const JACK_OUT_STACKED_UNI: usize = 2;
+const JACK_OUT_STACKED_BI: usize = 3;
+const JACK_IN_DENSITY: usize = 4;
+const JACK_IN_FEEL: usize = 5;
+const JACK_IN_RESET: usize = 6;
+const JACK_COUNT: usize = 7;
 
 fn jack_is_out(jack: usize) -> bool {
-    jack <= JACK_OUT_STACKED
+    jack <= JACK_OUT_STACKED_BI
+}
+
+fn jack_is_stacked(jack: usize) -> bool {
+    jack == JACK_OUT_STACKED_UNI || jack == JACK_OUT_STACKED_BI
+}
+
+/// Output range carried by the jack mode. Inputs never read this.
+fn jack_range(jack: usize) -> Range {
+    if jack == JACK_OUT_ANY_BI || jack == JACK_OUT_STACKED_BI {
+        Range::_Neg5_5V
+    } else {
+        Range::_0_10V
+    }
 }
 
 /// Voice order — indexes `Params::notes`, the `Ch Map` nibbles and the
@@ -106,6 +123,171 @@ fn voice_family_units(voice: usize) -> u16 {
 }
 
 const TRIG_HIGH: u16 = 2458;
+
+/// How long the button shows the Drummer color after a Long cycle.
+const DRUMMER_FLASH_MS: u16 = 300;
+
+const NUM_DRUMMERS: usize = 8;
+
+/// Cycle / Enum order = historical era narrative (not birth-year pedantry).
+/// Jazz → soul shuffle → funk → motorik → afrobeat → reggae → 808 → beat scene.
+const DRUMMER_NAMES: &[&str] = &[
+    "Elvin",
+    "Purdie",
+    "Clyde",
+    "Jaki",
+    "Sly",
+    "Allen",
+    "Pretty Tony",
+    "Dilla",
+];
+
+/// Drummer persona — transforms applied *after* the genre DNA, exactly like
+/// Bassment's `VoiceProfile`. Every field is neutral at the value noted in its
+/// doc comment, so a neutral profile reproduces the pre-persona engine, and
+/// every effect is additionally scaled by Feel (flat grid at Feel = 0).
+#[derive(Clone, Copy)]
+struct DrummerProfile {
+    /// 0 = straight sixteenth grid, 100 = fully triplet-ised offbeats.
+    shuffle: u8,
+    /// Ghost-hit tendency (mostly snare). 50 = neutral, below culls revealed
+    /// ghosts, above adds quiet offbeat ones.
+    ghost_pct: u8,
+    /// How untouchable the snare is on 2 and 4 (0–100): protects those hits
+    /// from dispersal and from ghost culling.
+    backbeat_lock: u8,
+    /// Share of hits that wanders off to toms / perc (0 = never).
+    dispersal: u8,
+    /// Rotation of the kick figure in sixteenths (clave axis). 0 = neutral.
+    clave_rot: i8,
+    /// Tendency toward sixteenth rolls and tumbles. 50 = neutral.
+    roll_pct: u8,
+    /// Signed micro-timing in ms at Feel = max: negative = laid back,
+    /// positive = on top. 0 = neutral.
+    push_pull: i8,
+    /// How far the hi-hat grid drifts against kick / snare (0 = locked).
+    limb_drift: u8,
+    /// 100 = flat, quantised velocity with no humanize at all. 0 = neutral.
+    machine: u8,
+}
+
+const DRUMMERS: [DrummerProfile; NUM_DRUMMERS] = [
+    // Elvin — jazz triplets, dense ghosts, loose backbeat, laid back
+    DrummerProfile {
+        shuffle: 85,
+        ghost_pct: 88,
+        backbeat_lock: 20,
+        dispersal: 45,
+        clave_rot: 0,
+        roll_pct: 75,
+        push_pull: -5,
+        limb_drift: 35,
+        machine: 0,
+    },
+    // Purdie — halftime shuffle: maximum triplets, ghosts everywhere, the
+    // backbeat itself never moves
+    DrummerProfile {
+        shuffle: 100,
+        ghost_pct: 95,
+        backbeat_lock: 100,
+        dispersal: 10,
+        clave_rot: 0,
+        roll_pct: 60,
+        push_pull: -2,
+        limb_drift: 15,
+        machine: 0,
+    },
+    // Clyde — Funky Drummer sixteenths, hi-hat chatter, slightly on top
+    DrummerProfile {
+        shuffle: 25,
+        ghost_pct: 70,
+        backbeat_lock: 90,
+        dispersal: 15,
+        clave_rot: 0,
+        roll_pct: 65,
+        push_pull: 2,
+        limb_drift: 20,
+        machine: 0,
+    },
+    // Jaki — motorik: dead straight, no ghosts, no rolls, on the grid
+    DrummerProfile {
+        shuffle: 0,
+        ghost_pct: 5,
+        backbeat_lock: 70,
+        dispersal: 0,
+        clave_rot: 0,
+        roll_pct: 0,
+        push_pull: 0,
+        limb_drift: 0,
+        machine: 90,
+    },
+    // Sly — reggae steppers: sparse, halftime lean, way behind the beat
+    DrummerProfile {
+        shuffle: 15,
+        ghost_pct: 20,
+        backbeat_lock: 95,
+        dispersal: 5,
+        clave_rot: -2,
+        roll_pct: 20,
+        push_pull: -7,
+        limb_drift: 10,
+        machine: 20,
+    },
+    // Allen — afrobeat: hits scatter onto the toms, backbeat stays loose
+    DrummerProfile {
+        shuffle: 30,
+        ghost_pct: 65,
+        backbeat_lock: 25,
+        dispersal: 80,
+        clave_rot: 1,
+        roll_pct: 55,
+        push_pull: -1,
+        limb_drift: 30,
+        machine: 0,
+    },
+    // Pretty Tony — 808 freestyle: straight, clave-shifted kick, tom rolls,
+    // fully quantised
+    DrummerProfile {
+        shuffle: 0,
+        ghost_pct: 45,
+        backbeat_lock: 60,
+        dispersal: 70,
+        clave_rot: 3,
+        roll_pct: 95,
+        push_pull: 0,
+        limb_drift: 0,
+        machine: 100,
+    },
+    // Dilla — drunk hats against a laid-back kick, backbeat deliberately loose
+    DrummerProfile {
+        shuffle: 45,
+        ghost_pct: 60,
+        backbeat_lock: 15,
+        dispersal: 20,
+        clave_rot: 0,
+        roll_pct: 45,
+        push_pull: -6,
+        limb_drift: 95,
+        machine: 0,
+    },
+];
+
+/// Distinct flash colors so the Long Drummer cycle is obvious on the button.
+const DRUMMER_FLASH_COLOR: [Color; NUM_DRUMMERS] = [
+    Color::Violet, // Elvin
+    Color::Orange, // Purdie
+    Color::Pink,   // Clyde
+    Color::Cyan,   // Jaki
+    // Sly keeps Bassment's Robbie slot and color: Sly & Robbie land on the
+    // same index in both apps, so the pair reads the same on the button.
+    Color::Green,  // Sly
+    Color::Lime,   // Allen
+    Color::Red,    // Pretty Tony
+    Color::Yellow, // Dilla
+];
+
+/// Default persona — Purdie, the shuffle everyone recognises.
+const DRUMMER_DEFAULT: usize = 1;
 
 /// Bitmasks: bit N = 16th step N in a bar (0 = downbeat).
 struct Pattern {
@@ -384,21 +566,23 @@ pub static CONFIG: Config<PARAMS> = Config::new(
 .add_param(Param::Enum {
     name: "Jack",
     variants: &[
-        "CV Out Any",
-        "CV Out Stacked",
+        "CV Out Any 0-10V",
+        "CV Out Any -5-5V",
+        "CV Out Stacked 0-10V",
+        "CV Out Stacked -5-5V",
         "CV In Density",
         "CV In Feel",
         "CV In Reset",
     ],
 })
-.add_param(Param::Range {
-    name: "Range",
-    variants: &[Range::_0_10V, Range::_Neg5_5V],
-})
 .add_param(Param::i32 {
     name: "CV Att",
     min: 0,
     max: 400,
+})
+.add_param(Param::Enum {
+    name: "Drummer",
+    variants: DRUMMER_NAMES,
 });
 
 pub struct Params {
@@ -415,9 +599,10 @@ pub struct Params {
     swing_max_pct: i32,
     gatel: i32,
     midi_out: MidiOut,
+    /// Duty, level shape and output range in one — see the `JACK_*` constants.
     jack: usize,
-    range: Range,
     cv_att: i32,
+    drummer: usize,
 }
 
 impl Params {
@@ -443,6 +628,32 @@ impl AppParams for Params {
         if matches!(values[1], Value::MidiChannel(_)) {
             return None;
         }
+        // Pre-Drummer blobs carried the separate `Range` param at index 14 and
+        // CV Att at 15; the new layout has CV Att at 14. The value type tells
+        // them apart, so an old blob can be folded into the new Jack enum
+        // without losing either the duty or the range the user picked.
+        let (jack, cv_att, drummer) = if matches!(values[14], Value::Range(_)) {
+            let bipolar = matches!(Range::from_value(values[14]), Range::_Neg5_5V);
+            let jack = match usize::from_value(values[13]) {
+                0 if bipolar => JACK_OUT_ANY_BI,
+                0 => JACK_OUT_ANY_UNI,
+                1 if bipolar => JACK_OUT_STACKED_BI,
+                1 => JACK_OUT_STACKED_UNI,
+                // Old CV In modes sat at 2..=4, two slots ahead of the new ones.
+                old => (old + 2).min(JACK_COUNT - 1),
+            };
+            (
+                jack,
+                i32::from_value(values[15]).clamp(0, 400),
+                DRUMMER_DEFAULT,
+            )
+        } else {
+            (
+                usize::from_value(values[13]).min(JACK_COUNT - 1),
+                i32::from_value(values[14]).clamp(0, 400),
+                usize::from_value(values[15]).min(NUM_DRUMMERS - 1),
+            )
+        };
         Some(Self {
             notes: [
                 MidiNote::from_value(values[V_KICK]),
@@ -459,9 +670,9 @@ impl AppParams for Params {
             swing_max_pct: i32::from_value(values[10]).clamp(-100, 100),
             gatel: i32::from_value(values[11]),
             midi_out: MidiOut::from_value(values[12]),
-            jack: usize::from_value(values[13]).min(JACK_COUNT - 1),
-            range: Range::from_value(values[14]),
-            cv_att: i32::from_value(values[15]).clamp(0, 400),
+            jack,
+            cv_att,
+            drummer,
         })
     }
 
@@ -477,8 +688,8 @@ impl AppParams for Params {
         vec.push(self.gatel.into()).unwrap();
         vec.push(self.midi_out.into()).unwrap();
         vec.push(self.jack.into()).unwrap();
-        vec.push(self.range.into()).unwrap();
         vec.push(self.cv_att.into()).unwrap();
+        vec.push(self.drummer.into()).unwrap();
         vec
     }
 }
@@ -500,6 +711,8 @@ pub struct Storage {
     /// across the whole pattern (not just hats) as this rises.
     density: u16,
     muted: bool,
+    /// Drummer persona index — indexes [`DRUMMERS`].
+    drummer: u8,
 }
 
 impl Default for Storage {
@@ -509,6 +722,7 @@ impl Default for Storage {
             feel: 2800,
             density: 2048,
             muted: false,
+            drummer: DRUMMER_DEFAULT as u8,
         }
     }
 }
@@ -1011,13 +1225,14 @@ fn solo_vel_pct(base: u8, accent: u8, acc: bool, ghost: bool, die: &Die, feel: u
 /// Ghost fill-ins while soloing. Only fires on the step right after that voice
 /// already hit, so it reads as a drag/flam off the written figure instead of a
 /// random extra note. Salt keeps the three voices from ghosting in lockstep.
-fn solo_ghost(die: &Die, feel: u16, prev_hit: bool, salt: u8) -> bool {
+/// `roll_scale` is the persona's roll tendency (100 = neutral).
+fn solo_ghost(die: &Die, feel: u16, prev_hit: bool, salt: u8, roll_scale: u8) -> bool {
     if !prev_hit {
         return false;
     }
     let open = u32::from(humanize_curve(feel));
-    // ~4% at Feel=0 … ~20% at Feel=max.
-    let chance = 4 + (open * 16) / 4095;
+    // ~4% at Feel=0 … ~20% at Feel=max, times the persona's roll tendency.
+    let chance = ((4 + (open * 16) / 4095) * u32::from(roll_scale)) / 100;
     u32::from((die.roll() ^ u16::from(salt)) % 100) < chance
 }
 
@@ -1162,6 +1377,102 @@ fn jitter_family_pct(voice: usize) -> u32 {
     }
 }
 
+/// Persona weight: every drummer transform is scaled by Feel on top of its own
+/// amount, so Feel = 0 stays the flat grid and the persona only emerges as Feel
+/// opens up — same contract as Bassment's voices.
+fn persona_w(feel: u16) -> u32 {
+    u32::from(feel_curve(feel))
+}
+
+/// Feel-scaled percentage of a 0..=100 persona amount.
+fn persona_pct(amount: u8, feel: u16) -> u32 {
+    (u32::from(amount) * persona_w(feel)) / 4095
+}
+
+/// Clave axis: how far the kick figure rotates, in sixteenths.
+fn drummer_kick_rot(prof: &DrummerProfile, feel: u16) -> u32 {
+    let steps = (i32::from(prof.clave_rot) * persona_w(feel) as i32) / 4095;
+    (steps.rem_euclid(16)) as u32
+}
+
+/// Fold the persona's shuffle into the genre's own swing bias. 0 leaves the
+/// genre bias alone, 100 pushes the offbeats to full triplet.
+fn shuffled_bias(bias: u8, shuffle: u8) -> u8 {
+    let head = 100u16.saturating_sub(u16::from(bias));
+    (u16::from(bias) + (head * u16::from(shuffle)) / 100).min(100) as u8
+}
+
+/// Feel-scaled machine amount in percent; 100 = fully quantised.
+fn machine_amount(machine: u8, feel: u16) -> u32 {
+    persona_pct(machine, feel).min(100)
+}
+
+/// Ornament rate scale for [`ornament::groove_plan`]: 100 = neutral (roll_pct
+/// 50), 0 = no rolls at all, 200 = tumbling.
+fn roll_rate_scale(roll_pct: u8, feel: u16) -> u8 {
+    let full = i32::from(roll_pct) * 2;
+    (100 + ((full - 100) * persona_w(feel) as i32) / 4095).clamp(0, 200) as u8
+}
+
+/// Half-width of the hi-hat limb drift in ms.
+fn limb_drift_span_ms(drift: u8, feel: u16) -> i32 {
+    ((persona_pct(drift, feel) * 6) / 100) as i32
+}
+
+/// Signed hi-hat drift for one bar. Only the hats wander — the kick and snare
+/// are the grid the drift is heard against, so drifting them too would just
+/// move the whole bar.
+fn limb_drift_ms(bar: u32, span: i32, voice: usize) -> i32 {
+    if span <= 0 || !matches!(voice, V_HATS | V_OPEN_HAT) {
+        return 0;
+    }
+    let h = bar
+        .wrapping_mul(2_654_435_761)
+        .wrapping_add(0x9E37_79B9);
+    ((h >> 11) % (2 * span as u32 + 1)) as i32 - span
+}
+
+/// Persona gate on one revealed density ghost. Below 50 the drummer culls
+/// ghosts; a locked backbeat is never culled.
+fn ghost_survives(
+    ghost: Option<u8>,
+    prof: &DrummerProfile,
+    feel: u16,
+    die: &Die,
+    locked: bool,
+) -> Option<u8> {
+    let frac = ghost?;
+    if locked || prof.ghost_pct >= 50 {
+        return Some(frac);
+    }
+    let chance = persona_pct((50 - prof.ghost_pct) * 2, feel);
+    if u32::from(die.roll() % 100) < chance {
+        None
+    } else {
+        Some(frac)
+    }
+}
+
+/// Extra quiet ghost on an otherwise empty offbeat sixteenth, for the
+/// ghost-heavy personas. Returns the reveal fraction of the added hit.
+fn ghost_extra(
+    prof: &DrummerProfile,
+    feel: u16,
+    die: &Die,
+    step: u32,
+    occupied: bool,
+) -> Option<u8> {
+    if occupied || prof.ghost_pct <= 50 || step.is_multiple_of(2) {
+        return None;
+    }
+    let chance = persona_pct((prof.ghost_pct - 50) * 2, feel);
+    if u32::from((die.roll() ^ 0x5A) % 100) < chance {
+        Some(96)
+    } else {
+        None
+    }
+}
+
 /// Signed humanization jitter in ms, Feel × tightness × family scaled.
 fn timing_jitter_ms(die: &Die, feel: u16, tightness: u8, voice: usize) -> i32 {
     let span = (jitter_span_ms(feel, tightness).max(0) as u32 * jitter_family_pct(voice)) / 100;
@@ -1293,6 +1604,7 @@ fn stacked_pulse_level(hits: &[bool; VOICES], range: Range) -> u16 {
 /// Fold the four optional voices out of the three written ones. Every rule
 /// borrows a hit the groove already plays, so no genre needs extra mask data —
 /// and with all four voices off this leaves `hits` exactly as it found it.
+#[allow(clippy::too_many_arguments)]
 fn derive_extra_voices(
     hits: &mut [bool; VOICES],
     vels: &mut [u16; VOICES],
@@ -1301,7 +1613,28 @@ fn derive_extra_voices(
     gesture: bool,
     snare_accented: bool,
     hats_accented: bool,
+    prof: &DrummerProfile,
+    feel: u16,
+    die: &Die,
+    snare_locked: bool,
 ) {
+    // Persona dispersal: outside a gesture part of the snare figure wanders
+    // onto the toms, the way an afrobeat or 808 kit spreads a backbeat around
+    // the drums. A locked backbeat stays put.
+    if !gesture && hits[V_SNARE] && !snare_locked && prof.dispersal > 0 {
+        let tom = if step.is_multiple_of(4) {
+            V_LOW_TOM
+        } else {
+            V_HIGH_TOM
+        };
+        let chance = persona_pct(prof.dispersal, feel);
+        if enabled[tom] && u32::from((die.roll() ^ 0x3C) % 100) < chance {
+            hits[tom] = true;
+            hits[V_SNARE] = false;
+            vels[tom] = vels[V_SNARE];
+        }
+    }
+
     // Toms only appear inside a fill, break or solo, and only in the back half
     // of the bar, where they turn the snare figure into the descending run that
     // makes a fill read as a fill: high tom first, low tom to land it. The
@@ -1359,9 +1692,9 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
             // Fraction of a 16th (same GATE % convention as Euclid/Turing).
             gatel: 100,
             midi_out: MidiOut([true, false, false]), // USB only — all-ports floods cable
-            jack: JACK_OUT_ANY,
-            range: Range::_0_10V,
+            jack: JACK_OUT_ANY_UNI,
             cv_att: 100,
+            drummer: DRUMMER_DEFAULT,
         },
     );
     let storage = ManagedStorage::<Storage>::new(app.app_id, app.layout_id);
@@ -1388,8 +1721,8 @@ pub async fn run(
     params: &ParamStore<Params>,
     storage: &ManagedStorage<Storage>,
 ) {
-    let (midi_out, notes, channels, genre, swing_max_pct, gatel, jack, range, cv_att) = params
-        .query(|p| {
+    let (midi_out, notes, channels, genre, swing_max_pct, gatel, jack, drummer_param, cv_att) =
+        params.query(|p| {
             (
                 p.midi_out,
                 p.notes,
@@ -1398,10 +1731,11 @@ pub async fn run(
                 p.swing_max_pct.clamp(-100, 100),
                 p.gatel,
                 p.jack.min(JACK_COUNT - 1),
-                p.range,
+                p.drummer.min(NUM_DRUMMERS - 1),
                 att_from_pct(p.cv_att),
             )
         });
+    let range = jack_range(jack);
     // Which voices are wired up at all; everything past Hats is off by default.
     let enabled: [bool; VOICES] = core::array::from_fn(|v| voice_enabled(notes[v]));
 
@@ -1427,14 +1761,25 @@ pub async fn run(
         jack.set_value(pulse_idle(range));
     }
 
-    let (feel, density, muted) = storage.query(|s| (s.feel, s.density, s.muted));
+    let (feel, density, muted, stored_drummer) =
+        storage.query(|s| (s.feel, s.density, s.muted, s.drummer));
+    // Prefer the live scene Drummer; fall back to the Configurator param when
+    // the scene is still at its untouched default.
+    let initial_drummer = if stored_drummer as usize != DRUMMER_DEFAULT {
+        (stored_drummer as usize).min(NUM_DRUMMERS - 1)
+    } else {
+        drummer_param
+    };
 
     let glob_feel = app.make_global(feel);
+    let glob_drummer = app.make_global(initial_drummer);
+    let glob_drummer_dirty = app.make_global(false);
+    let glob_drummer_flash = app.make_global(0u16);
     let glob_swing_max = app.make_global(swing_max_pct);
     let glob_density = app.make_global(density);
     // Jack shape and swing direction are Config params — scenes no longer own
     // them. The swing sign is the direction, so both ride on one value.
-    let glob_stacked = app.make_global(jack == JACK_OUT_STACKED);
+    let glob_stacked = app.make_global(jack_is_stacked(jack));
     let glob_reversed = app.make_global(swing_max_pct < 0);
     let glob_genre = app.make_global(genre);
     // Continuous Alt-layer fader value (not reconstructed from genre index).
@@ -1699,6 +2044,13 @@ pub async fn run(
             let pat = &PATTERNS[near];
             let pat_lo = &PATTERNS[g_lo];
             let pat_hi = &PATTERNS[g_hi];
+            let prof = &DRUMMERS[glob_drummer.get().min(NUM_DRUMMERS - 1)];
+            // Clave axis: the whole kick figure — hits, fills and accents —
+            // rotates together, so the genre DNA is shifted rather than rewritten.
+            let kick_rot = drummer_kick_rot(prof, feel_val);
+            let kick_mask = rot16(pat.kick, kick_rot);
+            let kick_fill_mask = rot16(pat.kick_fill, kick_rot);
+            let kick_acc_mask = rot16(pat.kick_acc_mask, kick_rot);
 
             let density = if jack == JACK_IN_DENSITY {
                 mod_u16(glob_density.get(), glob_cv_val.get())
@@ -1734,14 +2086,26 @@ pub async fn run(
             }
             was_solo = solo_now;
 
+            // Shuffle rides the genre's own swing bias — `feel_swing_pct` then
+            // scales it by Feel and the Swing max % cap as before.
             let bias = lerp_u8(swing_bias(g_lo), swing_bias(g_hi), g_frac);
+            let bias = shuffled_bias(bias, prof.shuffle);
             let swing_pct = feel_swing_pct(bias, feel_val, glob_swing_max.get());
             let timing_char = lerp_i32(
                 i32::from(pat_lo.timing[(step % STEPS_PER_BAR) as usize]),
                 i32::from(pat_hi.timing[(step % STEPS_PER_BAR) as usize]),
                 g_frac,
             );
-            let timing_off = feel_lerp_i32(0, timing_char, feel_val);
+            // A machine drummer quantises: damp every humanized offset toward
+            // zero, leaving only the written grid.
+            let machine = machine_amount(prof.machine, feel_val);
+            let humanize_left = 100 - machine as i32;
+            let timing_off =
+                (feel_lerp_i32(0, timing_char, feel_val) * humanize_left) / 100;
+            let push_pull =
+                (feel_lerp_i32(0, i32::from(prof.push_pull), feel_val) * humanize_left) / 100;
+            let drift_span = limb_drift_span_ms(prof.limb_drift, feel_val);
+            let roll_scale = roll_rate_scale(prof.roll_pct, feel_val);
             // Grooves lives on the 16th grid, so it overlaps the device swing
             // window. Cap the genre swing by what the clock already spends and
             // follow its direction instead of pulling against it.
@@ -1753,6 +2117,7 @@ pub async fn run(
             let rev = glob_reversed.get() ^ device_swing_reverses(gs);
             let swing = swing_delay_ms(step, eff_pct, rev, sixteenth_ms);
             let tightness = lerp_u8(pat_lo.tightness, pat_hi.tightness, g_frac);
+            let tightness = ((u32::from(tightness) * (100 - machine)) / 100) as u8;
             // Ghost window walks on a four-bar phrase, and only once Feel is
             // past the flat zone — below that the bar has to repeat verbatim.
             let ghost_rot = if humanize_curve(feel_val) >= GHOST_ROTATE_FEEL {
@@ -1831,15 +2196,15 @@ pub async fn run(
                     let mut s = bit_set(f.snare, step);
                     let mut h = bit_set(f.hats, step);
                     let prev = (step + STEPS_PER_BAR - 1) % STEPS_PER_BAR;
-                    if !k && solo_ghost(&die, feel_val, bit_set(f.kick, prev), 0x11) {
+                    if !k && solo_ghost(&die, feel_val, bit_set(f.kick, prev), 0x11, roll_scale) {
                         k = true;
                         kick_gh = true;
                     }
-                    if !s && solo_ghost(&die, feel_val, bit_set(f.snare, prev), 0x22) {
+                    if !s && solo_ghost(&die, feel_val, bit_set(f.snare, prev), 0x22, roll_scale) {
                         s = true;
                         snare_gh = true;
                     }
-                    if !h && solo_ghost(&die, feel_val, bit_set(f.hats, prev), 0x33) {
+                    if !h && solo_ghost(&die, feel_val, bit_set(f.hats, prev), 0x33, roll_scale) {
                         h = true;
                         hats_gh = true;
                     }
@@ -1852,20 +2217,39 @@ pub async fn run(
                     )
                 } else {
                     (
-                        bit_set(pat.kick, step),
+                        bit_set(kick_mask, step),
                         bit_set(pat.snare, step),
                         bit_set(pat.hats, step),
                     )
                 };
 
+                // Backbeat lock: 2 and 4 are what the persona may not touch.
+                let snare_locked = matches!(step, 4 | 12)
+                    && u32::from(die.roll() % 100) < u32::from(prof.backbeat_lock);
+
                 let (kick_ghost, snare_ghost, hats_ghost) = if gesture {
                     (None, None, None)
                 } else {
-                    (
-                        fill_reveal(pat.kick_fill, density, step, ghost_rot),
-                        fill_reveal(pat.snare_fill, density, step, ghost_rot),
+                    let kick_g = ghost_survives(
+                        fill_reveal(kick_fill_mask, density, step, ghost_rot),
+                        prof,
+                        feel_val,
+                        &die,
+                        false,
+                    );
+                    let snare_reveal = fill_reveal(pat.snare_fill, density, step, ghost_rot);
+                    let snare_g =
+                        ghost_survives(snare_reveal, prof, feel_val, &die, snare_locked).or_else(
+                            || ghost_extra(prof, feel_val, &die, step, snare_core),
+                        );
+                    let hats_g = ghost_survives(
                         fill_reveal(pat.hats_fill, density, step, ghost_rot),
-                    )
+                        prof,
+                        feel_val,
+                        &die,
+                        false,
+                    );
+                    (kick_g, snare_g, hats_g)
                 };
 
                 let do_kick = kick_core || kick_ghost.is_some();
@@ -1902,7 +2286,7 @@ pub async fn run(
                             _ => core_vel_pct(
                                 lerp_u8(pat_lo.kick_base, pat_hi.kick_base, g_frac),
                                 lerp_u8(pat_lo.kick_accent, pat_hi.kick_accent, g_frac),
-                                pat.kick_acc_mask,
+                                kick_acc_mask,
                                 step,
                                 feel_val,
                                 &die,
@@ -1916,7 +2300,7 @@ pub async fn run(
                     sched_acc[V_KICK] = if solo_fig.is_some() {
                         kick_acc_hit
                     } else {
-                        bit_set(pat.kick_acc_mask, step)
+                        bit_set(kick_acc_mask, step)
                     };
                 }
                 if do_snare {
@@ -2025,6 +2409,10 @@ pub async fn run(
                     gesture,
                     snare_accented,
                     hats_accented,
+                    prof,
+                    feel_val,
+                    &die,
+                    snare_locked,
                 );
                 for voice in 0..VOICES {
                     if !hits[voice] || voice <= V_HATS {
@@ -2056,17 +2444,23 @@ pub async fn run(
                         i32::from(pat_hi.push_ms[fam]),
                         g_frac,
                     );
-                    feel_lerp_i32(0, push_char, feel_val)
+                    // Persona push/pull rides on the genre's own pocket push, so
+                    // laid back and on top are the same axis the genres use.
+                    (feel_lerp_i32(0, push_char, feel_val) * humanize_left) / 100 + push_pull
                 });
-                let budget = early_budget_ms(pushes, jitter_span_ms(feel_val, tightness));
+                let budget = early_budget_ms(
+                    pushes,
+                    jitter_span_ms(feel_val, tightness) + drift_span,
+                );
 
                 for voice in 0..VOICES {
                     if !hits[voice] {
                         continue;
                     }
                     let push = pushes[voice_push_family(voice)];
-                    let jitter =
-                        timing_jitter_ms(&die, feel_val, tightness, voice);
+                    // Only the hats drift against the grid the feet hold down.
+                    let jitter = timing_jitter_ms(&die, feel_val, tightness, voice)
+                        + limb_drift_ms(slot / STEPS_PER_BAR, drift_span, voice);
                     let g_extra = if ghosts[voice] && !core_hit {
                         ghost_extra_base
                     } else {
@@ -2100,7 +2494,7 @@ pub async fn run(
                             artic_ctx,
                             chance,
                             voice as u32,
-                            100,
+                            roll_scale,
                         )
                     } else {
                         ornament::OrnamentPlan::single_main()
@@ -2276,6 +2670,14 @@ pub async fn run(
                 if !long_press_fired.get() && !glob_fader_moved.get() {
                     let muted = glob_muted.toggle();
                     glob_storage_dirty.set(true);
+                    if !muted {
+                        // Long is the Drummer cycle now, so unmuting carries the
+                        // reset: coming back in always lands on the downbeat.
+                        glob_reset.set(true);
+                        glob_fill_armed.set(false);
+                        glob_fill_start.set(false);
+                        glob_fill_solo.set(false);
+                    }
                     if muted {
                         leds.unset(0, Led::Button);
                         if let Some(ref jack) = out_jack {
@@ -2303,12 +2705,16 @@ pub async fn run(
                     glob_fill_solo.set(true);
                 }
             } else if !glob_fader_moved.get() {
-                // Long: reset to downbeat. Button+fader is the Swing scrub and
-                // must not reset.
-                glob_reset.set(true);
-                glob_fill_armed.set(false);
-                glob_fill_start.set(false);
-                glob_fill_solo.set(false);
+                // Long: next Drummer. Button+fader is the Feel scrub and must
+                // not cycle. Reset lives on the unmute now.
+                let next = (glob_drummer.get() + 1) % NUM_DRUMMERS;
+                glob_drummer.set(next);
+                glob_storage_dirty.set(true);
+                glob_drummer_dirty.set(true);
+                glob_drummer_flash.set(DRUMMER_FLASH_MS);
+                if !glob_muted.get() {
+                    leds.set(0, Led::Button, DRUMMER_FLASH_COLOR[next], Brightness::High);
+                }
             }
         }
     };
@@ -2365,10 +2771,12 @@ pub async fn run(
             match app.wait_for_scene_event().await {
                 SceneEvent::LoadScene(scene) => {
                     storage.load_from_scene(scene).await;
-                    let (feel, density, muted) = storage.query(|s| (s.feel, s.density, s.muted));
+                    let (feel, density, muted, drummer) =
+                        storage.query(|s| (s.feel, s.density, s.muted, s.drummer));
                     glob_feel.set(feel);
                     glob_density.set(density);
                     glob_muted.set(muted);
+                    glob_drummer.set((drummer as usize).min(NUM_DRUMMERS - 1));
                     glob_fill_armed.set(false);
                     glob_fill_start.set(false);
                     glob_fill_solo.set(false);
@@ -2378,8 +2786,8 @@ pub async fn run(
                     glob_genre_fader.set(genre_fader_center(g, NUM_GENRES));
                     // Jack shape and swing direction are Config params — keep the
                     // live param values.
-                    let (stacked, reversed) = params
-                        .query(|p| (p.jack == JACK_OUT_STACKED, p.swing_max_pct < 0));
+                    let (stacked, reversed) =
+                        params.query(|p| (jack_is_stacked(p.jack), p.swing_max_pct < 0));
                     glob_stacked.set(stacked);
                     glob_reversed.set(reversed);
                     if muted {
@@ -2451,7 +2859,7 @@ pub async fn run(
                     let led = split_unsigned_value(fader_now);
                     leds.set(0, Led::Top, color, Brightness::Custom(led[0]));
                     leds.set(0, Led::Bottom, color, Brightness::Custom(led[1]));
-                    if !glob_fill_armed.get() {
+                    if !glob_fill_armed.get() && glob_drummer_flash.get() == 0 {
                         leds.set(0, Led::Button, color, Brightness::High);
                     }
                 }
@@ -2491,12 +2899,37 @@ pub async fn run(
             }
             fill_led_prev = fill_led;
 
+            // Drummer cycle flash owns the button until it runs out.
+            let flash_left = glob_drummer_flash.get();
+            if flash_left > 0 {
+                let left = flash_left.saturating_sub(1);
+                glob_drummer_flash.set(left);
+                if !fill_led {
+                    if left == 0 {
+                        if glob_muted.get() {
+                            leds.unset(0, Led::Button);
+                        } else {
+                            leds.set(
+                                0,
+                                Led::Button,
+                                spectrum_color(glob_genre_fader.get()),
+                                LED_BRIGHTNESS,
+                            );
+                        }
+                    } else {
+                        let d = glob_drummer.get().min(NUM_DRUMMERS - 1);
+                        leds.set(0, Led::Button, DRUMMER_FLASH_COLOR[d], Brightness::High);
+                    }
+                }
+            }
+
             // Mid→Low duck on hits (yields to mute / fill / genre scrub).
             let duck = glob_button_duck.get();
             if duck > 0 {
                 glob_button_duck.set(duck.saturating_sub(1));
             }
             if !fill_led
+                && flash_left == 0
                 && !glob_muted.get()
                 && latch_active_layer != LatchLayer::Alt
             {
@@ -2522,12 +2955,18 @@ pub async fn run(
                 let g = glob_genre.get().min(NUM_GENRES - 1);
                 params.update(|p| p.genre = g).await;
             }
+            if glob_drummer_dirty.get() {
+                glob_drummer_dirty.set(false);
+                let d = glob_drummer.get().min(NUM_DRUMMERS - 1);
+                params.update(|p| p.drummer = d).await;
+            }
             if glob_storage_dirty.get() {
                 glob_storage_dirty.set(false);
                 storage.modify_and_save(|s| {
                     s.feel = glob_feel.get();
                     s.density = glob_density.get();
                     s.muted = glob_muted.get();
+                    s.drummer = glob_drummer.get() as u8;
                 });
             }
         }
