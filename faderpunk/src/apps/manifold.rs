@@ -10,10 +10,11 @@ use libfp::{
     ext::FromValue,
     latch::LatchLayer,
     utils::{
-        attenuverter, clickless, division_at, lfo_step, signal_brightness, slew_lin,
+        attenuverter, clickless, division_at, lfo_step, midi_gate, signal_brightness, slew_lin,
         split_unsigned_value, SlewState,
     },
-    AppIcon, Brightness, Color, Config, Curve, Param, Range, Value, APP_MAX_PARAMS,
+    AppIcon, Brightness, Color, Config, Curve, MidiCc, MidiChannel, MidiOut, Param, Range, Value,
+    APP_MAX_PARAMS,
 };
 
 use crate::{
@@ -29,7 +30,7 @@ use crate::{
 };
 
 pub const CHANNELS: usize = 4;
-pub const PARAMS: usize = 10;
+pub const PARAMS: usize = 14;
 
 const TRIG_HIGH: u16 = 2458;
 const FADER_MOVE_THRESH: u16 = 64;
@@ -229,7 +230,13 @@ pub static CONFIG: Config<PARAMS> = Config::new(
 .add_param(Param::Enum {
     name: "LFO Speed",
     variants: &["Normal", "Slow", "Slowest"],
-});
+})
+.add_param(Param::MidiOut)
+.add_param(Param::MidiChannel {
+    name: "MIDI Channel",
+})
+.add_param(Param::MidiCc { name: "MIDI CC" })
+.add_param(Param::MidiNrpn);
 
 pub struct Params {
     color: Color,
@@ -242,14 +249,58 @@ pub struct Params {
     range_d: Range,
     source: Source,
     lfo_speed_mult: usize,
+    midi_out: MidiOut,
+    midi_channel: MidiChannel,
+    /// Base CC; the four channels take base + 0..=3.
+    midi_cc: MidiCc,
+    nrpn: bool,
+}
+
+/// Highest CC number the transport can carry: NRPN uses the full 14-bit
+/// parameter space, plain CC only 7 bit (`MidiCc -> u7` truncates silently,
+/// so a wrapped number would land on an unrelated controller).
+const fn midi_cc_limit(nrpn: bool) -> u16 {
+    if nrpn {
+        16383
+    } else {
+        127
+    }
+}
+
+/// Base CC offset by the channel index, saturated at the transport limit.
+/// Saturating rather than wrapping: at the very top of the range two channels
+/// collide on one CC, which is obvious and fixable by lowering the base —
+/// wrapping would instead hijack CC 0..2 with no visible cause.
+fn channel_cc(base: MidiCc, chan: usize, nrpn: bool) -> MidiCc {
+    MidiCc::from(
+        base.as_u16()
+            .saturating_add(chan as u16)
+            .min(midi_cc_limit(nrpn)),
+    )
 }
 
 impl AppParams for Params {
     fn from_values(values: &[Value]) -> Option<Self> {
-        // Legacy: 8 params (no internal LFO), 10 = current.
+        // Legacy: 8 params (no internal LFO), 10 (no MIDI mirror), 14 = current.
         if values.len() < 8 {
             return None;
         }
+        let (midi_out, midi_channel, midi_cc, nrpn) = if values.len() >= 14 {
+            (
+                MidiOut::from_value(values[10]),
+                MidiChannel::from_value(values[11]),
+                MidiCc::from_value(values[12]),
+                bool::from_value(values[13]),
+            )
+        } else {
+            // Presets saved before the mirror existed must stay silent on MIDI.
+            (
+                MidiOut([false; 3]),
+                MidiChannel::default(),
+                MidiCc::from(32u8),
+                false,
+            )
+        };
         Some(Self {
             color: Color::from_value(values[0]),
             in_range: Range::from_value(values[1]),
@@ -269,6 +320,10 @@ impl AppParams for Params {
             } else {
                 0
             },
+            midi_out,
+            midi_channel,
+            midi_cc,
+            nrpn,
         })
     }
 
@@ -284,6 +339,10 @@ impl AppParams for Params {
         vec.push(self.range_d.into()).unwrap();
         vec.push(Value::Enum(self.source as usize)).unwrap();
         vec.push(Value::Enum(self.lfo_speed_mult)).unwrap();
+        vec.push(self.midi_out.into()).unwrap();
+        vec.push(self.midi_channel.into()).unwrap();
+        vec.push(self.midi_cc.into()).unwrap();
+        vec.push(Value::MidiNrpn(self.nrpn)).unwrap();
         vec
     }
 }
@@ -346,6 +405,10 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
             range_d: Range::_Neg5_5V,
             source: Source::Auto,
             lfo_speed_mult: 0,
+            midi_out: MidiOut([false; 3]),
+            midi_channel: MidiChannel::default(),
+            midi_cc: MidiCc::from(32u8.saturating_add(app.start_channel as u8)),
+            nrpn: false,
         },
     );
     let storage = ManagedStorage::<Storage>::new(app.app_id, app.layout_id);
@@ -395,6 +458,8 @@ pub async fn run(
         )
     });
     let source = params.query(|p| p.source);
+    let (midi_out, midi_chan, midi_cc, nrpn) =
+        params.query(|p| (p.midi_out, p.midi_channel, p.midi_cc, p.nrpn));
     let lfo_speed_mult = 2u32.pow(params.query(|p| p.lfo_speed_mult).min(31) as u32);
 
     let modes = [mode_b, mode_c, mode_d];
@@ -402,6 +467,15 @@ pub async fn run(
     let out_colors = [modes[0].color(), modes[1].color(), modes[2].color()];
     // Match glob_lfo_active init: Auto stays on CV-in until the idle timeout.
     let initial_lfo_active = source == Source::Lfo;
+
+    let midi = app.use_midi_output(midi_out, midi_chan, nrpn);
+    // Ch0 (conditioned input / internal LFO), then Out B, C, D.
+    let midi_ccs = [
+        channel_cc(midi_cc, 0, nrpn),
+        channel_cc(midi_cc, 1, nrpn),
+        channel_cc(midi_cc, 2, nrpn),
+        channel_cc(midi_cc, 3, nrpn),
+    ];
 
     let buttons = app.use_buttons();
     let faders = app.use_faders();
@@ -500,6 +574,17 @@ pub async fn run(
         let mut out_levels = [0u16; 3];
         let mut frozen = false;
         let mut frozen_value = 0u16;
+        // One gate state per mirrored channel, so a busy channel cannot
+        // suppress the others. u16::MAX is out of `midi_gate`'s range and
+        // therefore forces one send per channel on startup.
+        let mut last_midi = [u16::MAX; 4];
+        // This loop runs at 1 kHz and mirrors four channels, where the LFO apps
+        // mirror one at 125 Hz — unpaced that is enough CC traffic to wedge a
+        // USB host. Offer one channel per 8 ms and rotate, so the bus sees at
+        // most 125 messages/s in total and each channel still refreshes at
+        // ~31 Hz, well above what the scope can show.
+        let mut midi_pace: u8 = 0;
+        let mut midi_slot: usize = 0;
 
         // Seeded from storage: a freshly spawned app sits on its saved values
         // instead of audibly gliding to them from the defaults.
@@ -631,6 +716,27 @@ pub async fn run(
                 }
             }
             let input_val = if frozen { frozen_value } else { source_val };
+
+            let midi_due = if midi_out.is_some() {
+                midi_pace = midi_pace.wrapping_add(1);
+                if midi_pace >= 8 {
+                    midi_pace = 0;
+                    midi_slot = (midi_slot + 1) % 4;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if midi_due && midi_slot == 0 {
+                let gate_val = midi_gate(input_val, nrpn);
+                if gate_val != last_midi[0] {
+                    midi.try_send_cc(midi_ccs[0], input_val);
+                    last_midi[0] = gate_val;
+                }
+            }
 
             let ch0_led_color = ch0_color(lfo_active);
 
@@ -767,6 +873,17 @@ pub async fn run(
                     }
                 };
                 out_levels[i] = out_level;
+
+                // `out_level` is what the jack actually carries: the shaped CV
+                // in Mode::Cv, and the digital state (4095 / 0) in Gate and
+                // Trigger — the same value the meters use.
+                if midi_due && midi_slot == i + 1 {
+                    let gate_val = midi_gate(out_level, nrpn);
+                    if gate_val != last_midi[i + 1] {
+                        midi.try_send_cc(midi_ccs[i + 1], out_level);
+                        last_midi[i + 1] = gate_val;
+                    }
+                }
 
                 // Meter colour = out mode. Dim = amplitude of that
                 // channel's signal: CV uses the shaped out; Gate/Trigger flash
