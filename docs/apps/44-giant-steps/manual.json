@@ -65,10 +65,12 @@
         {
           "heading": "Signal / LEDs",
           "items": [
-            "Three tonal center hues rotated around the app colour — LED shows the current center",
+            "Three tonal center hues rotated around the app colour — top and bottom LEDs show the current center",
+            "Button hue sways off the center hue with harmonic function: tonic on the center, its V a little away, its ii further",
+            "Button brightness rises with Density across its seven steps, including the CV In Density offset",
             "CV Out tracks root pitch of the current step",
             "CV In Density modulates approach depth; CV In Reset triggers cycle reset on rising edge",
-            "Button ducks briefly on each chord trigger",
+            "Button dips briefly on each chord trigger, scaled down from that density brightness",
             "Reverse fades the button white to none; Interval flashes one colour per step"
           ]
         }

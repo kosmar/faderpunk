@@ -19,8 +19,8 @@ use crate::{
     app::{App, AppParams, AppStorage, Led, ManagedStorage, ParamStore, SceneEvent},
     apps::coltrane_geo::{
         arp_order, build_chord_voice_led, build_cycle, center_from_app, feel_swing_ticks,
-        feel_velocity, interval_color, step_div_mult, tritone_sub_root, ChordQuality, Motion,
-        MOTION_LABELS,
+        feel_velocity, function_hue, interval_color, step_div_mult, tritone_sub_root, ChordQuality,
+        Motion, MOTION_LABELS,
     },
     apps::follow_key,
     tasks::global_config::get_global_config,
@@ -275,6 +275,21 @@ fn fader_from_div_idx(idx: usize) -> u16 {
     ((idx as u32 * 4096 + 2048) / 11).min(4095) as u16
 }
 
+/// Hue sway per harmonic function: tonic sits on the center hue, its V and ii
+/// step further away.
+fn function_degrees(q: ChordQuality) -> u16 {
+    match q {
+        ChordQuality::Maj7 => 0,
+        ChordQuality::Dom7 => 20,
+        ChordQuality::Min7 => 40,
+    }
+}
+
+/// Density (0..=6) as button brightness: dim but readable up to near full.
+fn density_brightness(density: u8) -> u8 {
+    (60 + (u16::from(density.min(6)) * 195) / 6) as u8
+}
+
 fn note_to_pitch(note: u8) -> Pitch {
     let octave = (note as i16 / 12) - 1;
     let pc = note % 12;
@@ -394,6 +409,10 @@ pub async fn run(
     let glob_fader_moved = app.make_global(false);
     let glob_button_duck = app.make_global(0u16);
     let glob_center_idx = app.make_global(0u8);
+    // Hue sway of the sounding chord's function, and the density the engine
+    // actually used (fader plus CV offset).
+    let glob_fn_deg = app.make_global(0u16);
+    let glob_density_step = app.make_global(density_from_fader(density0));
     let glob_reset = app.make_global(false);
     let glob_reverse = app.make_global(false);
     let glob_cv_val = app.make_global(2047u16);
@@ -628,6 +647,8 @@ pub async fn run(
             }
 
             glob_center_idx.set(cs.center);
+            glob_fn_deg.set(function_degrees(cs.quality));
+            glob_density_step.set(density);
             glob_button_duck.set(BUTTON_DUCK_MS);
 
             let reversed = glob_reverse.get();
@@ -815,12 +836,14 @@ pub async fn run(
                 leds.set(0, Led::Top, center_col, Brightness::Mid);
                 leds.set(0, Led::Bottom, center_col, Brightness::Low);
                 if rev_fade == 0 && flash_left == 0 {
-                    let btn_bright = if duck_active {
-                        Brightness::Low
-                    } else {
-                        Brightness::Mid
-                    };
-                    leds.set(0, Led::Button, center_col, btn_bright);
+                    // Hue = harmonic function, brightness = density; the trigger
+                    // duck scales that brightness instead of replacing it.
+                    let btn_col = function_hue(app_color, center, glob_fn_deg.get());
+                    let mut b = density_brightness(glob_density_step.get());
+                    if duck_active {
+                        b = ((u16::from(b) * 2) / 5) as u8;
+                    }
+                    leds.set(0, Led::Button, btn_col, Brightness::Custom(b));
                 }
             } else {
                 leds.unset(0, Led::Top);
