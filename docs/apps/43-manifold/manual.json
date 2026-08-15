@@ -19,7 +19,13 @@
     "Mode D",
     "Range D",
     "Source",
-    "LFO Speed"
+    "LFO Speed",
+    "MIDI Out",
+    "MIDI Channel",
+    "MIDI CC",
+    "MIDI NRPN",
+    "Ch Map",
+    "CC Map"
   ],
   "storage": [
     "In Trim",
