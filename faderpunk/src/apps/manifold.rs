@@ -74,10 +74,10 @@ const LFO_SYMMETRY: u16 = 2048;
 const LFO_WARP: u16 = 0;
 /// Clock divisions the speed fader spans (slowest 384 ticks … 6 = quarter note).
 const LFO_DIVISIONS: usize = 9;
-/// Five mode hues, 10 deg steps upward from 200: CV-in, LFO-in, then out modes
+/// Five mode hues, 15 deg steps upward from 200: CV-in, LFO-in, then out modes
 /// CV / Gate / Trigger. Ripppple walks the same start downward so the two apps
 /// share Ch0 cyan and fan apart on the mode buttons.
-const MANIFOLD_HUES: [u16; 5] = [200, 210, 220, 230, 240];
+const MANIFOLD_HUES: [u16; 5] = [200, 215, 230, 245, 260];
 
 fn manifold_color(step: usize) -> Color {
     let (r, g, b) = hsv_to_rgb(MANIFOLD_HUES[step.min(4)] % 360);
