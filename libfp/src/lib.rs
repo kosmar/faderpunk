@@ -45,7 +45,7 @@ pub const I2C_ADDRESS: u16 = 0x56;
 pub const I2C_ADDRESS_CALIBRATION: u16 = 0x57;
 
 /// Maximum number of params per app
-pub const APP_MAX_PARAMS: usize = 16;
+pub const APP_MAX_PARAMS: usize = 17;
 
 /// Length of the startup animation
 pub const STARTUP_ANIMATION_DURATION: Duration = Duration::from_secs(2);

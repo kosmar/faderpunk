@@ -1,5 +1,5 @@
 use embassy_futures::{
-    join::{join3, join4},
+    join::{join, join3, join4},
     select::{select, select3},
 };
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, signal::Signal};
@@ -29,7 +29,7 @@ use crate::{
 };
 
 pub const CHANNELS: usize = 4;
-pub const PARAMS: usize = 16;
+pub const PARAMS: usize = 15;
 
 /// `Ch Map` packs one MIDI channel per wave into a nibble (wave 0 = bits 0..3,
 /// nibble + 1 = channel 1..16). A whole map of 0 means "every wave follows the
@@ -53,11 +53,13 @@ const BUTTON_BRIGHTNESS: Brightness = Brightness::Mid;
 const BUTTON_IDLE_BRIGHTNESS: Brightness = Brightness::Low;
 /// Input samples within this 12-bit distance count as unchanged (ADC noise floor).
 const IN_DEADBAND: u16 = 24;
-/// Milliseconds of unchanged input before `Source::Auto` falls back to the
-/// internal LFO.
+/// Milliseconds of unchanged input before the root falls back to the internal
+/// LFO.
 const IN_IDLE_MS: u16 = 1200;
 /// Hold off periodic button LED writes so LedMode::Flash can finish.
 const BUTTON_FLASH_MS: u16 = 848;
+/// One `LedMode::Flash` cycle ≈ 16 frames at 60 Hz.
+const RANGE_FLASH_CYCLE_MS: u16 = 270;
 /// Shape defaults for the axes that are not exposed per stage.
 const LFO_WARP: u16 = 0;
 const STAGE_SKEW: u16 = 2048;
@@ -73,10 +75,10 @@ const RATE_MOD_OCTAVES: f32 = 3.0;
 /// caught here. The limit is 1024 rather than 2048: four samples per cycle
 /// still traces a recognisable wave, two draw a square no matter the morph.
 const MAX_PHASE_STEP: f32 = 1024.0;
-/// Root on CV in, root on internal LFO, then the three modulation targets
-/// (rate, depth, shape). Walked the long way round the wheel so the five hues
-/// stay tellable apart.
-const RIPPPPLE_HUES: [u16; 5] = [200, 250, 300, 340, 30];
+/// Five mode hues, same ~37.5 deg raster as Manifold: CV-in, LFO-in, then
+/// mod destinations Rate / Depth / Shape. Started at 221-19 so matching mode
+/// buttons (not channels) read apart from Manifold.
+const RIPPPPLE_HUES: [u16; 5] = [202, 240, 277, 315, 352];
 
 fn ripppple_color(step: usize) -> Color {
     let (r, g, b) = hsv_to_rgb(RIPPPPLE_HUES[step.min(4)] % 360);
@@ -133,32 +135,26 @@ impl Dest {
     }
 }
 
-/// Where the root takes its signal from.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Source {
-    /// Internal LFO whenever the input jack has been static long enough.
-    Auto,
-    /// Always the input jack.
-    CvIn,
-    /// Always the internal LFO.
-    Lfo,
-}
-
-impl Source {
-    fn from_usize(v: usize) -> Self {
-        match v {
-            1 => Source::CvIn,
-            2 => Source::Lfo,
-            _ => Source::Auto,
-        }
-    }
-}
-
 fn next_range(range: Range) -> Range {
     match range {
         Range::_0_10V => Range::_Neg5_5V,
         _ => Range::_0_10V,
     }
+}
+
+/// ±5V → one blink; 0–10V → two blinks.
+fn range_flash_times(range: Range) -> usize {
+    if range.is_bipolar() {
+        1
+    } else {
+        2
+    }
+}
+
+fn range_flash_hold_ms(times: usize) -> u16 {
+    RANGE_FLASH_CYCLE_MS
+        .saturating_mul(times as u16)
+        .saturating_add(40)
 }
 
 fn paint_bipolar_level(leds: &Leds<CHANNELS>, chan: usize, color: Color, level: u16) {
@@ -246,10 +242,6 @@ pub static CONFIG: Config<PARAMS> = Config::new(
     variants: &["Rate", "Depth", "Shape"],
 })
 .add_param(Param::Enum {
-    name: "Source",
-    variants: &["Auto", "CV In", "Internal LFO"],
-})
-.add_param(Param::Enum {
     name: "LFO Speed",
     variants: &["Normal", "Slow", "Slowest"],
 })
@@ -281,7 +273,6 @@ pub struct Params {
     /// Start value of the per-stage modulation target (Ch1..Ch3); runtime state
     /// lives in `Storage::dest`.
     target: [usize; 3],
-    source: Source,
     lfo_speed_mult: usize,
     midi_out: MidiOut,
     midi_channel: MidiChannel,
@@ -303,7 +294,6 @@ impl Default for Params {
             range_c: Range::_Neg5_5V,
             range_d: Range::_Neg5_5V,
             target: [0; 3],
-            source: Source::Auto,
             lfo_speed_mult: 0,
             midi_out: MidiOut([false; 3]),
             midi_channel: MidiChannel::default(),
@@ -361,6 +351,12 @@ impl AppParams for Params {
             return None;
         }
         let at = |i: usize| values.get(i).copied();
+        // Legacy layouts stored Source at index 8; skip it when the slice is
+        // still 16-wide or when index 9 still holds the old LFO Speed enum.
+        let legacy_source = values.len() >= 16
+            || matches!(values.get(9), Some(Value::Enum(_)))
+                && values.get(10).is_some();
+        let tail = if legacy_source { 1 } else { 0 };
         Some(Self {
             color: Color::from_value(values[0]),
             in_range: at(1).map(Range::from_value).unwrap_or(Range::_Neg5_5V),
@@ -372,21 +368,22 @@ impl AppParams for Params {
                 at(6).map(usize::from_value).unwrap_or(0).min(2),
                 at(7).map(usize::from_value).unwrap_or(0).min(2),
             ],
-            source: at(8)
-                .map(|v| Source::from_usize(usize::from_value(v)))
-                .unwrap_or(Source::Auto),
-            lfo_speed_mult: at(9).map(usize::from_value).unwrap_or(0),
-            midi_out: at(10)
+            lfo_speed_mult: at(8 + tail).map(usize::from_value).unwrap_or(0),
+            midi_out: at(9 + tail)
                 .map(MidiOut::from_value)
                 .unwrap_or(MidiOut([false; 3])),
-            midi_channel: at(11).map(MidiChannel::from_value).unwrap_or_default(),
-            midi_cc: at(12).map(MidiCc::from_value).unwrap_or(MidiCc::from(32u8)),
-            nrpn: at(13).map(bool::from_value).unwrap_or(false),
-            ch_map: at(14)
+            midi_channel: at(10 + tail)
+                .map(MidiChannel::from_value)
+                .unwrap_or_default(),
+            midi_cc: at(11 + tail)
+                .map(MidiCc::from_value)
+                .unwrap_or(MidiCc::from(32u8)),
+            nrpn: at(12 + tail).map(bool::from_value).unwrap_or(false),
+            ch_map: at(13 + tail)
                 .map(i32::from_value)
                 .unwrap_or(CH_MAP_FOLLOW)
                 .clamp(CH_MAP_FOLLOW, CH_MAP_MAX),
-            cc_map: at(15)
+            cc_map: at(14 + tail)
                 .map(i32::from_value)
                 .unwrap_or(CC_MAP_FOLLOW)
                 .clamp(CC_MAP_FOLLOW, CC_MAP_MAX),
@@ -403,7 +400,6 @@ impl AppParams for Params {
         for t in self.target {
             vec.push(Value::Enum(t)).unwrap();
         }
-        vec.push(Value::Enum(self.source as usize)).unwrap();
         vec.push(Value::Enum(self.lfo_speed_mult)).unwrap();
         vec.push(self.midi_out.into()).unwrap();
         vec.push(self.midi_channel.into()).unwrap();
@@ -464,7 +460,6 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
             range_c: Range::_Neg5_5V,
             range_d: Range::_Neg5_5V,
             target: [0; 3],
-            source: Source::Auto,
             lfo_speed_mult: 0,
             midi_out: MidiOut([false; 3]),
             midi_channel: MidiChannel::default(),
@@ -498,7 +493,6 @@ pub async fn run(
 ) {
     let (in_range, range_b, range_c, range_d) =
         params.query(|p| (p.in_range, p.range_b, p.range_c, p.range_d));
-    let source = params.query(|p| p.source);
     let (midi_out, nrpn) = params.query(|p| (p.midi_out, p.nrpn));
     let midi_chans = params.query(|p| core::array::from_fn::<_, CHANNELS, _>(|w| p.channel_for(w)));
     let midi_ccs =
@@ -520,7 +514,7 @@ pub async fn run(
         range_c.is_bipolar(),
         range_d.is_bipolar(),
     ];
-    let initial_lfo_active = source == Source::Lfo;
+    let initial_lfo_active = true;
 
     let midi: [MidiOutput; CHANNELS] =
         core::array::from_fn(|w| app.use_midi_output(midi_out, midi_chans[w], nrpn));
@@ -540,8 +534,6 @@ pub async fn run(
     let glob_fader_at_down = app.make_global([0u16; 4]);
     let glob_fader_moved = app.make_global([false; 4]);
     let glob_long_press = app.make_global([false; 4]);
-    // Shift is global, so only the channel touched last shows its Alt hint.
-    let glob_shift_focus = app.make_global(0usize);
 
     // Signalled when an out range changes: run() has to return so the jack is
     // reconfigured.
@@ -551,10 +543,10 @@ pub async fn run(
     // clock_ticker, never use_clock: an undrained CLOCK_PUBSUB subscriber
     // stalls the gatekeeper's blocking publish and kills the device clock.
     let ticker = app.clock_ticker();
-    let glob_lfo_active = app.make_global(source == Source::Lfo);
+    let glob_lfo_active = app.make_global(true);
     let glob_lfo_step = app.make_global(0.0682f32);
     let glob_div = app.make_global(24u32);
-    let glob_btn_flash_0 = app.make_global(0u16);
+    let glob_btn_flash = app.make_global([0u16; 4]);
 
     let time_calc = || {
         let speed = storage.query(|s| s.lfo_speed);
@@ -619,17 +611,16 @@ pub async fn run(
             }
             prev_raw_input = raw_input;
 
-            let lfo_active = match source {
-                Source::CvIn => false,
-                Source::Lfo => true,
-                Source::Auto => in_idle_ms >= IN_IDLE_MS,
-            };
+            let lfo_active = in_idle_ms >= IN_IDLE_MS;
             glob_lfo_active.set(lfo_active);
 
-            let flash_0 = glob_btn_flash_0.get();
-            if flash_0 > 0 {
-                glob_btn_flash_0.set(flash_0.saturating_sub(AUDIO_MS));
-            }
+            let flash = glob_btn_flash.modify(|f| {
+                let mut arr = *f;
+                for ms in arr.iter_mut() {
+                    *ms = ms.saturating_sub(AUDIO_MS);
+                }
+                arr
+            });
 
             let (morph, skew, lfo_clocked) = storage.query(|s| (s.morph, s.skew, s.lfo_clocked));
             let symmetry = glob_symmetry.get();
@@ -801,7 +792,7 @@ pub async fn run(
                 }
             }
 
-            if flash_0 == 0 {
+            if flash[0] == 0 {
                 leds.set(
                     0,
                     Led::Button,
@@ -816,19 +807,13 @@ pub async fn run(
                 );
             }
 
-            let shift = buttons.is_shift_pressed();
-            let focus = glob_shift_focus.get();
+            // Keep metering while Shift holds Alt: the pulse rate is what the
+            // Alt-layer rate fader is editing, so freezing the button bright
+            // would hide the feedback.
             for i in 0..3 {
                 if muted[i] {
                     leds.unset(i + 1, Led::Button);
-                } else if shift && focus == i + 1 {
-                    leds.set(
-                        i + 1,
-                        Led::Button,
-                        Dest::from_u8(dest[i]).color(),
-                        Brightness::High,
-                    );
-                } else {
+                } else if flash[i + 1] == 0 {
                     leds.set(
                         i + 1,
                         Led::Button,
@@ -851,7 +836,6 @@ pub async fn run(
         loop {
             let chan = faders.wait_for_any_change().await;
             let fader_val = faders.get_value_at(chan);
-            glob_shift_focus.set(chan);
 
             if buttons.is_button_pressed(chan) && !buttons.is_shift_pressed() {
                 let at_down = glob_fader_at_down.get()[chan];
@@ -955,7 +939,6 @@ pub async fn run(
         loop {
             let (chan, _) = buttons.wait_for_any_down().await;
 
-            glob_shift_focus.set(chan);
             glob_fader_at_down.modify(|a| {
                 let mut arr = *a;
                 arr[chan] = faders.get_value_at(chan);
@@ -990,16 +973,36 @@ pub async fn run(
             let i = chan - 1;
 
             if shift {
-                // Restart only once the button is released: the long-press guard
-                // that keeps the release from toggling mute lives in this run's
-                // globals, so a restart while the button is still down would
-                // hand the release to a fresh run.
-                buttons.wait_for_up(chan).await;
+                // 1 blink = ±5V, 2 blinks = 0–10V. Flash before restart so the
+                // paint loop's hold-off can show it; wait for release and the
+                // flash duration before reconfiguring the jack.
+                let next = params.query(|p| match i {
+                    0 => next_range(p.range_b),
+                    1 => next_range(p.range_c),
+                    _ => next_range(p.range_d),
+                });
+                let times = range_flash_times(next);
+                let hold_ms = range_flash_hold_ms(times);
+                leds.set_mode(
+                    chan,
+                    Led::Button,
+                    LedMode::Flash(Dest::from_u8(glob_dest.get()[i]).color(), Some(times)),
+                );
+                glob_btn_flash.modify(|f| {
+                    let mut arr = *f;
+                    arr[chan] = hold_ms;
+                    arr
+                });
+                join(
+                    buttons.wait_for_up(chan),
+                    app.delay_millis(hold_ms as u64),
+                )
+                .await;
                 params
                     .update(|p| match i {
-                        0 => p.range_b = next_range(p.range_b),
-                        1 => p.range_c = next_range(p.range_c),
-                        _ => p.range_d = next_range(p.range_d),
+                        0 => p.range_b = next,
+                        1 => p.range_c = next,
+                        _ => p.range_d = next,
                     })
                     .await;
                 restart.signal(());
@@ -1018,6 +1021,11 @@ pub async fn run(
                     Led::Button,
                     LedMode::Flash(Dest::from_u8(next).color(), Some(4)),
                 );
+                glob_btn_flash.modify(|f| {
+                    let mut arr = *f;
+                    arr[chan] = BUTTON_FLASH_MS;
+                    arr
+                });
                 // Mirror into the param so configurator / Presetpunk follow the
                 // device. `ParamStore::update` only saves and pushes; it does not
                 // restart run(), so the LFO phases keep running through a target
@@ -1047,7 +1055,11 @@ pub async fn run(
                             Led::Button,
                             LedMode::Flash(ch0_color(glob_lfo_active.get()), Some(4)),
                         );
-                        glob_btn_flash_0.set(BUTTON_FLASH_MS);
+                        glob_btn_flash.modify(|f| {
+                            let mut arr = *f;
+                            arr[0] = BUTTON_FLASH_MS;
+                            arr
+                        });
                     }
                 }
                 0 if !shift => {

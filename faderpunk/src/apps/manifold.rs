@@ -13,8 +13,8 @@ use libfp::{
         attenuverter, clickless, division_at, lfo_step, midi_gate, signal_brightness, slew_lin,
         split_unsigned_value, SlewState,
     },
-    AppIcon, Brightness, Color, Config, Curve, MidiCc, MidiChannel, MidiOut, Param, Range, Value,
-    APP_MAX_PARAMS,
+    AppIcon, Brightness, Color, Config, Curve, MidiCc, MidiChannel, MidiNote, MidiOut, Param,
+    Range, Value, APP_MAX_PARAMS,
 };
 
 use crate::{
@@ -45,9 +45,14 @@ const CH_MAP_MAX: i32 = (1 << (4 * MIDI_WAVES)) - 1;
 /// A whole map of 0 keeps the historic base + wave index derivation.
 const CC_MAP_FOLLOW: i32 = 0;
 const CC_MAP_MAX: i32 = (1 << (7 * MIDI_WAVES)) - 1;
+/// `Mode Map` packs one Note/CC flag per wave (wave 0 = bit 0). 0 = every
+/// wave sends CC (legacy); a set bit with Gate/Trigger mode sends Note On/Off.
+const MODE_MAP_FOLLOW: i32 = 0;
+const MODE_MAP_MAX: i32 = (1 << MIDI_WAVES) - 1;
 /// Keeps the literal bounds in `CONFIG` honest against the packing above.
 const _: () = assert!(CH_MAP_FOLLOW == 0 && CH_MAP_MAX == 65_535);
 const _: () = assert!(CC_MAP_FOLLOW == 0 && CC_MAP_MAX == 268_435_455);
+const _: () = assert!(MODE_MAP_FOLLOW == 0 && MODE_MAP_MAX == 15);
 
 const TRIG_HIGH: u16 = 2458;
 const FADER_MOVE_THRESH: u16 = 64;
@@ -56,22 +61,24 @@ const BUTTON_BRIGHTNESS: Brightness = Brightness::Mid;
 const BUTTON_IDLE_BRIGHTNESS: Brightness = Brightness::Low;
 /// Input samples within this 12-bit distance count as unchanged (ADC noise floor).
 const IN_DEADBAND: u16 = 24;
-/// Milliseconds of unchanged input before `Source::Auto` falls back to the
-/// internal LFO. Long enough that a slow CV ramp is never mistaken for silence.
+/// Milliseconds of unchanged input before the app falls back to the internal
+/// LFO. Long enough that a slow CV ramp is never mistaken for silence.
 const IN_IDLE_MS: u16 = 1200;
 /// Hold off periodic button LED writes so LedMode::Flash can finish.
 const BUTTON_FLASH_MS: u16 = 850;
+/// One `LedMode::Flash` cycle ≈ 16 frames at 60 Hz.
+const RANGE_FLASH_CYCLE_MS: u16 = 270;
 /// Internal LFO shape defaults for the axes Manifold does not expose:
 /// balanced halves, no time warp. Skew stays on the Ch0 Third layer.
 const LFO_SYMMETRY: u16 = 2048;
 const LFO_WARP: u16 = 0;
 /// Clock divisions the speed fader spans (slowest 384 ticks … 6 = quarter note).
 const LFO_DIVISIONS: usize = 9;
-/// Five equidistant hues, blue → orange: input on CV, input on the internal
-/// LFO, then the three out modes (CV, Gate, Trigger). The wheel is walked the
-/// long way round through violet and red rather than green — equal hue steps
-/// through the greens read as one colour to the eye, these five do not.
-const MANIFOLD_HUES: [u16; 5] = [240, 278, 315, 353, 390];
+/// Five mode hues (~37.5 deg apart), blue-cyan -> orange the long way: CV-in,
+/// LFO-in, then out modes CV / Gate / Trigger. Shared raster with Ripppple;
+/// this app starts at 221, Ripppple 19 deg cooler — mode buttons stay tellable
+/// apart across the two apps.
+const MANIFOLD_HUES: [u16; 5] = [221, 259, 296, 334, 371];
 
 fn manifold_color(step: usize) -> Color {
     let (r, g, b) = hsv_to_rgb(MANIFOLD_HUES[step.min(4)] % 360);
@@ -135,25 +142,26 @@ impl Mode {
     }
 }
 
-/// Where the three outs take their signal from.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Source {
-    /// Internal LFO whenever the input jack has been static long enough.
-    Auto,
-    /// Always the input jack, even when it holds a steady DC level.
-    CvIn,
-    /// Always the internal LFO; the input jack is ignored.
-    Lfo,
+fn next_range(range: Range) -> Range {
+    match range {
+        Range::_0_10V => Range::_Neg5_5V,
+        _ => Range::_0_10V,
+    }
 }
 
-impl Source {
-    fn from_usize(v: usize) -> Self {
-        match v {
-            1 => Source::CvIn,
-            2 => Source::Lfo,
-            _ => Source::Auto,
-        }
+/// ±5V → one blink; 0–10V → two blinks.
+fn range_flash_times(range: Range) -> usize {
+    if range.is_bipolar() {
+        1
+    } else {
+        2
     }
+}
+
+fn range_flash_hold_ms(times: usize) -> u16 {
+    RANGE_FLASH_CYCLE_MS
+        .saturating_mul(times as u16)
+        .saturating_add(40)
 }
 
 enum OutJackType {
@@ -241,10 +249,6 @@ pub static CONFIG: Config<PARAMS> = Config::new(
     variants: &[Range::_0_10V, Range::_Neg5_5V],
 })
 .add_param(Param::Enum {
-    name: "Source",
-    variants: &["Auto", "CV In", "Internal LFO"],
-})
-.add_param(Param::Enum {
     name: "LFO Speed",
     variants: &["Normal", "Slow", "Slowest"],
 })
@@ -265,6 +269,11 @@ pub static CONFIG: Config<PARAMS> = Config::new(
     name: "CC Map",
     min: 0,
     max: 268_435_455,
+})
+.add_param(Param::i32 {
+    name: "Mode Map",
+    min: 0,
+    max: 15,
 });
 
 pub struct Params {
@@ -276,7 +285,6 @@ pub struct Params {
     range_c: Range,
     mode_d: Mode,
     range_d: Range,
-    source: Source,
     lfo_speed_mult: usize,
     midi_out: MidiOut,
     midi_channel: MidiChannel,
@@ -287,6 +295,8 @@ pub struct Params {
     ch_map: i32,
     /// Per-wave CC number, 7 bit each; 0 = base CC + wave index.
     cc_map: i32,
+    /// Per-wave Note vs CC, 1 bit each; 0 = CC for every wave (legacy).
+    mode_map: i32,
 }
 
 impl Default for Params {
@@ -300,7 +310,6 @@ impl Default for Params {
             range_c: Range::_Neg5_5V,
             mode_d: Mode::Trigger,
             range_d: Range::_Neg5_5V,
-            source: Source::Auto,
             lfo_speed_mult: 0,
             midi_out: MidiOut([false; 3]),
             midi_channel: MidiChannel::default(),
@@ -308,6 +317,7 @@ impl Default for Params {
             nrpn: false,
             ch_map: CH_MAP_FOLLOW,
             cc_map: CC_MAP_FOLLOW,
+            mode_map: MODE_MAP_FOLLOW,
         }
     }
 }
@@ -329,6 +339,28 @@ impl Params {
         }
         let field = ((self.cc_map >> (7 * wave)) & 0x7F) as u16;
         MidiCc::from(field.min(midi_cc_limit(nrpn)))
+    }
+
+    /// True when this wave sends Note On/Off instead of CC.
+    fn midi_is_note(&self, wave: usize, modes: &[Mode; 3]) -> bool {
+        if wave == 0 || self.mode_map == MODE_MAP_FOLLOW {
+            return false;
+        }
+        if ((self.mode_map >> wave) & 1) == 0 {
+            return false;
+        }
+        matches!(modes[wave - 1], Mode::Gate | Mode::Trigger)
+    }
+
+    /// Note number for one wave, taken from that wave's CC Map slot.
+    fn note_for(&self, wave: usize) -> MidiNote {
+        let pitch = if self.cc_map == CC_MAP_FOLLOW {
+            channel_cc(self.midi_cc, wave, false).as_u16()
+        } else {
+            ((self.cc_map >> (7 * wave)) & 0x7F) as u16
+        };
+        // Notes are always 7-bit, even when the CC path is in NRPN mode.
+        MidiNote::from(pitch.min(127) as u8)
     }
 }
 
@@ -357,16 +389,30 @@ fn channel_cc(base: MidiCc, chan: usize, nrpn: bool) -> MidiCc {
 
 impl AppParams for Params {
     fn from_values(values: &[Value]) -> Option<Self> {
-        // Legacy: 8 params (no internal LFO), 10 (no MIDI mirror), 14 = current.
+        // Legacy: 8 params (no internal LFO), 10 (no MIDI mirror), 14 = MIDI,
+        // 17 = old layout with Source at index 8. New format: 16 params, no Source.
         if values.len() < 8 {
             return None;
         }
-        let (midi_out, midi_channel, midi_cc, nrpn) = if values.len() >= 14 {
+        let source_skip = if values.len() >= 17 {
+            1
+        } else if values.len() > 9 {
+            match values.get(9) {
+                Some(Value::MidiOut(_)) => 0,
+                Some(Value::Enum(_)) => 1,
+                _ => 0,
+            }
+        } else {
+            0
+        };
+        let lfo_idx = 8 + source_skip;
+        let midi_out_idx = lfo_idx + 1;
+        let (midi_out, midi_channel, midi_cc, nrpn) = if values.len() >= midi_out_idx + 4 {
             (
-                MidiOut::from_value(values[10]),
-                MidiChannel::from_value(values[11]),
-                MidiCc::from_value(values[12]),
-                bool::from_value(values[13]),
+                MidiOut::from_value(values[midi_out_idx]),
+                MidiChannel::from_value(values[midi_out_idx + 1]),
+                MidiCc::from_value(values[midi_out_idx + 2]),
+                bool::from_value(values[midi_out_idx + 3]),
             )
         } else {
             // Presets saved before the mirror existed must stay silent on MIDI.
@@ -377,6 +423,9 @@ impl AppParams for Params {
                 false,
             )
         };
+        let ch_map_idx = midi_out_idx + 4;
+        let cc_map_idx = midi_out_idx + 5;
+        let mode_map_idx = midi_out_idx + 6;
         Some(Self {
             color: Color::from_value(values[0]),
             in_range: Range::from_value(values[1]),
@@ -386,13 +435,8 @@ impl AppParams for Params {
             range_c: Range::from_value(values[5]),
             mode_d: Mode::from_usize(usize::from_value(values[6])),
             range_d: Range::from_value(values[7]),
-            source: if values.len() >= 9 {
-                Source::from_usize(usize::from_value(values[8]))
-            } else {
-                Source::Auto
-            },
-            lfo_speed_mult: if values.len() >= 10 {
-                usize::from_value(values[9])
+            lfo_speed_mult: if values.len() > lfo_idx {
+                usize::from_value(values[lfo_idx])
             } else {
                 0
             },
@@ -400,15 +444,20 @@ impl AppParams for Params {
             midi_channel,
             midi_cc,
             nrpn,
-            ch_map: if values.len() >= 15 {
-                i32::from_value(values[14]).clamp(CH_MAP_FOLLOW, CH_MAP_MAX)
+            ch_map: if values.len() > ch_map_idx {
+                i32::from_value(values[ch_map_idx]).clamp(CH_MAP_FOLLOW, CH_MAP_MAX)
             } else {
                 CH_MAP_FOLLOW
             },
-            cc_map: if values.len() >= 16 {
-                i32::from_value(values[15]).clamp(CC_MAP_FOLLOW, CC_MAP_MAX)
+            cc_map: if values.len() > cc_map_idx {
+                i32::from_value(values[cc_map_idx]).clamp(CC_MAP_FOLLOW, CC_MAP_MAX)
             } else {
                 CC_MAP_FOLLOW
+            },
+            mode_map: if values.len() > mode_map_idx {
+                i32::from_value(values[mode_map_idx]).clamp(MODE_MAP_FOLLOW, MODE_MAP_MAX)
+            } else {
+                MODE_MAP_FOLLOW
             },
         })
     }
@@ -423,7 +472,6 @@ impl AppParams for Params {
         vec.push(self.range_c.into()).unwrap();
         vec.push(Value::Enum(self.mode_d as usize)).unwrap();
         vec.push(self.range_d.into()).unwrap();
-        vec.push(Value::Enum(self.source as usize)).unwrap();
         vec.push(Value::Enum(self.lfo_speed_mult)).unwrap();
         vec.push(self.midi_out.into()).unwrap();
         vec.push(self.midi_channel.into()).unwrap();
@@ -431,6 +479,7 @@ impl AppParams for Params {
         vec.push(Value::MidiNrpn(self.nrpn)).unwrap();
         vec.push(self.ch_map.into()).unwrap();
         vec.push(self.cc_map.into()).unwrap();
+        vec.push(self.mode_map.into()).unwrap();
         vec
     }
 }
@@ -491,7 +540,6 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
             range_c: Range::_Neg5_5V,
             mode_d: Mode::Trigger,
             range_d: Range::_Neg5_5V,
-            source: Source::Auto,
             lfo_speed_mult: 0,
             midi_out: MidiOut([false; 3]),
             midi_channel: MidiChannel::default(),
@@ -499,6 +547,7 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
             nrpn: false,
             ch_map: CH_MAP_FOLLOW,
             cc_map: CC_MAP_FOLLOW,
+            mode_map: MODE_MAP_FOLLOW,
         },
     );
     let storage = ManagedStorage::<Storage>::new(app.app_id, app.layout_id);
@@ -547,27 +596,34 @@ pub async fn run(
             p.in_range, p.mode_b, p.range_b, p.mode_c, p.range_c, p.mode_d, p.range_d,
         )
     });
-    let source = params.query(|p| p.source);
     let nrpn = params.query(|p| p.nrpn);
-    let (midi_out, midi_chans, midi_ccs) = params.query(|p| {
+    let modes = [mode_b, mode_c, mode_d];
+    let ranges = [range_b, range_c, range_d];
+    let out_colors = [modes[0].color(), modes[1].color(), modes[2].color()];
+    let (midi_out, midi_chans, midi_ccs, midi_is_note, note_pitches) = params.query(|p| {
         (
             p.midi_out,
             core::array::from_fn::<MidiChannel, MIDI_WAVES, _>(|w| p.channel_for(w)),
             core::array::from_fn::<MidiCc, MIDI_WAVES, _>(|w| p.cc_for(w, nrpn)),
+            core::array::from_fn::<bool, MIDI_WAVES, _>(|w| p.midi_is_note(w, &modes)),
+            core::array::from_fn::<MidiNote, MIDI_WAVES, _>(|w| p.note_for(w)),
         )
     });
     let lfo_speed_mult = 2u32.pow(params.query(|p| p.lfo_speed_mult).min(31) as u32);
 
-    let modes = [mode_b, mode_c, mode_d];
-    let ranges = [range_b, range_c, range_d];
-    let out_colors = [modes[0].color(), modes[1].color(), modes[2].color()];
-    // Match glob_lfo_active init: Auto stays on CV-in until the idle timeout.
-    let initial_lfo_active = source == Source::Lfo;
+    // Starts idle so an unpatched Manifold comes up on the internal LFO.
+    let initial_lfo_active = true;
 
     // Ch0 (conditioned input / internal LFO), then Out B, C, D — one handle per
     // wave so each can sit on its own MIDI channel.
     let midi: [MidiOutput; MIDI_WAVES] =
         core::array::from_fn(|w| app.use_midi_output(midi_out, midi_chans[w], nrpn));
+
+    for w in 0..MIDI_WAVES {
+        if midi_is_note[w] {
+            midi[w].send_note_off(note_pitches[w]).await;
+        }
+    }
 
     let buttons = app.use_buttons();
     let faders = app.use_faders();
@@ -588,25 +644,27 @@ pub async fn run(
     let glob_fader_at_down = app.make_global([0u16; 4]);
     let glob_fader_moved = app.make_global([false; 4]);
     let glob_long_press = app.make_global([false; 4]);
+    // Shift is global, so only the channel touched last shows its Alt hint.
+    let glob_shift_focus = app.make_global(0usize);
 
     // Signalled when an out mode changes: run() has to return so the jack is
     // reconfigured between CV out and gate out.
     let restart = Signal::<NoopRawMutex, ()>::new();
 
-    // Internal LFO: runs whenever `Source` resolves to it, so an unpatched
-    // Manifold still has something to shape.
+    // Internal LFO: runs whenever the input jack has been static long enough,
+    // so an unpatched Manifold still has something to shape.
     let die = app.use_die();
     // clock_ticker, never use_clock: this task can park on a MAX jack write
     // while gate outs fire, and an undrained CLOCK_PUBSUB subscriber stalls the
     // gatekeeper's blocking Start/Stop/Reset publish — that kills the device
     // clock, not just this app.
     let ticker = app.clock_ticker();
-    let glob_lfo_active = app.make_global(source == Source::Lfo);
+    let glob_lfo_active = app.make_global(true);
     let glob_lfo_pos = app.make_global(0.0f32);
     let glob_lfo_step = app.make_global(0.0682f32);
     let glob_div = app.make_global(24u32);
     let glob_chaos = app.make_global(MorphChaos::new());
-    let glob_btn_flash_0 = app.make_global(0u16);
+    let glob_btn_flash = app.make_global([0u16; 4]);
 
     // Free-run step and clock division for the stored speed fader.
     let time_calc = || {
@@ -670,6 +728,7 @@ pub async fn run(
         // suppress the others. u16::MAX is out of `midi_gate`'s range and
         // therefore forces one send per channel on startup.
         let mut last_midi = [u16::MAX; 4];
+        let mut note_sounding = [false; 4];
         // This loop runs at 1 kHz and mirrors four channels, where the LFO apps
         // mirror one at 125 Hz — unpaced that is enough CC traffic to wedge a
         // USB host. Offer one channel per 8 ms and rotate, so the bus sees at
@@ -711,17 +770,16 @@ pub async fn run(
             }
             prev_raw_input = raw_input;
 
-            let lfo_active = match source {
-                Source::CvIn => false,
-                Source::Lfo => true,
-                Source::Auto => in_idle_ms >= IN_IDLE_MS,
-            };
+            let lfo_active = in_idle_ms >= IN_IDLE_MS;
             glob_lfo_active.set(lfo_active);
 
-            let flash_0 = glob_btn_flash_0.get();
-            if flash_0 > 0 {
-                glob_btn_flash_0.set(flash_0.saturating_sub(1));
-            }
+            let flash = glob_btn_flash.modify(|f| {
+                let mut arr = *f;
+                for ms in arr.iter_mut() {
+                    *ms = ms.saturating_sub(1);
+                }
+                arr
+            });
 
             let (morph, skew, lfo_clocked) =
                 storage.query(|s| (s.morph, s.skew, s.lfo_clocked));
@@ -969,7 +1027,22 @@ pub async fn run(
                 // `out_level` is what the jack actually carries: the shaped CV
                 // in Mode::Cv, and the digital state (4095 / 0) in Gate and
                 // Trigger — the same value the meters use.
-                if midi_due && midi_slot == i + 1 {
+                // Note edges must run every sample: short Trigger pulses can be
+                // shorter than the CC slot rotation (~32 ms per lane).
+                if midi_out.is_some() && midi_is_note[i + 1] {
+                    let high = out_level > 0;
+                    if high && !note_sounding[i + 1] {
+                        midi[i + 1]
+                            .send_note_on(note_pitches[i + 1], 4095)
+                            .await;
+                        note_sounding[i + 1] = true;
+                    } else if !high && note_sounding[i + 1] {
+                        midi[i + 1]
+                            .send_note_off(note_pitches[i + 1])
+                            .await;
+                        note_sounding[i + 1] = false;
+                    }
+                } else if midi_due && midi_slot == i + 1 {
                     let gate_val = midi_gate(out_level, nrpn);
                     if gate_val != last_midi[i + 1] {
                         midi[i + 1].try_send_cc(midi_ccs[i + 1], out_level);
@@ -999,7 +1072,7 @@ pub async fn run(
                 }
             }
 
-            if flash_0 == 0 {
+            if flash[0] == 0 {
                 leds.set(
                     0,
                     Led::Button,
@@ -1016,16 +1089,25 @@ pub async fn run(
             for i in 0..3 {
                 if muted[i] {
                     leds.unset(i + 1, Led::Button);
-                } else {
-                    leds.set(
-                        i + 1,
-                        Led::Button,
-                        out_colors[i],
-                        signal_brightness(
-                            out_levels[i],
-                            modes[i] == Mode::Cv && ranges[i].is_bipolar(),
-                        ),
-                    );
+                } else if flash[i + 1] == 0 {
+                    if buttons.is_shift_pressed() && glob_shift_focus.get() == i + 1 {
+                        leds.set(
+                            i + 1,
+                            Led::Button,
+                            out_colors[i],
+                            Brightness::High,
+                        );
+                    } else {
+                        leds.set(
+                            i + 1,
+                            Led::Button,
+                            out_colors[i],
+                            signal_brightness(
+                                out_levels[i],
+                                modes[i] == Mode::Cv && ranges[i].is_bipolar(),
+                            ),
+                        );
+                    }
                 }
             }
         }
@@ -1042,6 +1124,7 @@ pub async fn run(
         loop {
             let chan = faders.wait_for_any_change().await;
             let fader_val = faders.get_value_at(chan);
+            glob_shift_focus.set(chan);
 
             if buttons.is_button_pressed(chan) && !buttons.is_shift_pressed() {
                 let at_down = glob_fader_at_down.get()[chan];
@@ -1070,8 +1153,8 @@ pub async fn run(
 
             let target_value = if chan == 0 {
                 match (lfo_active, latch_active_layer) {
-                    (true, LatchLayer::Main) => storage.query(|s| s.morph),
-                    (true, LatchLayer::Alt) => storage.query(|s| s.lfo_speed),
+                    (true, LatchLayer::Main) => storage.query(|s| s.lfo_speed),
+                    (true, LatchLayer::Alt) => storage.query(|s| s.morph),
                     (true, LatchLayer::Third) => storage.query(|s| s.skew),
                     (false, LatchLayer::Main) => storage.query(|s| s.in_trim),
                     (false, LatchLayer::Alt) => storage.query(|s| s.in_offset),
@@ -1098,11 +1181,11 @@ pub async fn run(
                 if chan == 0 {
                     match (lfo_active, latch_active_layer) {
                         (true, LatchLayer::Main) => {
-                            storage.modify_and_save(|s| s.morph = new_value);
-                        }
-                        (true, LatchLayer::Alt) => {
                             storage.modify_and_save(|s| s.lfo_speed = new_value);
                             time_calc();
+                        }
+                        (true, LatchLayer::Alt) => {
+                            storage.modify_and_save(|s| s.morph = new_value);
                         }
                         (true, LatchLayer::Third) => {
                             storage.modify_and_save(|s| s.skew = new_value);
@@ -1187,6 +1270,7 @@ pub async fn run(
     let button_down = async {
         loop {
             let (chan, _) = buttons.wait_for_any_down().await;
+            glob_shift_focus.set(chan);
 
             glob_fader_at_down.modify(|a| {
                 let mut arr = *a;
@@ -1206,10 +1290,9 @@ pub async fn run(
         }
     };
 
-    // Shift + long press on B / C / D cycles that out through CV → Gate →
-    // Trigger. The mode is a configurator param, so it goes through
-    // ParamStore::update and the host sees the change; run() then restarts to
-    // reconfigure the jack.
+    // Long press on B / C / D: without shift cycles Mode (CV / Gate / Trigger);
+    // shift+long cycles that out's jack range. Both go through ParamStore so
+    // the host sees the change; run() then restarts to reconfigure the jack.
     let button_long = async {
         loop {
             let (chan, shift) = buttons.wait_for_any_long_press().await;
@@ -1220,27 +1303,72 @@ pub async fn run(
                 arr
             });
 
-            if !shift || !(1..=3).contains(&chan) {
+            if !(1..=3).contains(&chan) {
                 continue;
             }
 
             let i = chan - 1;
-            // Restart only once the button is released. The long-press guard
-            // that keeps the release from toggling mute lives in this run's
-            // globals, so a restart while the button is still down would hand
-            // the release to a fresh run that mutes the channel instead.
-            // wait_for_up subscribes when the join first polls it, i.e. before
-            // the param write, so the release cannot slip through in between.
-            join(
-                buttons.wait_for_up(chan),
-                params.update(|p| match i {
-                    0 => p.mode_b = p.mode_b.next(),
-                    1 => p.mode_c = p.mode_c.next(),
-                    _ => p.mode_d = p.mode_d.next(),
-                }),
-            )
-            .await;
-            restart.signal(());
+
+            if shift {
+                // 1 blink = ±5V, 2 blinks = 0–10V. Hold off paint + wait for
+                // release and flash duration before jack restart.
+                let next = params.query(|p| match i {
+                    0 => next_range(p.range_b),
+                    1 => next_range(p.range_c),
+                    _ => next_range(p.range_d),
+                });
+                let times = range_flash_times(next);
+                let hold_ms = range_flash_hold_ms(times);
+                leds.set_mode(
+                    chan,
+                    Led::Button,
+                    LedMode::Flash(out_colors[i], Some(times)),
+                );
+                glob_btn_flash.modify(|f| {
+                    let mut arr = *f;
+                    arr[chan] = hold_ms;
+                    arr
+                });
+                join(
+                    buttons.wait_for_up(chan),
+                    app.delay_millis(hold_ms as u64),
+                )
+                .await;
+                params
+                    .update(|p| match i {
+                        0 => p.range_b = next,
+                        1 => p.range_c = next,
+                        _ => p.range_d = next,
+                    })
+                    .await;
+                restart.signal(());
+            } else {
+                let next_mode = params.query(|p| match i {
+                    0 => p.mode_b.next(),
+                    1 => p.mode_c.next(),
+                    _ => p.mode_d.next(),
+                });
+                leds.set_mode(
+                    chan,
+                    Led::Button,
+                    LedMode::Flash(next_mode.color(), Some(4)),
+                );
+                glob_btn_flash.modify(|f| {
+                    let mut arr = *f;
+                    arr[chan] = BUTTON_FLASH_MS;
+                    arr
+                });
+                join(
+                    buttons.wait_for_up(chan),
+                    params.update(|p| match i {
+                        0 => p.mode_b = p.mode_b.next(),
+                        1 => p.mode_c = p.mode_c.next(),
+                        _ => p.mode_d = p.mode_d.next(),
+                    }),
+                )
+                .await;
+                restart.signal(());
+            }
         }
     };
 
@@ -1264,10 +1392,14 @@ pub async fn run(
                             Led::Button,
                             LedMode::Flash(ch0_color(glob_lfo_active.get()), Some(4)),
                         );
-                        glob_btn_flash_0.set(BUTTON_FLASH_MS);
+                        glob_btn_flash.modify(|f| {
+                            let mut arr = *f;
+                            arr[0] = BUTTON_FLASH_MS;
+                            arr
+                        });
                     }
                 }
-                0 => {
+                0 if !shift => {
                     let frozen = glob_frozen.toggle();
                     paint_buttons(
                         &leds,
