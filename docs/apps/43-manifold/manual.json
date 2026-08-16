@@ -65,7 +65,7 @@
             "<strong>Channel 0 short</strong> \u2014 freeze the conditioned input value",
             "<strong>Channel 0 Shift + short</strong> \u2014 while the internal LFO runs: free-running or clock-synced (the button flashes when sync engages)",
             "<strong>Channels 1\u20133 short</strong> \u2014 mute/unmute that output (Shift not held); fader scrub while the button is held cancels the tap",
-            "<strong>Channels 1\u20133 long</strong> \u2014 cycle that out through CV \u2192 Gate \u2192 Trigger; the new mode hue appears immediately and the configurator follows",
+            "<strong>Channels 1\u20133 long</strong> \u2014 cycle that out through CV \u2192 Gate \u2192 Trigger on release; fader scrub while held cancels (so Third-layer edits do not change mode); the new mode hue flashes and the configurator follows",
             "<strong>Channels 1\u20133 Shift + long</strong> \u2014 cycle the output range (\u00b15 V \u2194 0\u201310 V); the button flashes <strong>1\u00d7 for \u00b15 V</strong>, <strong>2\u00d7 for 0\u201310 V</strong>; stored as a parameter, so the configurator follows"
           ]
         }

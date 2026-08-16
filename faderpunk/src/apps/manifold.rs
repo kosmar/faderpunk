@@ -1342,33 +1342,9 @@ pub async fn run(
                     })
                     .await;
                 restart.signal(());
-            } else {
-                let next_mode = params.query(|p| match i {
-                    0 => p.mode_b.next(),
-                    1 => p.mode_c.next(),
-                    _ => p.mode_d.next(),
-                });
-                leds.set_mode(
-                    chan,
-                    Led::Button,
-                    LedMode::Flash(next_mode.color(), Some(4)),
-                );
-                glob_btn_flash.modify(|f| {
-                    let mut arr = *f;
-                    arr[chan] = BUTTON_FLASH_MS;
-                    arr
-                });
-                join(
-                    buttons.wait_for_up(chan),
-                    params.update(|p| match i {
-                        0 => p.mode_b = p.mode_b.next(),
-                        1 => p.mode_c = p.mode_c.next(),
-                        _ => p.mode_d = p.mode_d.next(),
-                    }),
-                )
-                .await;
-                restart.signal(());
             }
+            // Mode cycle is deferred to button_up so a Third-layer fader scrub
+            // (btn hold + move) can cancel it — same cancel as mute.
         }
     };
 
@@ -1376,7 +1352,10 @@ pub async fn run(
         loop {
             let (chan, shift) = buttons.wait_for_any_up().await;
 
-            if glob_fader_moved.get()[chan] || glob_long_press.get()[chan] {
+            let moved = glob_fader_moved.get()[chan];
+            let long = glob_long_press.get()[chan];
+
+            if moved {
                 continue;
             }
 
@@ -1409,8 +1388,34 @@ pub async fn run(
                         glob_muted.get(),
                     );
                 }
-                // Shift stays reserved for the mode swap: a shift-held tap must
-                // never fall through to mute.
+                // Long without Shift → Mode cycle (cancelled if fader moved).
+                1..=3 if !shift && long => {
+                    let i = chan - 1;
+                    let next_mode = params.query(|p| match i {
+                        0 => p.mode_b.next(),
+                        1 => p.mode_c.next(),
+                        _ => p.mode_d.next(),
+                    });
+                    leds.set_mode(
+                        chan,
+                        Led::Button,
+                        LedMode::Flash(next_mode.color(), Some(4)),
+                    );
+                    glob_btn_flash.modify(|f| {
+                        let mut arr = *f;
+                        arr[chan] = BUTTON_FLASH_MS;
+                        arr
+                    });
+                    params
+                        .update(|p| match i {
+                            0 => p.mode_b = p.mode_b.next(),
+                            1 => p.mode_c = p.mode_c.next(),
+                            _ => p.mode_d = p.mode_d.next(),
+                        })
+                        .await;
+                    restart.signal(());
+                }
+                // Short tap → mute. Shift reserved for range swap.
                 1..=3 if !shift => {
                     let i = chan - 1;
                     let muted = storage.modify_and_save(|s| {

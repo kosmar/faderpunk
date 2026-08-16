@@ -10,10 +10,10 @@ use libfp::{
     ext::FromValue,
     latch::LatchLayer,
     utils::{
-        attenuate_bipolar, clickless, division_at, lfo_step, midi_gate, signal_brightness,
-        split_unsigned_value,
+        attenuate_bipolar, attenuverter, clickless, division_at, fold_12bit, lfo_step, midi_gate,
+        rectify_12bit, s_curve_12bit, signal_brightness, slew_lin, split_unsigned_value, SlewState,
     },
-    AppIcon, Brightness, Color, Config, MidiCc, MidiChannel, MidiOut, Param, Range, Value,
+    AppIcon, Brightness, Color, Config, Curve, MidiCc, MidiChannel, MidiOut, Param, Range, Value,
     APP_MAX_PARAMS,
 };
 
@@ -60,23 +60,14 @@ const IN_IDLE_MS: u16 = 1200;
 const BUTTON_FLASH_MS: u16 = 848;
 /// One `LedMode::Flash` cycle ≈ 16 frames at 60 Hz.
 const RANGE_FLASH_CYCLE_MS: u16 = 270;
-/// Shape defaults for the axes that are not exposed per stage.
+/// Warp default for the root morph axis (Third on Ch0 is skew).
 const LFO_WARP: u16 = 0;
-const STAGE_SKEW: u16 = 2048;
+/// Fixed symmetry for the idle root LFO.
+const LFO_SYMMETRY: u16 = 2048;
 /// Clock divisions the root speed fader spans.
 const LFO_DIVISIONS: usize = 9;
-/// Half-span of the exponential rate modulation, in octaves.
-const RATE_MOD_OCTAVES: f32 = 3.0;
-/// Ceiling for the per-iteration phase advance, in 1/4096 of a cycle.
-///
-/// The loop samples at 1000/AUDIO_MS Hz, so a step of 2048 sits exactly on
-/// Nyquist and anything beyond it folds back as noise. Rate modulation can push
-/// three octaves above a base rate that already reaches ~15 Hz, so it has to be
-/// caught here. The limit is 1024 rather than 2048: four samples per cycle
-/// still traces a recognisable wave, two draw a square no matter the morph.
-const MAX_PHASE_STEP: f32 = 1024.0;
 /// Five mode hues, same ~37.5 deg raster as Manifold: CV-in, LFO-in, then
-/// mod destinations Rate / Depth / Shape. Started at 221-19 so matching mode
+/// waveshapers Fold / Soft / Rect. Started at 221-19 so matching mode
 /// buttons (not channels) read apart from Manifold.
 const RIPPPPLE_HUES: [u16; 5] = [202, 240, 277, 315, 352];
 
@@ -93,45 +84,63 @@ fn ch0_color(lfo_active: bool) -> Color {
     }
 }
 
-/// What the incoming stage signal modulates on this stage.
+/// Waveshaper applied at each stage of the signal chain.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Dest {
-    Rate,
-    Depth,
-    Shape,
+enum Process {
+    Fold,
+    Soft,
+    Rect,
 }
 
-impl Dest {
+impl Process {
     fn from_u8(v: u8) -> Self {
         match v {
-            1 => Dest::Depth,
-            2 => Dest::Shape,
-            _ => Dest::Rate,
+            1 => Process::Soft,
+            2 => Process::Rect,
+            _ => Process::Fold,
         }
     }
 
     fn as_u8(self) -> u8 {
         match self {
-            Dest::Rate => 0,
-            Dest::Depth => 1,
-            Dest::Shape => 2,
+            Process::Fold => 0,
+            Process::Soft => 1,
+            Process::Rect => 2,
         }
     }
 
     fn next(self) -> Self {
         match self {
-            Dest::Rate => Dest::Depth,
-            Dest::Depth => Dest::Shape,
-            Dest::Shape => Dest::Rate,
+            Process::Fold => Process::Soft,
+            Process::Soft => Process::Rect,
+            Process::Rect => Process::Fold,
         }
     }
 
     fn color(self) -> Color {
         match self {
-            Dest::Rate => ripppple_color(2),
-            Dest::Depth => ripppple_color(3),
-            Dest::Shape => ripppple_color(4),
+            Process::Fold => ripppple_color(2),
+            Process::Soft => ripppple_color(3),
+            Process::Rect => ripppple_color(4),
         }
+    }
+}
+
+fn lerp_12bit(a: u16, b: u16, amount: u16) -> u16 {
+    let t = amount as i32;
+    ((a as i32 * (4095 - t) + b as i32 * t) / 4095) as u16
+}
+
+fn stage_shaped(input: u16, process: Process, amount: u16) -> u16 {
+    match process {
+        Process::Fold => {
+            let mid = 2047;
+            let x = input as i32 - mid;
+            let gain = 1.0 + (amount as f32 / 4095.0) * 7.0;
+            fold_12bit(mid + (x as f32 * gain) as i32)
+        }
+        Process::Soft => lerp_12bit(input, s_curve_12bit(input), amount),
+        Process::Rect => lerp_12bit(input, rectify_12bit(input), amount),
     }
 }
 
@@ -166,7 +175,7 @@ fn paint_bipolar_level(leds: &Leds<CHANNELS>, chan: usize, color: Color, level: 
 fn paint_buttons(
     leds: &Leds<CHANNELS>,
     in_color: Color,
-    dest: [u8; 3],
+    process: [u8; 3],
     frozen: bool,
     muted: [bool; 3],
 ) {
@@ -187,7 +196,7 @@ fn paint_buttons(
             leds.set(
                 i + 1,
                 Led::Button,
-                Dest::from_u8(dest[i]).color(),
+                Process::from_u8(process[i]).color(),
                 BUTTON_BRIGHTNESS,
             );
         }
@@ -196,7 +205,7 @@ fn paint_buttons(
 
 pub static CONFIG: Config<PARAMS> = Config::new(
     "Ripppple",
-    "One root LFO cascading through three modulated LFOs",
+    "Root CV or LFO through three cumulative waveshapers",
     Color::Cyan,
     AppIcon::Sine,
 )
@@ -230,16 +239,16 @@ pub static CONFIG: Config<PARAMS> = Config::new(
     variants: &[Range::_0_10V, Range::_Neg5_5V],
 })
 .add_param(Param::Enum {
-    name: "Target B",
-    variants: &["Rate", "Depth", "Shape"],
+    name: "Process B",
+    variants: &["Fold", "Soft", "Rect"],
 })
 .add_param(Param::Enum {
-    name: "Target C",
-    variants: &["Rate", "Depth", "Shape"],
+    name: "Process C",
+    variants: &["Fold", "Soft", "Rect"],
 })
 .add_param(Param::Enum {
-    name: "Target D",
-    variants: &["Rate", "Depth", "Shape"],
+    name: "Process D",
+    variants: &["Fold", "Soft", "Rect"],
 })
 .add_param(Param::Enum {
     name: "LFO Speed",
@@ -270,9 +279,9 @@ pub struct Params {
     range_b: Range,
     range_c: Range,
     range_d: Range,
-    /// Start value of the per-stage modulation target (Ch1..Ch3); runtime state
-    /// lives in `Storage::dest`.
-    target: [usize; 3],
+    /// Start value of the per-stage waveshaper (Ch1..Ch3); runtime state
+    /// lives in `Storage::process`.
+    process: [usize; 3],
     lfo_speed_mult: usize,
     midi_out: MidiOut,
     midi_channel: MidiChannel,
@@ -293,7 +302,7 @@ impl Default for Params {
             range_b: Range::_Neg5_5V,
             range_c: Range::_Neg5_5V,
             range_d: Range::_Neg5_5V,
-            target: [0; 3],
+            process: [0; 3],
             lfo_speed_mult: 0,
             midi_out: MidiOut([false; 3]),
             midi_channel: MidiChannel::default(),
@@ -363,7 +372,7 @@ impl AppParams for Params {
             range_b: at(2).map(Range::from_value).unwrap_or(Range::_Neg5_5V),
             range_c: at(3).map(Range::from_value).unwrap_or(Range::_Neg5_5V),
             range_d: at(4).map(Range::from_value).unwrap_or(Range::_Neg5_5V),
-            target: [
+            process: [
                 at(5).map(usize::from_value).unwrap_or(0).min(2),
                 at(6).map(usize::from_value).unwrap_or(0).min(2),
                 at(7).map(usize::from_value).unwrap_or(0).min(2),
@@ -397,8 +406,8 @@ impl AppParams for Params {
         vec.push(self.range_b.into()).unwrap();
         vec.push(self.range_c.into()).unwrap();
         vec.push(self.range_d.into()).unwrap();
-        for t in self.target {
-            vec.push(Value::Enum(t)).unwrap();
+        for p in self.process {
+            vec.push(Value::Enum(p)).unwrap();
         }
         vec.push(Value::Enum(self.lfo_speed_mult)).unwrap();
         vec.push(self.midi_out.into()).unwrap();
@@ -413,35 +422,38 @@ impl AppParams for Params {
 
 #[derive(Serialize, Deserialize)]
 pub struct Storage {
-    /// Per stage: modulation depth, base rate, own morph, modulation target.
-    depth: [u16; 3],
-    rate: [u16; 3],
-    shape: [u16; 3],
-    dest: [u8; 3],
+    /// Per stage: waveshape amount, DC bias, output slew, and process mode.
+    amount: [u16; 3],
+    offset: [u16; 3],
+    slew: [u16; 3],
+    process: [u8; 3],
     muted: [bool; 3],
     /// Root LFO layers (Main / Alt / Third) plus its clock sync.
     lfo_speed: u16,
     morph: u16,
     skew: u16,
     lfo_clocked: bool,
-    /// Shared across all three stages (Ch3 Third layer).
-    symmetry: u16,
+    /// CV-in conditioning when the jack is live.
+    in_trim: u16,
+    in_offset: u16,
+    in_slew: u16,
 }
 
 impl Default for Storage {
     fn default() -> Self {
         Self {
-            // Chain starts decoupled: every stage free-runs until depth is up.
-            depth: [0; 3],
-            rate: [2000; 3],
-            shape: [0; 3],
-            dest: [Dest::Rate.as_u8(); 3],
+            amount: [0; 3],
+            offset: [2048; 3],
+            slew: [0; 3],
+            process: [Process::Fold.as_u8(); 3],
             muted: [false; 3],
             lfo_speed: 2000,
             morph: 0,
             skew: 2048,
             lfo_clocked: false,
-            symmetry: 2048,
+            in_trim: 4095,
+            in_offset: 2048,
+            in_slew: 0,
         }
     }
 }
@@ -459,7 +471,7 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
             range_b: Range::_Neg5_5V,
             range_c: Range::_Neg5_5V,
             range_d: Range::_Neg5_5V,
-            target: [0; 3],
+            process: [0; 3],
             lfo_speed_mult: 0,
             midi_out: MidiOut([false; 3]),
             midi_channel: MidiChannel::default(),
@@ -499,12 +511,12 @@ pub async fn run(
         params.query(|p| core::array::from_fn::<_, CHANNELS, _>(|w| p.cc_for(w, p.nrpn)));
     let lfo_speed_mult = 2u32.pow(params.query(|p| p.lfo_speed_mult).min(31) as u32);
 
-    // Configurator "Target B/C/D" are start values; applied once per run() (a
+    // Configurator "Process B/C/D" are start values; applied once per run() (a
     // host param edit restarts run). A scene load overrides storage later.
-    let p_target = params.query(|p| p.target);
+    let p_process = params.query(|p| p.process);
     storage.modify_and_save(|s| {
-        for (slot, t) in s.dest.iter_mut().zip(p_target.iter()) {
-            *slot = (*t).min(2) as u8;
+        for (slot, p) in s.process.iter_mut().zip(p_process.iter()) {
+            *slot = (*p).min(2) as u8;
         }
     });
 
@@ -523,12 +535,14 @@ pub async fn run(
     let faders = app.use_faders();
     let leds = app.use_leds();
 
-    let glob_depth = app.make_global([0u16; 3]);
-    let glob_rate = app.make_global([2000u16; 3]);
-    let glob_shape = app.make_global([0u16; 3]);
-    let glob_dest = app.make_global([0u8; 3]);
+    let glob_amount = app.make_global([0u16; 3]);
+    let glob_offset = app.make_global([2048u16; 3]);
+    let glob_slew = app.make_global([0u16; 3]);
+    let glob_process = app.make_global([0u8; 3]);
     let glob_muted = app.make_global([false; 3]);
-    let glob_symmetry = app.make_global(2048u16);
+    let glob_in_trim = app.make_global(4095u16);
+    let glob_in_offset = app.make_global(2048u16);
+    let glob_in_slew = app.make_global(0u16);
     let glob_frozen = app.make_global(false);
 
     let glob_fader_at_down = app.make_global([0u16; 4]);
@@ -555,15 +569,27 @@ pub async fn run(
     };
     time_calc();
 
-    let (depth, rate, shape, dest, muted, symmetry) =
-        storage.query(|s| (s.depth, s.rate, s.shape, s.dest, s.muted, s.symmetry));
+    let (amount, offset, slew, process, muted, in_trim, in_offset, in_slew) = storage.query(|s| {
+        (
+            s.amount,
+            s.offset,
+            s.slew,
+            s.process,
+            s.muted,
+            s.in_trim,
+            s.in_offset,
+            s.in_slew,
+        )
+    });
 
-    glob_depth.set(depth);
-    glob_rate.set(rate);
-    glob_shape.set(shape);
-    glob_dest.set(dest);
+    glob_amount.set(amount);
+    glob_offset.set(offset);
+    glob_slew.set(slew);
+    glob_process.set(process);
     glob_muted.set(muted);
-    glob_symmetry.set(symmetry);
+    glob_in_trim.set(in_trim);
+    glob_in_offset.set(in_offset);
+    glob_in_slew.set(in_slew);
 
     let in_jack = app.make_in_jack(0, in_range).await;
     let out_jacks = [
@@ -572,13 +598,11 @@ pub async fn run(
         app.make_out_jack(3, ranges[2]).await,
     ];
 
-    paint_buttons(&leds, ch0_color(initial_lfo_active), dest, false, muted);
+    paint_buttons(&leds, ch0_color(initial_lfo_active), process, false, muted);
 
     let fut1 = async {
         let mut root_pos = 0.0f32;
-        let mut stage_pos = [0.0f32; 3];
         let mut root_chaos = MorphChaos::new();
-        let mut stage_chaos = [MorphChaos::new(); 3];
         let mut mute_gain = [4095u16; 3];
         let mut out_levels = [0u16; 3];
         let mut frozen = false;
@@ -596,6 +620,11 @@ pub async fn run(
         let mut last_tick = ticker();
         let mut ms_since_tick = 0u16;
         let mut tick_period_ms = 21u16;
+
+        let mut in_slew_state = SlewState::new();
+        let mut stage_slew_states = [SlewState::new(); 3];
+        let mut prev_in_trim = in_trim;
+        let mut prev_in_offset = in_offset;
 
         loop {
             app.delay_millis(AUDIO_MS as u64).await;
@@ -623,7 +652,6 @@ pub async fn run(
             });
 
             let (morph, skew, lfo_clocked) = storage.query(|s| (s.morph, s.skew, s.lfo_clocked));
-            let symmetry = glob_symmetry.get();
 
             let tick = ticker();
             if tick != last_tick {
@@ -642,9 +670,6 @@ pub async fn run(
             // loop only runs every AUDIO_MS.
             for _ in 0..AUDIO_MS {
                 root_chaos.tick_walks(&die);
-                for c in stage_chaos.iter_mut() {
-                    c.tick_walks(&die);
-                }
             }
 
             let held = glob_frozen.get();
@@ -677,7 +702,7 @@ pub async fn run(
                 let sample = morph_sample(
                     next_pos as usize,
                     morph,
-                    (skew, LFO_WARP, symmetry),
+                    (skew, LFO_WARP, LFO_SYMMETRY),
                     0,
                     &mut root_chaos,
                     &die,
@@ -688,7 +713,23 @@ pub async fn run(
                 }
                 sample
             } else {
-                raw_input
+                prev_in_trim = clickless(prev_in_trim, glob_in_trim.get());
+                let trimmed = attenuverter(raw_input, Curve::Deadzone.at(prev_in_trim));
+
+                prev_in_offset = clickless(prev_in_offset, glob_in_offset.get());
+                let offset_signed = Curve::Deadzone.at(prev_in_offset) as i32 - 2047;
+
+                let conditioned_raw =
+                    (trimmed as i32 + offset_signed).clamp(0, 4095) as u16;
+
+                let in_slew_rate = glob_in_slew.get();
+                in_slew_state = slew_lin(
+                    in_slew_state,
+                    conditioned_raw,
+                    in_slew_rate,
+                    in_slew_rate,
+                );
+                in_slew_state.value()
             };
 
             // Freeze snapshots the value so stepped morph nodes hold too, not
@@ -717,63 +758,35 @@ pub async fn run(
             let ch0_led_color = ch0_color(lfo_active);
             paint_bipolar_level(&leds, 0, ch0_led_color, root_val);
 
-            let depth = glob_depth.get();
-            let rate = glob_rate.get();
-            let shape = glob_shape.get();
-            let dest = glob_dest.get();
+            let amount = glob_amount.get();
+            let offset = glob_offset.get();
+            let slew = glob_slew.get();
+            let process = glob_process.get();
             let muted = glob_muted.get();
 
-            // The cascade: every stage sees only its direct predecessor.
+            // Signal chain: each stage shapes its direct predecessor.
             let mut modulator = root_val;
             for i in 0..3 {
-                let m = (modulator as f32 / 2047.5) - 1.0;
-                let d = depth[i] as f32 / 4095.0;
-                let mod_amt = m * d;
-                let target = Dest::from_u8(dest[i]);
-
-                // Rate modulation is exponential: a linear step would make the
-                // top of the range a hair's movement and the bottom inert.
-                let mut step = lfo_step(rate[i]) * AUDIO_MS as f32;
-                if target == Dest::Rate {
-                    step = (step * libm::exp2f(mod_amt * RATE_MOD_OCTAVES)).min(MAX_PHASE_STEP);
-                }
-
-                let effective_morph = if target == Dest::Shape {
-                    (shape[i] as i32 + (mod_amt * 2047.0) as i32).clamp(0, 4095) as u16
-                } else {
-                    shape[i]
-                };
-
-                let mut sample = morph_sample(
-                    stage_pos[i] as usize,
-                    effective_morph,
-                    (STAGE_SKEW, LFO_WARP, symmetry),
-                    i % 2,
-                    &mut stage_chaos[i],
-                    &die,
-                );
-
-                if target == Dest::Depth {
-                    // Classic AM: full amplitude at depth zero, ducking towards
-                    // silence as the predecessor swings negative.
-                    let gain_f = 1.0 - d * (1.0 - (m + 1.0) * 0.5);
-                    let gain = (gain_f.clamp(0.0, 1.0) * 4095.0) as u16;
-                    sample = attenuate_bipolar(sample, gain);
-                }
-
-                stage_pos[i] = (stage_pos[i] + step) % 4096.0;
+                let proc = Process::from_u8(process[i]);
+                let shaped = stage_shaped(modulator, proc, amount[i]);
+                let biased =
+                    (shaped as i32 + (offset[i] as i32 - 2047)).clamp(0, 4095) as u16;
+                stage_slew_states[i] =
+                    slew_lin(stage_slew_states[i], biased, slew[i], slew[i]);
+                let slewed = stage_slew_states[i].value();
 
                 // Ramped rather than switched, so a mute does not click.
+                // Mute only this jack — the chain still feeds the next stage.
                 mute_gain[i] = clickless(mute_gain[i], if muted[i] { 0 } else { 4095 });
                 let level = if bipolar[i] {
-                    attenuate_bipolar(sample, mute_gain[i])
+                    attenuate_bipolar(slewed, mute_gain[i])
                 } else {
-                    ((sample as u32 * mute_gain[i] as u32) / 4095) as u16
+                    ((slewed as u32 * mute_gain[i] as u32) / 4095) as u16
                 };
 
                 out_jacks[i].set_value(level);
                 out_levels[i] = level;
-                modulator = level;
+                modulator = slewed;
 
                 if midi_due && midi_slot == i + 1 {
                     let gate_val = midi_gate(level, nrpn);
@@ -783,7 +796,7 @@ pub async fn run(
                     }
                 }
 
-                let color = target.color();
+                let color = proc.color();
                 if muted[i] {
                     leds.set(i + 1, Led::Top, color, Brightness::Low);
                     leds.set(i + 1, Led::Bottom, color, Brightness::Low);
@@ -807,9 +820,8 @@ pub async fn run(
                 );
             }
 
-            // Keep metering while Shift holds Alt: the pulse rate is what the
-            // Alt-layer rate fader is editing, so freezing the button bright
-            // would hide the feedback.
+            // Keep metering while Shift holds Alt so the stage output (and
+            // Offset edits) stay visible under the Alt latch.
             for i in 0..3 {
                 if muted[i] {
                     leds.unset(i + 1, Led::Button);
@@ -817,7 +829,7 @@ pub async fn run(
                     leds.set(
                         i + 1,
                         Led::Button,
-                        Dest::from_u8(dest[i]).color(),
+                        Process::from_u8(process[i]).color(),
                         signal_brightness(out_levels[i], bipolar[i]),
                     );
                 }
@@ -857,74 +869,81 @@ pub async fn run(
                     LatchLayer::Main
                 };
 
+            // Ch0 layers follow the active source: with no cable the input
+            // trim / offset / slew are meaningless, so the LFO takes them over.
+            let lfo_active = glob_lfo_active.get();
+
             let target_value = if chan == 0 {
-                match latch_active_layer {
-                    LatchLayer::Main => storage.query(|s| s.lfo_speed),
-                    LatchLayer::Alt => storage.query(|s| s.morph),
-                    LatchLayer::Third => storage.query(|s| s.skew),
+                match (lfo_active, latch_active_layer) {
+                    (true, LatchLayer::Main) => storage.query(|s| s.lfo_speed),
+                    (true, LatchLayer::Alt) => storage.query(|s| s.morph),
+                    (true, LatchLayer::Third) => storage.query(|s| s.skew),
+                    (false, LatchLayer::Main) => storage.query(|s| s.in_trim),
+                    (false, LatchLayer::Alt) => storage.query(|s| s.in_offset),
+                    (false, LatchLayer::Third) => storage.query(|s| s.in_slew),
                 }
             } else {
                 let i = chan - 1;
                 match latch_active_layer {
-                    LatchLayer::Main => storage.query(|s| s.depth[i]),
-                    LatchLayer::Alt => storage.query(|s| s.rate[i]),
-                    // Ch3 trades its own shape slot for the shared symmetry.
-                    LatchLayer::Third => {
-                        if i == 2 {
-                            storage.query(|s| s.symmetry)
-                        } else {
-                            storage.query(|s| s.shape[i])
-                        }
-                    }
+                    LatchLayer::Main => storage.query(|s| s.amount[i]),
+                    LatchLayer::Alt => storage.query(|s| s.offset[i]),
+                    LatchLayer::Third => storage.query(|s| s.slew[i]),
                 }
             };
 
             if let Some(new_value) = latch[chan].update(fader_val, latch_active_layer, target_value)
             {
                 if chan == 0 {
-                    match latch_active_layer {
-                        LatchLayer::Main => {
+                    match (lfo_active, latch_active_layer) {
+                        (true, LatchLayer::Main) => {
                             storage.modify_and_save(|s| s.lfo_speed = new_value);
                             time_calc();
                         }
-                        LatchLayer::Alt => {
+                        (true, LatchLayer::Alt) => {
                             storage.modify_and_save(|s| s.morph = new_value);
                         }
-                        LatchLayer::Third => {
+                        (true, LatchLayer::Third) => {
                             storage.modify_and_save(|s| s.skew = new_value);
+                        }
+                        (false, LatchLayer::Main) => {
+                            storage.modify_and_save(|s| s.in_trim = new_value);
+                            glob_in_trim.set(new_value);
+                        }
+                        (false, LatchLayer::Alt) => {
+                            storage.modify_and_save(|s| s.in_offset = new_value);
+                            glob_in_offset.set(new_value);
+                        }
+                        (false, LatchLayer::Third) => {
+                            storage.modify_and_save(|s| s.in_slew = new_value);
+                            glob_in_slew.set(new_value);
                         }
                     }
                 } else {
                     let i = chan - 1;
                     match latch_active_layer {
                         LatchLayer::Main => {
-                            storage.modify_and_save(|s| s.depth[i] = new_value);
-                            glob_depth.modify(|d| {
-                                let mut arr = *d;
+                            storage.modify_and_save(|s| s.amount[i] = new_value);
+                            glob_amount.modify(|a| {
+                                let mut arr = *a;
                                 arr[i] = new_value;
                                 arr
                             });
                         }
                         LatchLayer::Alt => {
-                            storage.modify_and_save(|s| s.rate[i] = new_value);
-                            glob_rate.modify(|r| {
-                                let mut arr = *r;
+                            storage.modify_and_save(|s| s.offset[i] = new_value);
+                            glob_offset.modify(|o| {
+                                let mut arr = *o;
                                 arr[i] = new_value;
                                 arr
                             });
                         }
                         LatchLayer::Third => {
-                            if i == 2 {
-                                storage.modify_and_save(|s| s.symmetry = new_value);
-                                glob_symmetry.set(new_value);
-                            } else {
-                                storage.modify_and_save(|s| s.shape[i] = new_value);
-                                glob_shape.modify(|sh| {
-                                    let mut arr = *sh;
-                                    arr[i] = new_value;
-                                    arr
-                                });
-                            }
+                            storage.modify_and_save(|s| s.slew[i] = new_value);
+                            glob_slew.modify(|sl| {
+                                let mut arr = *sl;
+                                arr[i] = new_value;
+                                arr
+                            });
                         }
                     }
                 }
@@ -986,7 +1005,7 @@ pub async fn run(
                 leds.set_mode(
                     chan,
                     Led::Button,
-                    LedMode::Flash(Dest::from_u8(glob_dest.get()[i]).color(), Some(times)),
+                    LedMode::Flash(Process::from_u8(glob_process.get()[i]).color(), Some(times)),
                 );
                 glob_btn_flash.modify(|f| {
                     let mut arr = *f;
@@ -1006,32 +1025,9 @@ pub async fn run(
                     })
                     .await;
                 restart.signal(());
-            } else {
-                let next = storage.modify_and_save(|s| {
-                    s.dest[i] = Dest::from_u8(s.dest[i]).next().as_u8();
-                    s.dest[i]
-                });
-                glob_dest.modify(|d| {
-                    let mut arr = *d;
-                    arr[i] = next;
-                    arr
-                });
-                leds.set_mode(
-                    chan,
-                    Led::Button,
-                    LedMode::Flash(Dest::from_u8(next).color(), Some(4)),
-                );
-                glob_btn_flash.modify(|f| {
-                    let mut arr = *f;
-                    arr[chan] = BUTTON_FLASH_MS;
-                    arr
-                });
-                // Mirror into the param so configurator / Presetpunk follow the
-                // device. `ParamStore::update` only saves and pushes; it does not
-                // restart run(), so the LFO phases keep running through a target
-                // change.
-                params.update(|p| p.target[i] = next as usize).await;
             }
+            // Process cycle is deferred to button_up so a Third-layer fader
+            // scrub (btn hold + move) can cancel it — same cancel as mute.
         }
     };
 
@@ -1039,7 +1035,11 @@ pub async fn run(
         loop {
             let (chan, shift) = buttons.wait_for_any_up().await;
 
-            if glob_fader_moved.get()[chan] || glob_long_press.get()[chan] {
+            let moved = glob_fader_moved.get()[chan];
+            let long = glob_long_press.get()[chan];
+
+            // Third-layer scrub: ignore short mute and deferred Process cycle.
+            if moved {
                 continue;
             }
 
@@ -1067,13 +1067,36 @@ pub async fn run(
                     paint_buttons(
                         &leds,
                         ch0_color(glob_lfo_active.get()),
-                        glob_dest.get(),
+                        glob_process.get(),
                         frozen,
                         glob_muted.get(),
                     );
                 }
-                // Shift stays reserved for the range swap: a shift-held tap must
-                // never fall through to mute.
+                // Long without Shift → Process cycle (cancelled if fader moved).
+                1..=3 if !shift && long => {
+                    let i = chan - 1;
+                    let next = storage.modify_and_save(|s| {
+                        s.process[i] = Process::from_u8(s.process[i]).next().as_u8();
+                        s.process[i]
+                    });
+                    glob_process.modify(|p| {
+                        let mut arr = *p;
+                        arr[i] = next;
+                        arr
+                    });
+                    leds.set_mode(
+                        chan,
+                        Led::Button,
+                        LedMode::Flash(Process::from_u8(next).color(), Some(4)),
+                    );
+                    glob_btn_flash.modify(|f| {
+                        let mut arr = *f;
+                        arr[chan] = BUTTON_FLASH_MS;
+                        arr
+                    });
+                    params.update(|p| p.process[i] = next as usize).await;
+                }
+                // Short tap → mute. Shift reserved for range swap.
                 1..=3 if !shift => {
                     let i = chan - 1;
                     let muted = storage.modify_and_save(|s| {
@@ -1088,7 +1111,7 @@ pub async fn run(
                     paint_buttons(
                         &leds,
                         ch0_color(glob_lfo_active.get()),
-                        glob_dest.get(),
+                        glob_process.get(),
                         glob_frozen.get(),
                         muted_all,
                     );
@@ -1106,22 +1129,35 @@ pub async fn run(
                 SceneEvent::LoadScene(scene) => {
                     storage.load_from_scene(scene).await;
 
-                    let (depth, rate, shape, dest, muted, symmetry) = storage
-                        .query(|s| (s.depth, s.rate, s.shape, s.dest, s.muted, s.symmetry));
+                    let (amount, offset, slew, process, muted, in_trim, in_offset, in_slew) =
+                        storage.query(|s| {
+                            (
+                                s.amount,
+                                s.offset,
+                                s.slew,
+                                s.process,
+                                s.muted,
+                                s.in_trim,
+                                s.in_offset,
+                                s.in_slew,
+                            )
+                        });
 
-                    glob_depth.set(depth);
-                    glob_rate.set(rate);
-                    glob_shape.set(shape);
-                    glob_dest.set(dest);
+                    glob_amount.set(amount);
+                    glob_offset.set(offset);
+                    glob_slew.set(slew);
+                    glob_process.set(process);
                     glob_muted.set(muted);
-                    glob_symmetry.set(symmetry);
+                    glob_in_trim.set(in_trim);
+                    glob_in_offset.set(in_offset);
+                    glob_in_slew.set(in_slew);
 
                     time_calc();
 
                     paint_buttons(
                         &leds,
                         ch0_color(glob_lfo_active.get()),
-                        dest,
+                        process,
                         glob_frozen.get(),
                         muted,
                     );
