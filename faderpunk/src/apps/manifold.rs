@@ -74,10 +74,10 @@ const LFO_SYMMETRY: u16 = 2048;
 const LFO_WARP: u16 = 0;
 /// Clock divisions the speed fader spans (slowest 384 ticks … 6 = quarter note).
 const LFO_DIVISIONS: usize = 9;
-/// Five mode hues, 15 deg steps upward from 200: CV-in, LFO-in, then out modes
-/// CV / Gate / Trigger. Ripppple walks the same start downward so the two apps
-/// share Ch0 cyan and fan apart on the mode buttons.
-const MANIFOLD_HUES: [u16; 5] = [200, 215, 230, 245, 260];
+/// Five mode hues, 30 deg steps upward from 200: Ch0 CV-in, Ch0 LFO, then out
+/// modes CV / Gate / Trigger. Ripppple fans downward from the same Ch0 start.
+/// Steady LEDs follow the active mode (via glob_modes), not the channel index.
+const MANIFOLD_HUES: [u16; 5] = [200, 230, 260, 290, 320];
 
 fn manifold_color(step: usize) -> Color {
     let (r, g, b) = hsv_to_rgb(MANIFOLD_HUES[step.min(4)] % 360);
@@ -131,7 +131,7 @@ impl Mode {
         }
     }
 
-    /// Button / meter hue for this out type, so a mode swap reads instantly.
+    /// Button / meter hue for this out mode — persistent, not channel-based.
     fn color(self) -> Color {
         match self {
             Mode::Cv => manifold_color(2),
@@ -177,7 +177,7 @@ fn paint_bipolar_level(leds: &Leds<CHANNELS>, chan: usize, color: Color, level: 
 fn paint_buttons(
     leds: &Leds<CHANNELS>,
     in_color: Color,
-    out_colors: [Color; 3],
+    modes: [Mode; 3],
     frozen: bool,
     muted: [bool; 3],
 ) {
@@ -195,7 +195,7 @@ fn paint_buttons(
         if muted_i {
             leds.unset(i + 1, Led::Button);
         } else {
-            leds.set(i + 1, Led::Button, out_colors[i], BUTTON_BRIGHTNESS);
+            leds.set(i + 1, Led::Button, modes[i].color(), BUTTON_BRIGHTNESS);
         }
     }
 }
@@ -598,7 +598,6 @@ pub async fn run(
     let nrpn = params.query(|p| p.nrpn);
     let modes = [mode_b, mode_c, mode_d];
     let ranges = [range_b, range_c, range_d];
-    let out_colors = [modes[0].color(), modes[1].color(), modes[2].color()];
     let (midi_out, midi_chans, midi_ccs, midi_is_note, note_pitches) = params.query(|p| {
         (
             p.midi_out,
@@ -638,6 +637,7 @@ pub async fn run(
     let glob_hysteresis = app.make_global([100u16; 3]);
     let glob_pulse = app.make_global([pulse_ms_to_fader(10); 3]);
     let glob_muted = app.make_global([false; 3]);
+    let glob_modes = app.make_global(modes);
     let glob_frozen = app.make_global(false);
 
     let glob_fader_at_down = app.make_global([0u16; 4]);
@@ -710,7 +710,7 @@ pub async fn run(
     paint_buttons(
         &leds,
         ch0_color(initial_lfo_active),
-        out_colors,
+        glob_modes.get(),
         false,
         muted,
     );
@@ -894,7 +894,7 @@ pub async fn run(
 
             let muted = glob_muted.get();
             for i in 0..3 {
-                let out_color = out_colors[i];
+                let out_color = glob_modes.get()[i].color();
                 let out_level = match modes[i] {
                     Mode::Cv => {
                         let att_arr = glob_att.get();
@@ -1093,14 +1093,14 @@ pub async fn run(
                         leds.set(
                             i + 1,
                             Led::Button,
-                            out_colors[i],
+                            glob_modes.get()[i].color(),
                             Brightness::High,
                         );
                     } else {
                         leds.set(
                             i + 1,
                             Led::Button,
-                            out_colors[i],
+                            glob_modes.get()[i].color(),
                             signal_brightness(
                                 out_levels[i],
                                 modes[i] == Mode::Cv && ranges[i].is_bipolar(),
@@ -1321,7 +1321,7 @@ pub async fn run(
                 leds.set_mode(
                     chan,
                     Led::Button,
-                    LedMode::Flash(out_colors[i], Some(times)),
+                    LedMode::Flash(glob_modes.get()[i].color(), Some(times)),
                 );
                 glob_btn_flash.modify(|f| {
                     let mut arr = *f;
@@ -1382,7 +1382,7 @@ pub async fn run(
                     paint_buttons(
                         &leds,
                         ch0_color(glob_lfo_active.get()),
-                        out_colors,
+                        glob_modes.get(),
                         frozen,
                         glob_muted.get(),
                     );
@@ -1394,6 +1394,11 @@ pub async fn run(
                         0 => p.mode_b.next(),
                         1 => p.mode_c.next(),
                         _ => p.mode_d.next(),
+                    });
+                    glob_modes.modify(|m| {
+                        let mut arr = *m;
+                        arr[i] = next_mode;
+                        arr
                     });
                     leds.set_mode(
                         chan,
@@ -1429,7 +1434,7 @@ pub async fn run(
                     paint_buttons(
                         &leds,
                         ch0_color(glob_lfo_active.get()),
-                        out_colors,
+                        glob_modes.get(),
                         glob_frozen.get(),
                         muted_all,
                     );
@@ -1489,7 +1494,7 @@ pub async fn run(
                     paint_buttons(
                         &leds,
                         ch0_color(glob_lfo_active.get()),
-                        out_colors,
+                        glob_modes.get(),
                         glob_frozen.get(),
                         muted,
                     );

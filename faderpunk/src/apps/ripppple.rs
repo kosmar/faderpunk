@@ -66,10 +66,10 @@ const LFO_WARP: u16 = 0;
 const LFO_SYMMETRY: u16 = 2048;
 /// Clock divisions the root speed fader spans.
 const LFO_DIVISIONS: usize = 9;
-/// Five mode hues, 15 deg steps downward from 200: CV-in, LFO-in, then
-/// waveshapers Fold / Soft / Rect. Manifold walks the same start upward so
-/// Ch0 matches and the mode buttons fan the other way.
-const RIPPPPLE_HUES: [u16; 5] = [200, 185, 170, 155, 140];
+/// Five process hues, 30 deg steps downward from 200: Ch0 CV-in, Ch0 LFO, then
+/// Fold / Soft / Rect. Ripppple fans downward from the same Ch0 start as Manifold.
+/// Steady LEDs follow the active process (via glob_process), not the channel index.
+const RIPPPPLE_HUES: [u16; 5] = [200, 170, 140, 110, 80];
 
 fn ripppple_color(step: usize) -> Color {
     let (r, g, b) = hsv_to_rgb(RIPPPPLE_HUES[step.min(4)] % 360);
@@ -117,6 +117,7 @@ impl Process {
         }
     }
 
+    /// Button / meter hue for this process — persistent, not channel-based.
     fn color(self) -> Color {
         match self {
             Process::Fold => ripppple_color(2),
