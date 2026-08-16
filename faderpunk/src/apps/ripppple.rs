@@ -66,10 +66,10 @@ const LFO_WARP: u16 = 0;
 const LFO_SYMMETRY: u16 = 2048;
 /// Clock divisions the root speed fader spans.
 const LFO_DIVISIONS: usize = 9;
-/// Five process hues, 30 deg steps downward from 200: Ch0 CV-in, Ch0 LFO, then
-/// Fold / Soft / Rect. Ripppple fans downward from the same Ch0 start as Manifold.
+/// Five process hues, 38 deg steps downward from 200: Ch0 CV-in, Ch0 LFO, then
+/// Fold / Soft / Rect. Same step as Manifold; shared Ch0 start, opposite fan.
 /// Steady LEDs follow the active process (via glob_process), not the channel index.
-const RIPPPPLE_HUES: [u16; 5] = [200, 170, 140, 110, 80];
+const RIPPPPLE_HUES: [u16; 5] = [200, 162, 124, 86, 48];
 
 fn ripppple_color(step: usize) -> Color {
     let (r, g, b) = hsv_to_rgb(RIPPPPLE_HUES[step.min(4)] % 360);

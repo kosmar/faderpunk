@@ -74,10 +74,10 @@ const LFO_SYMMETRY: u16 = 2048;
 const LFO_WARP: u16 = 0;
 /// Clock divisions the speed fader spans (slowest 384 ticks … 6 = quarter note).
 const LFO_DIVISIONS: usize = 9;
-/// Five mode hues, 30 deg steps upward from 200: Ch0 CV-in, Ch0 LFO, then out
+/// Five mode hues, 38 deg steps upward from 200: Ch0 CV-in, Ch0 LFO, then out
 /// modes CV / Gate / Trigger. Ripppple fans downward from the same Ch0 start.
 /// Steady LEDs follow the active mode (via glob_modes), not the channel index.
-const MANIFOLD_HUES: [u16; 5] = [200, 230, 260, 290, 320];
+const MANIFOLD_HUES: [u16; 5] = [200, 238, 276, 314, 352];
 
 fn manifold_color(step: usize) -> Color {
     let (r, g, b) = hsv_to_rgb(MANIFOLD_HUES[step.min(4)] % 360);
