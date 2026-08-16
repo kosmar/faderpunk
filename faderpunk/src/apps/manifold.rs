@@ -76,7 +76,7 @@ const LFO_WARP: u16 = 0;
 const LFO_DIVISIONS: usize = 9;
 /// Five mode hues (~37.5 deg apart), blue-cyan -> orange the long way: CV-in,
 /// LFO-in, then out modes CV / Gate / Trigger. Shared raster with Ripppple;
-/// this app starts at 221, Ripppple 19 deg cooler — mode buttons stay tellable
+/// this app starts at 221, Ripppple 19 deg warmer — mode buttons stay tellable
 /// apart across the two apps.
 const MANIFOLD_HUES: [u16; 5] = [221, 259, 296, 334, 371];
 
