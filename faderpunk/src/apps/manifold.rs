@@ -74,9 +74,9 @@ const LFO_SYMMETRY: u16 = 2048;
 const LFO_WARP: u16 = 0;
 /// Clock divisions the speed fader spans (slowest 384 ticks … 6 = quarter note).
 const LFO_DIVISIONS: usize = 9;
-/// Five mode hues, 38 deg steps upward from 200: Ch0 CV-in, Ch0 LFO, then out
-/// modes CV / Gate / Trigger. Ripppple fans downward from the same Ch0 start.
-/// Steady LEDs follow the active mode (via glob_modes), not the channel index.
+/// Five mode hues. Ch0 CV (200) and Ch0 LFO (238) are shared with Ripppple;
+/// out modes CV / Gate / Trigger fan +38 deg: 276 / 314 / 352. Steady LEDs
+/// follow the active mode via glob_modes.
 const MANIFOLD_HUES: [u16; 5] = [200, 238, 276, 314, 352];
 
 fn manifold_color(step: usize) -> Color {
