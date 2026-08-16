@@ -66,10 +66,10 @@ const LFO_WARP: u16 = 0;
 const LFO_SYMMETRY: u16 = 2048;
 /// Clock divisions the root speed fader spans.
 const LFO_DIVISIONS: usize = 9;
-/// Five mode hues, same ~37.5 deg raster as Manifold: CV-in, LFO-in, then
-/// waveshapers Fold / Soft / Rect. Manifold starts at 221; Ripppple sits
-/// +19 deg warmer so matching mode buttons read apart (not the cooler side).
-const RIPPPPLE_HUES: [u16; 5] = [240, 278, 315, 353, 390];
+/// Five mode hues, 10 deg steps downward from 200: CV-in, LFO-in, then
+/// waveshapers Fold / Soft / Rect. Manifold walks the same start upward so
+/// Ch0 matches and the mode buttons fan the other way.
+const RIPPPPLE_HUES: [u16; 5] = [200, 190, 180, 170, 160];
 
 fn ripppple_color(step: usize) -> Color {
     let (r, g, b) = hsv_to_rgb(RIPPPPLE_HUES[step.min(4)] % 360);
