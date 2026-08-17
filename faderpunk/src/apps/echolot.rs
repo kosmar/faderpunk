@@ -628,6 +628,7 @@ pub async fn run(
     let long_press_fired = app.make_global(false);
     let third_layer_used = app.make_global(false);
     let panic_flag = app.make_global(false);
+    let fader_at_down_glob = app.make_global(0u16);
     let glob_latch_layer = app.make_global(LatchLayer::Main);
     let delay_saved_glob = app.make_global(2048u16);
     let feedback_glob = app.make_global(0u16);
@@ -1397,9 +1398,11 @@ pub async fn run(
             if !buttons.is_shift_pressed() {
                 long_press_fired.set(false);
                 third_layer_used.set(false);
+                fader_at_down_glob.set(fader.get_value());
                 buttons.wait_for_up(0).await;
                 if long_press_fired.get() {
-                    // Long-press panic only if this hold wasn't Interval (Button+Fader).
+                    // Panic already fired at the long-press threshold. Re-set
+                    // in case the engine ate the flag before this release.
                     if !third_layer_used.get() {
                         panic_flag.set(true);
                     }
@@ -1420,11 +1423,16 @@ pub async fn run(
     };
 
     let long_press = async {
+        const FADER_MOVE_DEADBAND: u16 = 48;
         loop {
-            // Only marks the gesture; panic runs on release (see button_handler)
-            // so Button+Fader Interval edits never wipe the echo trail mid-hold.
             let _ = buttons.wait_for_any_long_press().await;
             long_press_fired.set(true);
+            // Fire panic at the threshold, not on release — otherwise the
+            // delay queue keeps playing out during the hold.
+            let moved = fader.get_value().abs_diff(fader_at_down_glob.get()) >= FADER_MOVE_DEADBAND;
+            if !moved && !third_layer_used.get() {
+                panic_flag.set(true);
+            }
         }
     };
 
