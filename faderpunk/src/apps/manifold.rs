@@ -643,6 +643,7 @@ pub async fn run(
     let glob_fader_at_down = app.make_global([0u16; 4]);
     let glob_fader_moved = app.make_global([false; 4]);
     let glob_long_press = app.make_global([false; 4]);
+    let glob_mode_preview = app.make_global([None::<Mode>; 3]);
     // Shift is global, so only the channel touched last shows its Alt hint.
     let glob_shift_focus = app.make_global(0usize);
 
@@ -1085,22 +1086,23 @@ pub async fn run(
                     },
                 );
             }
+            let mode_preview = glob_mode_preview.get();
             for i in 0..3 {
                 if muted[i] {
                     leds.unset(i + 1, Led::Button);
                 } else if flash[i + 1] == 0 {
+                    let btn_color = mode_preview[i]
+                        .map(|m| m.color())
+                        .unwrap_or_else(|| glob_modes.get()[i].color());
                     if buttons.is_shift_pressed() && glob_shift_focus.get() == i + 1 {
-                        leds.set(
-                            i + 1,
-                            Led::Button,
-                            glob_modes.get()[i].color(),
-                            Brightness::High,
-                        );
+                        leds.set(i + 1, Led::Button, btn_color, Brightness::High);
+                    } else if mode_preview[i].is_some() {
+                        leds.set(i + 1, Led::Button, btn_color, BUTTON_BRIGHTNESS);
                     } else {
                         leds.set(
                             i + 1,
                             Led::Button,
-                            glob_modes.get()[i].color(),
+                            btn_color,
                             signal_brightness(
                                 out_levels[i],
                                 modes[i] == Mode::Cv && ranges[i].is_bipolar(),
@@ -1134,6 +1136,13 @@ pub async fn run(
                         arr[chan] = true;
                         arr
                     });
+                    if (1..=3).contains(&chan) {
+                        glob_mode_preview.modify(|p| {
+                            let mut arr = *p;
+                            arr[chan - 1] = None;
+                            arr
+                        });
+                    }
                 }
             }
 
@@ -1286,6 +1295,13 @@ pub async fn run(
                 arr[chan] = false;
                 arr
             });
+            if (1..=3).contains(&chan) {
+                glob_mode_preview.modify(|p| {
+                    let mut arr = *p;
+                    arr[chan - 1] = None;
+                    arr
+                });
+            }
         }
     };
 
@@ -1341,6 +1357,18 @@ pub async fn run(
                     })
                     .await;
                 restart.signal(());
+            } else {
+                let next_mode = params.query(|p| match i {
+                    0 => p.mode_b.next(),
+                    1 => p.mode_c.next(),
+                    _ => p.mode_d.next(),
+                });
+                glob_mode_preview.modify(|p| {
+                    let mut arr = *p;
+                    arr[i] = Some(next_mode);
+                    arr
+                });
+                leds.set(chan, Led::Button, next_mode.color(), BUTTON_BRIGHTNESS);
             }
             // Mode cycle is deferred to button_up so a Third-layer fader scrub
             // (btn hold + move) can cancel it — same cancel as mute.
@@ -1355,6 +1383,13 @@ pub async fn run(
             let long = glob_long_press.get()[chan];
 
             if moved {
+                if (1..=3).contains(&chan) {
+                    glob_mode_preview.modify(|p| {
+                        let mut arr = *p;
+                        arr[chan - 1] = None;
+                        arr
+                    });
+                }
                 continue;
             }
 
@@ -1395,19 +1430,14 @@ pub async fn run(
                         1 => p.mode_c.next(),
                         _ => p.mode_d.next(),
                     });
+                    glob_mode_preview.modify(|p| {
+                        let mut arr = *p;
+                        arr[i] = None;
+                        arr
+                    });
                     glob_modes.modify(|m| {
                         let mut arr = *m;
                         arr[i] = next_mode;
-                        arr
-                    });
-                    leds.set_mode(
-                        chan,
-                        Led::Button,
-                        LedMode::Flash(next_mode.color(), Some(4)),
-                    );
-                    glob_btn_flash.modify(|f| {
-                        let mut arr = *f;
-                        arr[chan] = BUTTON_FLASH_MS;
                         arr
                     });
                     params

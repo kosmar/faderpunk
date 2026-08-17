@@ -548,6 +548,7 @@ pub async fn run(
     let glob_fader_at_down = app.make_global([0u16; 4]);
     let glob_fader_moved = app.make_global([false; 4]);
     let glob_long_press = app.make_global([false; 4]);
+    let glob_process_preview = app.make_global([None::<u8>; 3]);
 
     // Signalled when an out range changes: run() has to return so the jack is
     // reconfigured.
@@ -822,16 +823,25 @@ pub async fn run(
 
             // Keep metering while Shift holds Alt so the stage output (and
             // Offset edits) stay visible under the Alt latch.
+            let process_preview = glob_process_preview.get();
             for i in 0..3 {
                 if muted[i] {
                     leds.unset(i + 1, Led::Button);
                 } else if flash[i + 1] == 0 {
-                    leds.set(
-                        i + 1,
-                        Led::Button,
-                        Process::from_u8(process[i]).color(),
-                        signal_brightness(out_levels[i], bipolar[i]),
-                    );
+                    let proc = process_preview[i]
+                        .map(Process::from_u8)
+                        .unwrap_or_else(|| Process::from_u8(process[i]));
+                    let btn_color = proc.color();
+                    if process_preview[i].is_some() {
+                        leds.set(i + 1, Led::Button, btn_color, BUTTON_BRIGHTNESS);
+                    } else {
+                        leds.set(
+                            i + 1,
+                            Led::Button,
+                            btn_color,
+                            signal_brightness(out_levels[i], bipolar[i]),
+                        );
+                    }
                 }
             }
         }
@@ -857,6 +867,13 @@ pub async fn run(
                         arr[chan] = true;
                         arr
                     });
+                    if (1..=3).contains(&chan) {
+                        glob_process_preview.modify(|p| {
+                            let mut arr = *p;
+                            arr[chan - 1] = None;
+                            arr
+                        });
+                    }
                 }
             }
 
@@ -973,6 +990,13 @@ pub async fn run(
                 arr[chan] = false;
                 arr
             });
+            if (1..=3).contains(&chan) {
+                glob_process_preview.modify(|p| {
+                    let mut arr = *p;
+                    arr[chan - 1] = None;
+                    arr
+                });
+            }
         }
     };
 
@@ -1025,6 +1049,19 @@ pub async fn run(
                     })
                     .await;
                 restart.signal(());
+            } else {
+                let next = Process::from_u8(glob_process.get()[i]).next().as_u8();
+                glob_process_preview.modify(|p| {
+                    let mut arr = *p;
+                    arr[i] = Some(next);
+                    arr
+                });
+                leds.set(
+                    chan,
+                    Led::Button,
+                    Process::from_u8(next).color(),
+                    BUTTON_BRIGHTNESS,
+                );
             }
             // Process cycle is deferred to button_up so a Third-layer fader
             // scrub (btn hold + move) can cancel it — same cancel as mute.
@@ -1040,6 +1077,13 @@ pub async fn run(
 
             // Third-layer scrub: ignore short mute and deferred Process cycle.
             if moved {
+                if (1..=3).contains(&chan) {
+                    glob_process_preview.modify(|p| {
+                        let mut arr = *p;
+                        arr[chan - 1] = None;
+                        arr
+                    });
+                }
                 continue;
             }
 
@@ -1079,19 +1123,14 @@ pub async fn run(
                         s.process[i] = Process::from_u8(s.process[i]).next().as_u8();
                         s.process[i]
                     });
+                    glob_process_preview.modify(|p| {
+                        let mut arr = *p;
+                        arr[i] = None;
+                        arr
+                    });
                     glob_process.modify(|p| {
                         let mut arr = *p;
                         arr[i] = next;
-                        arr
-                    });
-                    leds.set_mode(
-                        chan,
-                        Led::Button,
-                        LedMode::Flash(Process::from_u8(next).color(), Some(4)),
-                    );
-                    glob_btn_flash.modify(|f| {
-                        let mut arr = *f;
-                        arr[chan] = BUTTON_FLASH_MS;
                         arr
                     });
                     params.update(|p| p.process[i] = next as usize).await;
