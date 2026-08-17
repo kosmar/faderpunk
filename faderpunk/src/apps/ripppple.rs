@@ -76,14 +76,6 @@ fn hue_at(base: u16, step: usize) -> Color {
     Color::Custom(r, g, b)
 }
 
-fn ch0_color(base: u16, lfo_active: bool) -> Color {
-    if lfo_active {
-        hue_at(base, 1)
-    } else {
-        hue_at(base, 0)
-    }
-}
-
 /// Waveshaper applied at each stage of the signal chain.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Process {
@@ -175,8 +167,8 @@ fn paint_bipolar_level(leds: &Leds<CHANNELS>, chan: usize, color: Color, level: 
 
 fn paint_buttons(
     leds: &Leds<CHANNELS>,
+    app_color: Color,
     base: u16,
-    lfo_active: bool,
     process: [u8; 3],
     frozen: bool,
     muted: [bool; 3],
@@ -184,7 +176,7 @@ fn paint_buttons(
     leds.set(
         0,
         Led::Button,
-        ch0_color(base, lfo_active),
+        app_color,
         if frozen {
             BUTTON_BRIGHTNESS
         } else {
@@ -528,7 +520,6 @@ pub async fn run(
         range_c.is_bipolar(),
         range_d.is_bipolar(),
     ];
-    let initial_lfo_active = true;
 
     let midi: [MidiOutput; CHANNELS] =
         core::array::from_fn(|w| app.use_midi_output(midi_out, midi_chans[w], nrpn));
@@ -565,6 +556,7 @@ pub async fn run(
     let glob_div = app.make_global(24u32);
     let glob_btn_flash = app.make_global([0u16; 4]);
     let glob_base_hue = app.make_global(color_hue(params.query(|p| p.color)));
+    let glob_app_color = app.make_global(params.query(|p| p.color));
 
     let time_calc = || {
         let speed = storage.query(|s| s.lfo_speed);
@@ -604,8 +596,8 @@ pub async fn run(
 
     paint_buttons(
         &leds,
+        glob_app_color.get(),
         glob_base_hue.get(),
-        initial_lfo_active,
         process,
         false,
         muted,
@@ -641,6 +633,7 @@ pub async fn run(
             app.delay_millis(AUDIO_MS as u64).await;
 
             glob_base_hue.set(color_hue(params.query(|p| p.color)));
+            glob_app_color.set(params.query(|p| p.color));
             let base = glob_base_hue.get();
 
             let raw_input = in_jack.get_value();
@@ -769,7 +762,7 @@ pub async fn run(
                 }
             }
 
-            let ch0_led_color = ch0_color(base, lfo_active);
+            let ch0_led_color = glob_app_color.get();
             paint_bipolar_level(&leds, 0, ch0_led_color, root_val);
 
             let amount = glob_amount.get();
@@ -1113,10 +1106,7 @@ pub async fn run(
                         leds.set_mode(
                             0,
                             Led::Button,
-                            LedMode::Flash(
-                                ch0_color(glob_base_hue.get(), glob_lfo_active.get()),
-                                Some(4),
-                            ),
+                            LedMode::Flash(glob_app_color.get(), Some(4)),
                         );
                         glob_btn_flash.modify(|f| {
                             let mut arr = *f;
@@ -1129,8 +1119,8 @@ pub async fn run(
                     let frozen = glob_frozen.toggle();
                     paint_buttons(
                         &leds,
+                        glob_app_color.get(),
                         glob_base_hue.get(),
-                        glob_lfo_active.get(),
                         glob_process.get(),
                         frozen,
                         glob_muted.get(),
@@ -1169,8 +1159,8 @@ pub async fn run(
                     });
                     paint_buttons(
                         &leds,
+                        glob_app_color.get(),
                         glob_base_hue.get(),
-                        glob_lfo_active.get(),
                         glob_process.get(),
                         glob_frozen.get(),
                         muted_all,
@@ -1216,8 +1206,8 @@ pub async fn run(
 
                     paint_buttons(
                         &leds,
+                        glob_app_color.get(),
                         glob_base_hue.get(),
-                        glob_lfo_active.get(),
                         process,
                         glob_frozen.get(),
                         muted,

@@ -84,14 +84,6 @@ fn hue_at(base: u16, step: usize) -> Color {
     Color::Custom(r, g, b)
 }
 
-fn ch0_color(base: u16, lfo_active: bool) -> Color {
-    if lfo_active {
-        hue_at(base, 1)
-    } else {
-        hue_at(base, 0)
-    }
-}
-
 const fn pulse_ms_to_fader(ms: u16) -> u16 {
     let ms = if ms < 1 {
         1
@@ -176,8 +168,8 @@ fn paint_bipolar_level(leds: &Leds<CHANNELS>, chan: usize, color: Color, level: 
 
 fn paint_buttons(
     leds: &Leds<CHANNELS>,
+    app_color: Color,
     base: u16,
-    lfo_active: bool,
     modes: [Mode; 3],
     frozen: bool,
     muted: [bool; 3],
@@ -185,7 +177,7 @@ fn paint_buttons(
     leds.set(
         0,
         Led::Button,
-        ch0_color(base, lfo_active),
+        app_color,
         if frozen {
             BUTTON_BRIGHTNESS
         } else {
@@ -610,9 +602,6 @@ pub async fn run(
     });
     let lfo_speed_mult = 2u32.pow(params.query(|p| p.lfo_speed_mult).min(31) as u32);
 
-    // Starts idle so an unpatched Manifold comes up on the internal LFO.
-    let initial_lfo_active = true;
-
     // Ch0 (conditioned input / internal LFO), then Out B, C, D — one handle per
     // wave so each can sit on its own MIDI channel.
     let midi: [MidiOutput; MIDI_WAVES] =
@@ -667,6 +656,7 @@ pub async fn run(
     let glob_chaos = app.make_global(MorphChaos::new());
     let glob_btn_flash = app.make_global([0u16; 4]);
     let glob_base_hue = app.make_global(color_hue(params.query(|p| p.color)));
+    let glob_app_color = app.make_global(params.query(|p| p.color));
 
     // Free-run step and clock division for the stored speed fader.
     let time_calc = || {
@@ -712,8 +702,8 @@ pub async fn run(
 
     paint_buttons(
         &leds,
+        glob_app_color.get(),
         glob_base_hue.get(),
-        initial_lfo_active,
         glob_modes.get(),
         false,
         muted,
@@ -763,6 +753,7 @@ pub async fn run(
             app.delay_millis(1).await;
 
             glob_base_hue.set(color_hue(params.query(|p| p.color)));
+            glob_app_color.set(params.query(|p| p.color));
             let base = glob_base_hue.get();
 
             let raw_input = in_jack.get_value();
@@ -894,7 +885,7 @@ pub async fn run(
                 }
             }
 
-            let ch0_led_color = ch0_color(base, lfo_active);
+            let ch0_led_color = glob_app_color.get();
 
             // Channel 0: active source amplitude.
             paint_bipolar_level(&leds, 0, ch0_led_color, input_val);
@@ -1414,10 +1405,7 @@ pub async fn run(
                         leds.set_mode(
                             0,
                             Led::Button,
-                            LedMode::Flash(
-                                ch0_color(glob_base_hue.get(), glob_lfo_active.get()),
-                                Some(4),
-                            ),
+                            LedMode::Flash(glob_app_color.get(), Some(4)),
                         );
                         glob_btn_flash.modify(|f| {
                             let mut arr = *f;
@@ -1430,8 +1418,8 @@ pub async fn run(
                     let frozen = glob_frozen.toggle();
                     paint_buttons(
                         &leds,
+                        glob_app_color.get(),
                         glob_base_hue.get(),
-                        glob_lfo_active.get(),
                         glob_modes.get(),
                         frozen,
                         glob_muted.get(),
@@ -1478,8 +1466,8 @@ pub async fn run(
                     });
                     paint_buttons(
                         &leds,
+                        glob_app_color.get(),
                         glob_base_hue.get(),
-                        glob_lfo_active.get(),
                         glob_modes.get(),
                         glob_frozen.get(),
                         muted_all,
@@ -1539,8 +1527,8 @@ pub async fn run(
 
                     paint_buttons(
                         &leds,
+                        glob_app_color.get(),
                         glob_base_hue.get(),
-                        glob_lfo_active.get(),
                         glob_modes.get(),
                         glob_frozen.get(),
                         muted,
