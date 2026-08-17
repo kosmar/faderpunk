@@ -376,6 +376,24 @@ fn midi_note_u8(note: MidiNote) -> u8 {
     u7::from(note).as_int()
 }
 
+/// Ping-Pong + CV→MIDI + Gate→Note: [14]=ping note, [13]=pong note.
+fn ping_pong_note(ping_pong: bool, out_target: u8, midi_note: MidiNote, midi_cc: MidiCc) -> u8 {
+    if ping_pong && out_target == 1 {
+        u7::from(midi_cc).as_int()
+    } else {
+        midi_note_u8(midi_note)
+    }
+}
+
+/// Ping-Pong + CV→MIDI + CV→CC: [13]=ping CC, [14]=pong CC.
+fn ping_pong_cc(ping_pong: bool, out_target: u8, midi_cc: MidiCc, midi_note: MidiNote) -> MidiCc {
+    if ping_pong && out_target == 1 {
+        MidiCc::from(midi_note_u8(midi_note).min(127))
+    } else {
+        midi_cc
+    }
+}
+
 fn split_semitone_leds(interval: i32) -> [u8; 2] {
     if interval >= 0 {
         let pos = ((interval * 255) / INTERVAL_ST_MAX).clamp(0, 255) as u8;
@@ -514,7 +532,6 @@ pub async fn run(
     let ping_pong = routing == 1 && matches!(io_mode, IO_MIDI_MIDI | IO_CV_MIDI);
     let sig = effective_signal(io_mode, signal);
     let resolution = CLOCK_DELAY_TICKS;
-    let base_note_cfg = midi_note_u8(midi_note);
     let loop_guard = io_mode == IO_MIDI_MIDI
         && ports_can_loop(midi_in_cfg, midi_out_cfg)
         && same_channel_loop_risk(midi_in_ch, midi_out_a, midi_out_b, ping_pong);
@@ -920,10 +937,12 @@ pub async fn run(
                             input_flash_glob.set(INPUT_FLASH_PEAK);
                             if accept_new {
                                 open_gate_delay = Some((delay_ms, delay_ticks, base_interval));
+                                let ping_base =
+                                    ping_pong_note(ping_pong, 0, midi_note, midi_cc);
                                 enqueue(
                                     &mut queue,
                                     EventKind::NoteOn,
-                                    base_note_cfg,
+                                    ping_base,
                                     4095,
                                     0,
                                     0,
@@ -933,15 +952,34 @@ pub async fn run(
                                     now_ms,
                                     now_tick,
                                 );
+                                if ping_pong {
+                                    let pong_base =
+                                        ping_pong_note(ping_pong, 1, midi_note, midi_cc);
+                                    let _ = enqueue(
+                                        &mut queue,
+                                        EventKind::NoteOn,
+                                        pong_base,
+                                        4095,
+                                        0,
+                                        1,
+                                        base_interval,
+                                        delay_ms,
+                                        delay_ticks,
+                                        now_ms.saturating_add(delay_ms),
+                                        now_tick.wrapping_add(delay_ticks),
+                                    );
+                                }
                             }
                         } else if !high && prev_gate {
                             let (off_delay_ms, off_delay_ticks, off_interval) = open_gate_delay
                                 .take()
                                 .unwrap_or((delay_ms, delay_ticks, base_interval));
+                            let ping_base =
+                                ping_pong_note(ping_pong, 0, midi_note, midi_cc);
                             enqueue(
                                 &mut queue,
                                 EventKind::NoteOff,
-                                base_note_cfg,
+                                ping_base,
                                 0,
                                 0,
                                 0,
@@ -951,6 +989,23 @@ pub async fn run(
                                 now_ms,
                                 now_tick,
                             );
+                            if ping_pong {
+                                let pong_base =
+                                    ping_pong_note(ping_pong, 1, midi_note, midi_cc);
+                                let _ = enqueue(
+                                    &mut queue,
+                                    EventKind::NoteOff,
+                                    pong_base,
+                                    0,
+                                    0,
+                                    1,
+                                    off_interval,
+                                    off_delay_ms,
+                                    off_delay_ticks,
+                                    now_ms.saturating_add(off_delay_ms),
+                                    now_tick.wrapping_add(off_delay_ticks),
+                                );
+                            }
                         }
                         prev_gate = high;
                     } else if sig == SIG_CV_CC && accept_new {
@@ -1113,10 +1168,20 @@ pub async fn run(
                                 if let Some(next_vel) =
                                     next_feedback_velocity(event.velocity, feedback)
                                 {
+                                    let next_base = if sig == SIG_GATE_NOTE {
+                                        ping_pong_note(
+                                            ping_pong,
+                                            out_target_for_gen(next_gen, ping_pong),
+                                            midi_note,
+                                            midi_cc,
+                                        )
+                                    } else {
+                                        event.base_note
+                                    };
                                     enqueue(
                                         &mut queue,
                                         EventKind::NoteOn,
-                                        event.base_note,
+                                        next_base,
                                         next_vel,
                                         0,
                                         next_gen,
@@ -1148,10 +1213,20 @@ pub async fn run(
                             let next_gen = event.generation.saturating_add(1);
                             let trail = max_feedback_repeats(feedback);
                             if event.generation < trail {
+                                let next_base = if sig == SIG_GATE_NOTE {
+                                    ping_pong_note(
+                                        ping_pong,
+                                        out_target_for_gen(next_gen, ping_pong),
+                                        midi_note,
+                                        midi_cc,
+                                    )
+                                } else {
+                                    event.base_note
+                                };
                                 enqueue(
                                     &mut queue,
                                     EventKind::NoteOff,
-                                    event.base_note,
+                                    next_base,
                                     0,
                                     0,
                                     next_gen,
@@ -1170,10 +1245,16 @@ pub async fn run(
                                 jack.set_value(event.cv_value);
                             }
                         } else if io_mode == IO_CV_MIDI {
+                            let cc = ping_pong_cc(
+                                ping_pong,
+                                event.out_target,
+                                midi_cc,
+                                midi_note,
+                            );
                             if event.out_target == 0 {
-                                midi_a.send_cc(midi_cc, event.cv_value).await;
+                                midi_a.send_cc(cc, event.cv_value).await;
                             } else {
-                                midi_b.send_cc(midi_cc, event.cv_value).await;
+                                midi_b.send_cc(cc, event.cv_value).await;
                             }
                             // Ping-Pong: one delayed cross to the other out so A/B
                             // are offset by Delay (Main fader) — not same-time copies.
