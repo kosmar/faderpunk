@@ -432,7 +432,13 @@ fn ensure_midi_map(map: i32, midi_cc: MidiCc, midi_note: MidiNote) -> i32 {
     } else {
         let ping_cc = u7::from(midi_cc).as_int();
         let ping_note = midi_note_u8(midi_note);
-        pack_midi_map(ping_cc, ping_cc, ping_note, ping_note)
+        let packed = pack_midi_map(ping_cc, ping_cc, ping_note, ping_note);
+        // All-zero legacy slots also pack to 0 — avoid MIDI note/CC 0 silence.
+        if packed != 0 {
+            packed
+        } else {
+            pack_midi_map(32, 32, 60, 60)
+        }
     }
 }
 
