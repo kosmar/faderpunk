@@ -21,7 +21,7 @@ use crate::app::{
 };
 
 pub const CHANNELS: usize = 1;
-pub const PARAMS: usize = 15;
+pub const PARAMS: usize = 16;
 
 const LED_BRIGHTNESS: Brightness = Brightness::Mid;
 const MAX_REPEATS: u8 = 16;
@@ -122,7 +122,12 @@ pub static CONFIG: Config<PARAMS> = Config::new(
     name: "MIDI Out Pong",
 })
 .add_param(Param::MidiCc { name: "MIDI CC" })
-.add_param(Param::MidiNote { name: "MIDI Note" });
+.add_param(Param::MidiNote { name: "MIDI Note" })
+.add_param(Param::i32 {
+    name: "MIDI Map",
+    min: 0,
+    max: 0x0FFFFFFF,
+});
 
 pub struct Params {
     io_mode: usize,
@@ -140,6 +145,8 @@ pub struct Params {
     midi_out_b: MidiChannel,
     midi_cc: MidiCc,
     midi_note: MidiNote,
+    /// Packed ping/pong CC + note slots (see `pack_midi_map`).
+    midi_map: i32,
 }
 
 impl AppParams for Params {
@@ -147,6 +154,14 @@ impl AppParams for Params {
         if values.len() < PARAMS {
             return None;
         }
+        let midi_cc = MidiCc::from_value(values[13]);
+        let midi_note = MidiNote::from_value(values[14]);
+        let midi_map_raw = if values.len() > 15 {
+            i32::from_value(values[15])
+        } else {
+            0
+        };
+        let midi_map = ensure_midi_map(midi_map_raw, midi_cc, midi_note);
         Some(Self {
             io_mode: usize::from_value(values[0]),
             delay_mode: usize::from_value(values[1]),
@@ -161,8 +176,9 @@ impl AppParams for Params {
             midi_out: MidiOut::from_value(values[10]),
             midi_out_a: MidiChannel::from_value(values[11]),
             midi_out_b: MidiChannel::from_value(values[12]),
-            midi_cc: MidiCc::from_value(values[13]),
-            midi_note: MidiNote::from_value(values[14]),
+            midi_cc,
+            midi_note,
+            midi_map,
         })
     }
 
@@ -181,8 +197,9 @@ impl AppParams for Params {
         vec.push(self.midi_out.into()).unwrap();
         vec.push(self.midi_out_a.into()).unwrap();
         vec.push(self.midi_out_b.into()).unwrap();
-        vec.push(self.midi_cc.into()).unwrap();
-        vec.push(self.midi_note.into()).unwrap();
+        vec.push(MidiCc::from(map_ping_cc(self.midi_map)).into()).unwrap();
+        vec.push(MidiNote::from(map_ping_note(self.midi_map)).into()).unwrap();
+        vec.push(self.midi_map.into()).unwrap();
         vec
     }
 }
@@ -376,22 +393,64 @@ fn midi_note_u8(note: MidiNote) -> u8 {
     u7::from(note).as_int()
 }
 
-/// Ping-Pong + CV→MIDI + Gate→Note: [14]=ping note, [13]=pong note.
-fn ping_pong_note(ping_pong: bool, out_target: u8, midi_note: MidiNote, midi_cc: MidiCc) -> u8 {
-    if ping_pong && out_target == 1 {
-        u7::from(midi_cc).as_int()
+/// Packed MIDI map: ping/pong CC + note (bits 28..31 reserved).
+///
+/// ```text
+/// bits  0..6  : ping_cc
+/// bits  7..13 : pong_cc
+/// bits 14..20 : ping_note
+/// bits 21..27 : pong_note
+/// ```
+fn pack_midi_map(ping_cc: u8, pong_cc: u8, ping_note: u8, pong_note: u8) -> i32 {
+    let ping_cc = ping_cc.min(127) as i32;
+    let pong_cc = pong_cc.min(127) as i32;
+    let ping_note = ping_note.min(127) as i32;
+    let pong_note = pong_note.min(127) as i32;
+    ping_cc | (pong_cc << 7) | (ping_note << 14) | (pong_note << 21)
+}
+
+fn map_ping_cc(map: i32) -> u8 {
+    (map & 0x7F) as u8
+}
+
+fn map_pong_cc(map: i32) -> u8 {
+    ((map >> 7) & 0x7F) as u8
+}
+
+fn map_ping_note(map: i32) -> u8 {
+    ((map >> 14) & 0x7F) as u8
+}
+
+fn map_pong_note(map: i32) -> u8 {
+    ((map >> 21) & 0x7F) as u8
+}
+
+/// Sentinel `map == 0` → seed from legacy Idx 13/14 (ping); pong copies ping.
+fn ensure_midi_map(map: i32, midi_cc: MidiCc, midi_note: MidiNote) -> i32 {
+    if map != 0 {
+        map
     } else {
-        midi_note_u8(midi_note)
+        let ping_cc = u7::from(midi_cc).as_int();
+        let ping_note = midi_note_u8(midi_note);
+        pack_midi_map(ping_cc, ping_cc, ping_note, ping_note)
     }
 }
 
-/// Ping-Pong + CV→MIDI + CV→CC: [13]=ping CC, [14]=pong CC.
-fn ping_pong_cc(ping_pong: bool, out_target: u8, midi_cc: MidiCc, midi_note: MidiNote) -> MidiCc {
-    if ping_pong && out_target == 1 {
-        MidiCc::from(midi_note_u8(midi_note).min(127))
+fn midi_note_for_target(midi_map: i32, out_target: u8) -> u8 {
+    if out_target == 1 {
+        map_pong_note(midi_map)
     } else {
-        midi_cc
+        map_ping_note(midi_map)
     }
+}
+
+fn midi_cc_for_target(midi_map: i32, out_target: u8) -> MidiCc {
+    let cc = if out_target == 1 {
+        map_pong_cc(midi_map)
+    } else {
+        map_ping_cc(midi_map)
+    };
+    MidiCc::from(cc.min(127))
 }
 
 fn split_semitone_leds(interval: i32) -> [u8; 2] {
@@ -443,6 +502,8 @@ fn effective_signal(io_mode: usize, signal: usize) -> usize {
 #[embassy_executor::task(pool_size = 4)]
 pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMutex, bool>) {
     let ch = app.start_channel as u8;
+    let default_cc = 32u8.saturating_add(ch);
+    let default_note = 60u8;
     let param_store = ParamStore::<Params>::new(
         app.app_id,
         app.layout_id,
@@ -461,8 +522,9 @@ pub async fn wrapper(app: App<CHANNELS>, exit_signal: &'static Signal<NoopRawMut
             // Default Out A off In CH so a host/DIN loopback doesn't instantly feed back.
             midi_out_a: MidiChannel::from(2),
             midi_out_b: MidiChannel::from(3),
-            midi_cc: MidiCc::from(32u8.saturating_add(ch)),
-            midi_note: MidiNote::from(60),
+            midi_cc: MidiCc::from(default_cc),
+            midi_note: MidiNote::from(default_note),
+            midi_map: pack_midi_map(default_cc, default_cc, default_note, default_note),
         },
     );
     let storage = ManagedStorage::<Storage>::new(app.app_id, app.layout_id);
@@ -505,8 +567,7 @@ pub async fn run(
         midi_out_cfg,
         midi_out_a,
         midi_out_b,
-        midi_cc,
-        midi_note,
+        midi_map,
     ) = params.query(|p| {
         (
             p.io_mode,
@@ -522,8 +583,7 @@ pub async fn run(
             p.midi_out,
             p.midi_out_a,
             p.midi_out_b,
-            p.midi_cc,
-            p.midi_note,
+            p.midi_map,
         )
     });
 
@@ -937,8 +997,7 @@ pub async fn run(
                             input_flash_glob.set(INPUT_FLASH_PEAK);
                             if accept_new {
                                 open_gate_delay = Some((delay_ms, delay_ticks, base_interval));
-                                let ping_base =
-                                    ping_pong_note(ping_pong, 0, midi_note, midi_cc);
+                                let ping_base = midi_note_for_target(midi_map, 0);
                                 enqueue(
                                     &mut queue,
                                     EventKind::NoteOn,
@@ -953,8 +1012,7 @@ pub async fn run(
                                     now_tick,
                                 );
                                 if ping_pong {
-                                    let pong_base =
-                                        ping_pong_note(ping_pong, 1, midi_note, midi_cc);
+                                    let pong_base = midi_note_for_target(midi_map, 1);
                                     let _ = enqueue(
                                         &mut queue,
                                         EventKind::NoteOn,
@@ -974,8 +1032,7 @@ pub async fn run(
                             let (off_delay_ms, off_delay_ticks, off_interval) = open_gate_delay
                                 .take()
                                 .unwrap_or((delay_ms, delay_ticks, base_interval));
-                            let ping_base =
-                                ping_pong_note(ping_pong, 0, midi_note, midi_cc);
+                            let ping_base = midi_note_for_target(midi_map, 0);
                             enqueue(
                                 &mut queue,
                                 EventKind::NoteOff,
@@ -990,8 +1047,7 @@ pub async fn run(
                                 now_tick,
                             );
                             if ping_pong {
-                                let pong_base =
-                                    ping_pong_note(ping_pong, 1, midi_note, midi_cc);
+                                let pong_base = midi_note_for_target(midi_map, 1);
                                 let _ = enqueue(
                                     &mut queue,
                                     EventKind::NoteOff,
@@ -1169,11 +1225,9 @@ pub async fn run(
                                     next_feedback_velocity(event.velocity, feedback)
                                 {
                                     let next_base = if sig == SIG_GATE_NOTE {
-                                        ping_pong_note(
-                                            ping_pong,
+                                        midi_note_for_target(
+                                            midi_map,
                                             out_target_for_gen(next_gen, ping_pong),
-                                            midi_note,
-                                            midi_cc,
                                         )
                                     } else {
                                         event.base_note
@@ -1214,11 +1268,9 @@ pub async fn run(
                             let trail = max_feedback_repeats(feedback);
                             if event.generation < trail {
                                 let next_base = if sig == SIG_GATE_NOTE {
-                                    ping_pong_note(
-                                        ping_pong,
+                                    midi_note_for_target(
+                                        midi_map,
                                         out_target_for_gen(next_gen, ping_pong),
-                                        midi_note,
-                                        midi_cc,
                                     )
                                 } else {
                                     event.base_note
@@ -1245,12 +1297,7 @@ pub async fn run(
                                 jack.set_value(event.cv_value);
                             }
                         } else if io_mode == IO_CV_MIDI {
-                            let cc = ping_pong_cc(
-                                ping_pong,
-                                event.out_target,
-                                midi_cc,
-                                midi_note,
-                            );
+                            let cc = midi_cc_for_target(midi_map, event.out_target);
                             if event.out_target == 0 {
                                 midi_a.send_cc(cc, event.cv_value).await;
                             } else {
