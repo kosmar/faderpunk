@@ -3,6 +3,27 @@
 //! Open spectrum is red→blue (~0°…240°) — no magenta wrap (not a spectral color).
 
 use libfp::Color;
+use smart_leds::RGB8;
+
+/// Approximate hue in degrees (0..360). White / near-grey → 0.
+pub fn color_hue(c: Color) -> u16 {
+    let RGB8 { r, g, b } = RGB8::from(c);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    if max == 0 || max - min < 8 {
+        return 0;
+    }
+    let d = (max - min) as i32;
+    let (r, g, b, max) = (r as i32, g as i32, b as i32, max as i32);
+    let h = if max == r {
+        ((g - b) * 60) / d
+    } else if max == g {
+        120 + ((b - r) * 60) / d
+    } else {
+        240 + ((r - g) * 60) / d
+    };
+    ((h % 360) + 360) as u16 % 360
+}
 
 /// Integer HSV→RGB with S=V=max. Hue in degrees (0..360).
 pub fn hsv_to_rgb(hue: u16) -> (u8, u8, u8) {
