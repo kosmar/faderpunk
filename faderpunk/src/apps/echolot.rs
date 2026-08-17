@@ -34,6 +34,9 @@ const SOUNDING_CAP: usize = 32;
 /// Held input notes whose delay is frozen until matching NoteOff (polyphony headroom).
 const OPEN_NOTES_CAP: usize = 16;
 const GATE_THRESH: u16 = 406;
+/// Schmitt drop below `on` so ±5 V idle (mid) doesn't chatter around the edge.
+const GATE_HYST: u16 = 80;
+const BIPOLAR_MID: u16 = 2047;
 /// Peak white button flash on note/gate in (full scale).
 const INPUT_FLASH_PEAK: u8 = 255;
 /// While muted, show the same flash at ~20% so MIDI In stays visible without looking “live”.
@@ -457,6 +460,30 @@ fn midi_cc_for_target(midi_map: i32, out_target: u8) -> MidiCc {
         map_ping_cc(midi_map)
     };
     MidiCc::from(cc.min(127))
+}
+
+/// 0 V on the configured jack range (unipolar floor / bipolar mid).
+fn jack_idle(range: Range) -> u16 {
+    if range.is_bipolar() {
+        BIPOLAR_MID
+    } else {
+        0
+    }
+}
+
+/// Gate sense: unipolar ≈1 V above 0 V; bipolar ≈1 V above 0 V (mid + thresh).
+fn cv_gate_high(inval: u16, bipolar: bool, prev: bool) -> bool {
+    let on = if bipolar {
+        BIPOLAR_MID.saturating_add(GATE_THRESH)
+    } else {
+        GATE_THRESH
+    };
+    let off = on.saturating_sub(GATE_HYST);
+    if prev {
+        inval >= off
+    } else {
+        inval >= on
+    }
 }
 
 fn split_semitone_leds(interval: i32) -> [u8; 2] {
@@ -999,7 +1026,7 @@ pub async fn run(
                     let inval = jack.get_value();
                     let accept_new = !glob_muted.get();
                     if sig == SIG_GATE_NOTE {
-                        let high = inval >= GATE_THRESH;
+                        let high = cv_gate_high(inval, range.is_bipolar(), prev_gate);
                         if high && !prev_gate {
                             input_flash_glob.set(INPUT_FLASH_PEAK);
                             if accept_new {
@@ -1139,7 +1166,7 @@ pub async fn run(
                 open_gate_delay = None;
                 recent_emit.clear();
                 if let Some(jack) = out_jack.as_ref() {
-                    jack.set_value(0);
+                    jack.set_value(jack_idle(range));
                 }
                 prev_gate = false;
                 last_cc_gate = u16::MAX;
@@ -1359,7 +1386,7 @@ pub async fn run(
                     }
                     EventKind::GateLow => {
                         if let Some(jack) = out_jack.as_ref() {
-                            jack.set_value(0);
+                            jack.set_value(jack_idle(range));
                         }
                         if feedback_ok && event.generation < max_feedback_repeats(feedback) {
                             let next_gen = event.generation.saturating_add(1);
