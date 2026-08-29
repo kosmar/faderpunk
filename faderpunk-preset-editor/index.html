@@ -4569,6 +4569,16 @@
       _Neg5_5V: "±5V",
     };
 
+    /** Prefix CV Dest / CV Out enum options so In vs Out is obvious in the shared select. */
+    function cvEnumOptionLabel(paramName, variant) {
+      const v = String(variant ?? "");
+      if (/^CV\s+(In|Out)\b/i.test(v)) return v;
+      const name = String(paramName ?? "");
+      if (/CV\s*Dest/i.test(name)) return `CV In ${v}`;
+      if (/^CV\s*Out$/i.test(name)) return `CV Out ${v}`;
+      return v;
+    }
+
     function defaultValueForParam(param, row, portKey) {
       const tag = param?.tag;
       if (tag === "Enum") return enumVal(0);
@@ -5119,7 +5129,7 @@
         const opts = indices
           .map((i) => {
             const override = deps?.enumLabels?.get(pi)?.get(i);
-            const lab = override ?? variants[i] ?? String(i);
+            const lab = cvEnumOptionLabel(name, override ?? variants[i] ?? String(i));
             return `<option value="${i}" ${cur === i ? "selected" : ""}>${escapeHtml(lab)}</option>`;
           })
           .join("");
@@ -5354,15 +5364,15 @@
           title: t("param.rateModDepthHint"),
         }));
         bits.push(`<select data-i="${idx}" data-k="cvDest" title="${escapeAttr(t("param.cvDest"))}">
-          <option value="0" ${cvDest === 0 ? "selected" : ""}>Rate Mod</option>
-          <option value="1" ${cvDest === 1 ? "selected" : ""}>Phase</option>
-          <option value="2" ${cvDest === 2 ? "selected" : ""}>Reset</option>
-          <option value="3" ${cvDest === 3 ? "selected" : ""}>Amp</option>
-          <option value="4" ${cvDest === 4 ? "selected" : ""}>Speed</option>
-          <option value="5" ${cvDest === 5 ? "selected" : ""}>Morph</option>
-          <option value="6" ${cvDest === 6 ? "selected" : ""}>Skew</option>
-          <option value="7" ${cvDest === 7 ? "selected" : ""}>Warp</option>
-          <option value="8" ${cvDest === 8 ? "selected" : ""}>Symmetry</option>
+          <option value="0" ${cvDest === 0 ? "selected" : ""}>${escapeHtml(cvEnumOptionLabel("CV Dest", "Rate Mod"))}</option>
+          <option value="1" ${cvDest === 1 ? "selected" : ""}>${escapeHtml(cvEnumOptionLabel("CV Dest", "Phase"))}</option>
+          <option value="2" ${cvDest === 2 ? "selected" : ""}>${escapeHtml(cvEnumOptionLabel("CV Dest", "Reset"))}</option>
+          <option value="3" ${cvDest === 3 ? "selected" : ""}>${escapeHtml(cvEnumOptionLabel("CV Dest", "Amp"))}</option>
+          <option value="4" ${cvDest === 4 ? "selected" : ""}>${escapeHtml(cvEnumOptionLabel("CV Dest", "Speed"))}</option>
+          <option value="5" ${cvDest === 5 ? "selected" : ""}>${escapeHtml(cvEnumOptionLabel("CV Dest", "Morph"))}</option>
+          <option value="6" ${cvDest === 6 ? "selected" : ""}>${escapeHtml(cvEnumOptionLabel("CV Dest", "Skew"))}</option>
+          <option value="7" ${cvDest === 7 ? "selected" : ""}>${escapeHtml(cvEnumOptionLabel("CV Dest", "Warp"))}</option>
+          <option value="8" ${cvDest === 8 ? "selected" : ""}>${escapeHtml(cvEnumOptionLabel("CV Dest", "Symmetry"))}</option>
         </select>`);
       }
       if (s.app === "echolot") {
