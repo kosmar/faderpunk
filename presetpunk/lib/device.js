@@ -1,0 +1,445 @@
+import { deserialize, serialize } from "@atov/fp-config";
+import { buildConfigFrame, parseConfigFrame, SYSEX_EOX, SYSEX_START } from "./sysex.js?v=1788007168087";
+import {
+  createPanicBeaconCollector,
+  formatPanicSite,
+} from "./panic-beacon.js?v=1788007168087";
+
+const RECEIVE_TIMEOUT_MS = 2000;
+// The device can answer slowly while app tasks are spawning or immediately
+// after USB reconnect. 300 ms caused valid config ports to be rejected.
+const PROBE_TIMEOUT_MS = 1200;
+/** After a wedged Full Push, GetVersion often needs a few retries. */
+const CONNECT_PROBE_ROUNDS = 3;
+const CONNECT_PROBE_GAP_MS = 700;
+const PANIC_BEACON_LISTEN_MS = 2500;
+const PANIC_BEACON_POLL_MS = 100;
+
+/** Thrown when Faderpunk ports are listed but GetVersion never answers. */
+export const USB_WEDGE_ERROR =
+  "Faderpunk MIDI ports present but GetVersion failed (device busy or USB wedged). Wait / replug; close other tabs using the device.";
+
+export function isUsbWedgeError(err) {
+  const msg = String(err?.message ?? err ?? "");
+  return msg.includes(USB_WEDGE_ERROR);
+}
+
+async function loadPanicFiles() {
+  try {
+    const response = await fetch(new URL("../panic-files.json", import.meta.url));
+    const json = await response.json();
+    return json?.files ?? {};
+  } catch {
+    return {};
+  }
+}
+
+async function listenForPanicBeacon(access, configInput) {
+  const input = findPerfInput(access, configInput);
+  if (!input) return null;
+
+  const collector = createPanicBeaconCollector();
+  const previous = input.onmidimessage;
+  try {
+    await Promise.race([
+      input.open(),
+      new Promise((r) => setTimeout(r, PANIC_BEACON_LISTEN_MS)),
+    ]);
+    input.onmidimessage = (event) => collector.feed(event.data);
+    const deadline = Date.now() + PANIC_BEACON_LISTEN_MS;
+    while (Date.now() < deadline && collector.result() === null) {
+      await new Promise((r) => setTimeout(r, PANIC_BEACON_POLL_MS));
+    }
+  } finally {
+    input.onmidimessage = previous ?? null;
+  }
+  return collector.result();
+}
+
+function attachConfigInput(input) {
+  const rx = {
+    sysexBuffer: [],
+    collecting: false,
+    queue: [],
+    waiter: null,
+    appStates: new Map(),
+  };
+
+  input.onmidimessage = (event) => {
+    if (!event.data || event.data.length === 0) return;
+    const data = event.data;
+    const first = data[0];
+
+    if (first !== SYSEX_START) {
+      if (first < 0xf0 || first === 0xf8 || first === 0xfa || first === 0xfb || first === 0xfc || first === 0xff) {
+        return;
+      }
+    }
+
+    for (const byte of data) {
+      if (byte === SYSEX_START) {
+        rx.sysexBuffer = [byte];
+        rx.collecting = true;
+        continue;
+      }
+      if (!rx.collecting) continue;
+      rx.sysexBuffer.push(byte);
+      if (byte === SYSEX_EOX) {
+        rx.collecting = false;
+        const payload = parseConfigFrame(new Uint8Array(rx.sysexBuffer));
+        rx.sysexBuffer = [];
+        if (!payload) continue;
+        let msg;
+        try {
+          msg = deserialize("ConfigMsgOut", payload).value;
+        } catch (err) {
+          console.error("Failed to deserialize config message:", err);
+          continue;
+        }
+        if (msg?.tag === "AppState") {
+          const layoutId = Number(msg.value?.[0]);
+          const values = msg.value?.[1];
+          if (Number.isFinite(layoutId) && Array.isArray(values) && values.length > 0) {
+            rx.appStates.set(layoutId, msg);
+          }
+        }
+        if (rx.waiter) {
+          const { resolve, timer } = rx.waiter;
+          clearTimeout(timer);
+          rx.waiter = null;
+          resolve(msg);
+        } else {
+          rx.queue.push(msg);
+        }
+      }
+    }
+  };
+
+  return rx;
+}
+
+function receiveFromRx(rx, timeoutMs) {
+  const queued = rx.queue.shift();
+  if (queued) return Promise.resolve(queued);
+  if (rx.waiter) {
+    return Promise.reject(new Error("Concurrent receive on the same MIDI device"));
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      rx.waiter = null;
+      reject(new Error("Timed out waiting for device response"));
+    }, timeoutMs);
+    rx.waiter = { resolve, reject, timer };
+  });
+}
+
+function sendFrame(output, msg) {
+  output.send(Array.from(buildConfigFrame(serialize("ConfigMsgIn", msg))));
+}
+
+function configProbeOutputs(outputs) {
+  const namedConfig = outputs.filter((port) => /config/i.test(port.name ?? ""));
+  if (namedConfig.length) return namedConfig;
+  const fallback = outputs.filter((port) => /config|2/i.test(port.name ?? ""));
+  if (fallback.length) return fallback;
+  return outputs;
+}
+
+function abortRxWaiters(handlers) {
+  for (const { rx } of handlers) {
+    if (rx.waiter) {
+      clearTimeout(rx.waiter.timer);
+      rx.waiter = null;
+    }
+  }
+}
+
+function detachInputHandlers(handlers, keepInput = null) {
+  for (const { input, rx } of handlers) {
+    if (keepInput && input === keepInput) continue;
+    input.onmidimessage = null;
+    if (rx.waiter) {
+      clearTimeout(rx.waiter.timer);
+      rx.waiter = null;
+    }
+  }
+}
+
+/** Wait for first Version on any attached input (GetVersion already sent on TX). */
+function waitForVersionOnAny(handlers, timeoutMs) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      abortRxWaiters(handlers);
+      resolve(result);
+    };
+
+    const timer = setTimeout(() => finish(null), timeoutMs);
+    let pending = handlers.length;
+
+    for (const { input, rx } of handlers) {
+      receiveFromRx(rx, timeoutMs)
+        .then((msg) => {
+          if (msg?.tag === "Version") {
+            const { major, minor, patch } = msg.value;
+            clearTimeout(timer);
+            finish({
+              input,
+              rx,
+              version: `${major}.${minor}.${patch}`,
+            });
+          } else {
+            pending -= 1;
+            if (pending === 0) {
+              clearTimeout(timer);
+              finish(null);
+            }
+          }
+        })
+        .catch(() => {
+          pending -= 1;
+          if (pending === 0) {
+            clearTimeout(timer);
+            finish(null);
+          }
+        });
+    }
+  });
+}
+
+function portCandidates(ports) {
+  const candidates = Array.from(ports).filter((port) =>
+    /faderpunk/i.test(`${port.manufacturer ?? ""} ${port.name ?? ""}`),
+  );
+  return candidates.sort((a, b) => {
+    const rank = (port) => (/config|2/i.test(port.name ?? "") ? 0 : 1);
+    return rank(a) - rank(b);
+  });
+}
+
+/** True if Web MIDI still lists any Faderpunk ports (config or perf). */
+export function faderpunkPortsListed(access) {
+  if (!access) return false;
+  return (
+    portCandidates(access.inputs.values()).length > 0 &&
+    portCandidates(access.outputs.values()).length > 0
+  );
+}
+
+/** Faderpunk input that is not the config port — where the perf MIDI (and the panic beacon) arrives. */
+export function findPerfInput(access, configInput) {
+  if (!access) return null;
+  for (const port of portCandidates(access.inputs.values())) {
+    if (port === configInput) continue;
+    if (configInput?.id != null && port.id === configInput.id) continue;
+    return port;
+  }
+  return null;
+}
+
+/** Connect to Faderpunk config SysEx port (Web MIDI). */
+export async function connectDevice() {
+  if (!navigator.requestMIDIAccess) {
+    throw new Error("Web MIDI is not supported in this browser");
+  }
+  const access = await navigator.requestMIDIAccess({ sysex: true });
+  const inputs = portCandidates(access.inputs.values());
+  const outputs = portCandidates(access.outputs.values());
+
+  const sawPorts = inputs.length > 0 && outputs.length > 0;
+  const inNames = inputs.map((i) => i.name ?? i.id).join(", ");
+  const outNames = outputs.map((o) => o.name ?? o.id).join(", ");
+  const connectionSummary = `in[${inNames}] · out[${outNames}]`;
+
+  const probeOutputs = configProbeOutputs(outputs);
+  const probeOutput = probeOutputs[0] ?? null;
+
+  const inputHandlers = [];
+  for (const input of inputs) {
+    const rx = attachConfigInput(input);
+    await input.open();
+    inputHandlers.push({ input, rx });
+  }
+
+  let config = null;
+  if (probeOutput && inputHandlers.length) {
+    for (let round = 0; round < CONNECT_PROBE_ROUNDS && !config; round++) {
+      if (round > 0) {
+        await new Promise((r) => setTimeout(r, CONNECT_PROBE_GAP_MS * round));
+      }
+      await probeOutput.open();
+      // Waiters must be armed before TX — Version can arrive on a different
+      // input than the Config-named one (fp-cli: RX Faderpunk / TX Config).
+      const waitPromise = waitForVersionOnAny(inputHandlers, PROBE_TIMEOUT_MS);
+      sendFrame(probeOutput, { tag: "GetVersion" });
+      const result = await waitPromise;
+      if (result) {
+        config = {
+          input: result.input,
+          output: probeOutput,
+          version: result.version,
+          rx: result.rx,
+        };
+      }
+    }
+  }
+
+  if (!config) {
+    detachInputHandlers(inputHandlers);
+    if (!sawPorts) {
+      throw new Error(
+        "No Faderpunk config MIDI port found. Plug in USB, allow MIDI/SysEx, close other tabs using the device.",
+      );
+    }
+    let message = `${USB_WEDGE_ERROR} (connection: ${connectionSummary})`;
+    const site = await listenForPanicBeacon(access, inputs[0] ?? null);
+    if (site) {
+      const files = await loadPanicFiles();
+      const siteText = formatPanicSite(site, files);
+      if (siteText) {
+        message = `${USB_WEDGE_ERROR} (connection: ${connectionSummary}) — firmware panic at ${siteText}`;
+      }
+    }
+    throw new Error(message);
+  }
+
+  detachInputHandlers(inputHandlers, config.input);
+
+  return {
+    access,
+    config,
+    portSummary: connectionSummary,
+  };
+}
+
+export function disconnectDevice(device) {
+  if (!device?.config) return;
+  device.config.input.onmidimessage = null;
+  if (device.config.rx?.waiter) {
+    clearTimeout(device.config.rx.waiter.timer);
+    device.config.rx.waiter = null;
+  }
+}
+
+/** Drop unmatched config replies so the next request/response pair stays aligned. */
+export function drainConfigQueue(rx) {
+  if (rx?.queue) {
+    rx.queue.length = 0;
+  }
+}
+
+export function clearCachedAppStates(rx) {
+  rx?.appStates?.clear();
+}
+
+/** Drop one layout slot from passive AppState cache (stale after SetAppParams timeout). */
+export function clearCachedAppState(rx, layoutId) {
+  rx?.appStates?.delete(Number(layoutId));
+}
+
+export function cachedAppState(rx, layoutId) {
+  return rx?.appStates?.get(Number(layoutId)) ?? null;
+}
+
+export async function sendAndReceive(config, msg) {
+  sendFrame(config.output, msg);
+  return receiveFromRx(config.rx, RECEIVE_TIMEOUT_MS);
+}
+
+/**
+ * Like sendAndReceive, but keep reading until `expectedTag` (or timeout).
+ * Skips stray Layout/AppState from Diagnostics soft-poll or late acks.
+ * When `matchLayoutId` is set and expecting AppState, also skip AppStates
+ * for other layout slots (stale reply from previous Set/Get).
+ */
+export async function sendAndReceiveExpect(config, msg, expectedTag, opts = {}) {
+  const log = opts.onLog || (() => {});
+  const attempts = opts.attempts ?? 8;
+  const timeoutMs = opts.timeoutMs ?? RECEIVE_TIMEOUT_MS;
+  const matchLayoutId =
+    opts.matchLayoutId == null ? null : Number(opts.matchLayoutId);
+  drainConfigQueue(config.rx);
+  sendFrame(config.output, msg);
+  // Total wait window. Per-slice receive uses timeoutMs; silence must not abort
+  // early — SetAppParams can spend >15s in FRAM/respawn before AppState.
+  const deadline =
+    Date.now() +
+    (opts.deadlineMs ?? timeoutMs * Math.max(1, Math.ceil(attempts / 2)));
+  let lastTag = null;
+  while (Date.now() < deadline) {
+    const remaining = Math.max(200, deadline - Date.now());
+    let response;
+    try {
+      response = await receiveFromRx(config.rx, Math.min(timeoutMs, remaining));
+    } catch (e) {
+      const timedOut = /timed out/i.test(String(e.message || e));
+      if (timedOut && Date.now() < deadline) {
+        continue;
+      }
+      if (lastTag) {
+        throw new Error(
+          `Expected ${expectedTag}, last stray was ${lastTag} (${e.message || e})`,
+        );
+      }
+      throw e;
+    }
+    if (response.tag === expectedTag) {
+      if (
+        matchLayoutId != null &&
+        expectedTag === "AppState" &&
+        Number(response.value?.[0]) !== matchLayoutId
+      ) {
+        log(
+          `  ↷ skip AppState layoutId=${response.value?.[0]} (want ${matchLayoutId})`,
+        );
+        continue;
+      }
+      return response;
+    }
+    lastTag = response.tag;
+    log(`  ↷ skip stray ${response.tag} (want ${expectedTag})`);
+  }
+  throw new Error(
+    `Expected ${expectedTag}, got ${lastTag ?? "timeout"} — close Diagnostics/Configurator on the config MIDI cable`,
+  );
+}
+
+export async function sendMessage(config, msg) {
+  sendFrame(config.output, msg);
+}
+
+export async function receiveBatchMessages(config, count) {
+  const results = [];
+  const n = Number(count);
+  const deadline = Date.now() + RECEIVE_TIMEOUT_MS * Math.max(4, n + 2);
+  while (results.length < n && Date.now() < deadline) {
+    const remaining = Math.max(300, deadline - Date.now());
+    const msg = await receiveFromRx(config.rx, Math.min(RECEIVE_TIMEOUT_MS, remaining));
+    if (msg.tag === "BatchMsgEnd") {
+      // Early end — return what we have (caller may fill gaps).
+      return results;
+    }
+    // GetAllApps → AppConfig; GetAllAppParams → AppState. Accept both.
+    // Skip stray Layout / Version / GlobalConfig from other tabs.
+    if (msg.tag === "AppConfig" || msg.tag === "AppState") {
+      results.push(msg);
+      continue;
+    }
+  }
+  if (results.length < n) {
+    throw new Error(
+      `Batch incomplete: got ${results.length}/${n} items (timeout or cable noise)`,
+    );
+  }
+  const endDeadline = Date.now() + RECEIVE_TIMEOUT_MS;
+  while (Date.now() < endDeadline) {
+    const endMessage = await receiveFromRx(
+      config.rx,
+      Math.max(200, endDeadline - Date.now()),
+    );
+    if (endMessage.tag === "BatchMsgEnd") return results;
+  }
+  throw new Error("Expected BatchMsgEnd but timed out");
+}
