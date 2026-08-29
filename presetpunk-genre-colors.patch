@@ -1,0 +1,163 @@
+From 13ce10c7d43e729325292c4d3dbc287c3e5a9c5f Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Sat, 29 Aug 2026 12:40:03 +0000
+Subject: [PATCH] feat(presetpunk): append spectrum color names to genre select
+
+---
+ presetpunk/i18n.js                      | 50 +++++++++++++++++++++++++
+ presetpunk/index.html                   |  4 +-
+ presetpunk/tests/genre-palette.test.mjs | 40 ++++++++++++++++++++
+ 3 files changed, 92 insertions(+), 2 deletions(-)
+ create mode 100644 presetpunk/tests/genre-palette.test.mjs
+
+diff --git a/presetpunk/i18n.js b/presetpunk/i18n.js
+index 6ab8563..f97ca07 100644
+--- a/presetpunk/i18n.js
++++ b/presetpunk/i18n.js
+@@ -350,6 +350,15 @@
+         "MIDI In: which input ports this app listens on (separate from MIDI Out above)",
+       "param.lfoSpeed": "LFO Speed",
+       "param.groove": "Groove / genre",
++      "genre.color.dub": "Red-Orange",
++      "genre.color.disco": "Orange",
++      "genre.color.house": "Yellow",
++      "genre.color.techno": "Lime",
++      "genre.color.tripHop": "Green",
++      "genre.color.hipHop": "Spring Green",
++      "genre.color.jungle": "Cyan",
++      "genre.color.ukGarage": "Sky Blue",
++      "genre.color.dubstep": "Blue",
+       "param.swingHint": "Max swing as % of a 16th when fader is full",
+       "param.cvRange": "CV Range",
+       "param.mixMode": "Mix Mode",
+@@ -702,6 +711,15 @@
+         "MIDI In: welche Eingänge diese App abhört (unabhängig vom MIDI Out oben)",
+       "param.lfoSpeed": "LFO Speed",
+       "param.groove": "Groove / genre",
++      "genre.color.dub": "Rot-Orange",
++      "genre.color.disco": "Orange",
++      "genre.color.house": "Gelb",
++      "genre.color.techno": "Lime",
++      "genre.color.tripHop": "Grün",
++      "genre.color.hipHop": "Frühlingsgrün",
++      "genre.color.jungle": "Cyan",
++      "genre.color.ukGarage": "Himmelblau",
++      "genre.color.dubstep": "Blau",
+       "param.swingHint":
+         "Max. Swing als % einer 16tel bei voll ausgeschlagenem Fader",
+       "param.cvRange": "CV Range",
+@@ -1106,6 +1124,15 @@
+         "MIDI In : ports d\u2019entrée écoutés par cette app (indépendant du MIDI Out ci-dessus)",
+       "param.lfoSpeed": "LFO Speed",
+       "param.groove": "Groove / genre",
++      "genre.color.dub": "Rouge-orangé",
++      "genre.color.disco": "Orange",
++      "genre.color.house": "Jaune",
++      "genre.color.techno": "Lime",
++      "genre.color.tripHop": "Vert",
++      "genre.color.hipHop": "Vert printemps",
++      "genre.color.jungle": "Cyan",
++      "genre.color.ukGarage": "Bleu ciel",
++      "genre.color.dubstep": "Bleu",
+       "param.swingHint":
+         "Swing max en % d’une 16e quand le fader est à fond",
+       "param.cvRange": "CV Range",
+@@ -1300,4 +1327,27 @@
+   global.setLang = setLang;
+   global.getLang = getLang;
+   global.FP_LANG_KEY = LANG_KEY;
++
++  /** Shared morph-axis genres (Grooves / Chord Vamp / Bassment). LED hues 0–240°. */
++  const GENRE_COLOR_KEYS = {
++    Dub: "genre.color.dub",
++    Disco: "genre.color.disco",
++    House: "genre.color.house",
++    Techno: "genre.color.techno",
++    "Trip-Hop": "genre.color.tripHop",
++    "Hip-Hop": "genre.color.hipHop",
++    Jungle: "genre.color.jungle",
++    "UK Garage": "genre.color.ukGarage",
++    Dubstep: "genre.color.dubstep",
++  };
++
++  function genreOptionLabel(variant) {
++    const v = String(variant ?? "");
++    const key = GENRE_COLOR_KEYS[v];
++    if (!key) return v;
++    return `${v} — ${t(key)}`;
++  }
++
++  global.GENRE_COLOR_KEYS = GENRE_COLOR_KEYS;
++  global.genreOptionLabel = genreOptionLabel;
+ })(typeof window !== "undefined" ? window : globalThis);
+diff --git a/presetpunk/index.html b/presetpunk/index.html
+index a7d4a41..99b7151 100644
+--- a/presetpunk/index.html
++++ b/presetpunk/index.html
+@@ -6810,7 +6810,7 @@
+         const opts = indices
+           .map((i) => {
+             const override = deps?.enumLabels?.get(pi)?.get(i);
+-            const lab = override ?? variants[i] ?? String(i);
++            const lab = genreOptionLabel(override ?? variants[i] ?? String(i));
+             return `<option value="${i}" ${cur === i ? "selected" : ""}>${escapeHtml(lab)}</option>`;
+           })
+           .join("");
+@@ -7269,7 +7269,7 @@
+           ${names
+             .map(
+               (lab, i) =>
+-                `<option value="${i}" ${cur === i ? "selected" : ""}>${lab}</option>`,
++                `<option value="${i}" ${cur === i ? "selected" : ""}>${escapeHtml(genreOptionLabel(lab))}</option>`,
+             )
+             .join("")}
+         </select>`);
+diff --git a/presetpunk/tests/genre-palette.test.mjs b/presetpunk/tests/genre-palette.test.mjs
+new file mode 100644
+index 0000000..67e3f17
+--- /dev/null
++++ b/presetpunk/tests/genre-palette.test.mjs
+@@ -0,0 +1,40 @@
++import { test } from "node:test";
++import assert from "node:assert/strict";
++import { readFileSync } from "node:fs";
++import { createContext, runInContext } from "node:vm";
++import { fileURLToPath } from "node:url";
++import { dirname, join } from "node:path";
++
++const root = join(dirname(fileURLToPath(import.meta.url)), "..");
++const src = readFileSync(join(root, "i18n.js"), "utf8");
++const sandbox = {
++  console,
++  localStorage: { getItem: () => null, setItem() {} },
++  document: {
++    querySelectorAll: () => [],
++    getElementById: () => null,
++    documentElement: { lang: "en" },
++    title: "",
++  },
++};
++sandbox.globalThis = sandbox;
++runInContext(src, createContext(sandbox));
++
++test("genreOptionLabel appends spectrum color for shared axis", () => {
++  sandbox.setLang("en");
++  assert.equal(sandbox.genreOptionLabel("Dub"), "Dub — Red-Orange");
++  assert.equal(sandbox.genreOptionLabel("Jungle"), "Jungle — Cyan");
++  assert.equal(sandbox.genreOptionLabel("Dubstep"), "Dubstep — Blue");
++});
++
++test("genreOptionLabel leaves non-genre enums alone", () => {
++  assert.equal(sandbox.genreOptionLabel("Depth"), "Depth");
++  assert.equal(sandbox.genreOptionLabel(""), "");
++});
++
++test("genreOptionLabel follows DE / FR", () => {
++  sandbox.setLang("de");
++  assert.equal(sandbox.genreOptionLabel("House"), "House — Gelb");
++  sandbox.setLang("fr");
++  assert.equal(sandbox.genreOptionLabel("UK Garage"), "UK Garage — Bleu ciel");
++});
+-- 
+2.43.0
+
