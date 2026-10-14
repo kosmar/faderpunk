@@ -1,0 +1,6154 @@
+{
+  "version": 1,
+  "appId": 123,
+  "app": "Dozen Ctrl",
+  "note": "Full CC maps for param pickers; ★ = suggested slot defaults.",
+  "devices": [
+    {
+      "id": "hydrasynth",
+      "name": "Hydrasynth",
+      "defaults": [
+        1,
+        14,
+        15,
+        29,
+        30,
+        31,
+        33,
+        34,
+        35,
+        36,
+        37,
+        39
+      ],
+      "ccs": [
+        {
+          "cc": 1,
+          "label": "★ Mod wheel",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 14,
+          "label": "★ Delay Feedback",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 15,
+          "label": "★ Delay Time",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 29,
+          "label": "★ MUT1 Ratio",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 30,
+          "label": "★ MUT1 Depth",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 31,
+          "label": "★ MUT1 DRY WET",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 33,
+          "label": "★ MUT2 Ratio",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 34,
+          "label": "★ MUT2 Depth",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 35,
+          "label": "★ MUT2 DRY WET",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 36,
+          "label": "★ MUT3 Ratio",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 37,
+          "label": "★ MUT3 Depth",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 39,
+          "label": "★ MUT3 DRY WET",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 40,
+          "label": "★ MUT4 Ratio",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 41,
+          "label": "★ MUT4 Depth",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 42,
+          "label": "★ MUT4 DRY WET",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 43,
+          "label": "★ RM12 Depth",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 50,
+          "label": "★ F1 Drive",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 51,
+          "label": "★ F1 Keytrack",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 53,
+          "label": "★ F1 VEL ENV",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 55,
+          "label": "★ F2 Cutoff",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 56,
+          "label": "★ F2 RES",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 58,
+          "label": "★ F2 Keytrack",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 60,
+          "label": "★ F2 VEL ENV",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 63,
+          "label": "★ Delay WET Tone",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 65,
+          "label": "★ Reverb Time",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 67,
+          "label": "★ Reverb Tone",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 71,
+          "label": "★ F1 RES",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 74,
+          "label": "★ F1 Cutoff",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 91,
+          "label": "★ Reverb DRY WET",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 92,
+          "label": "★ Delay DRY WET",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 106,
+          "label": "★ ARP Division",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 107,
+          "label": "★ ARP Gate",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 108,
+          "label": "★ ARP Mode",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 109,
+          "label": "★ ARP Ratchet",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 110,
+          "label": "★ ARP Chance",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 116,
+          "label": "★ Ring MOD F Rate",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 3,
+          "label": "Panel · Noise VOL",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 5,
+          "label": "Panel · Glide Time",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 7,
+          "label": "Panel · Volume",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 8,
+          "label": "Panel · Noise PAN",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 9,
+          "label": "Panel · Ring MOD VOL",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 10,
+          "label": "Panel · Ring MOD PAN",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 11,
+          "label": "EXP Pedal",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 12,
+          "label": "PRE Param1",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 13,
+          "label": "PRE Param2",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 16,
+          "label": "Macro1",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 17,
+          "label": "Macro2",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 18,
+          "label": "Macro3",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 19,
+          "label": "Macro4",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 20,
+          "label": "Macro5",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 21,
+          "label": "Macro6",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 22,
+          "label": "Macro7",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 23,
+          "label": "Macro8",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 24,
+          "label": "OSC1 Wavscan",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 25,
+          "label": "ENV4 Attack",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 26,
+          "label": "OSC2 WAV Scan",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 27,
+          "label": "ENV4 Decay",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 28,
+          "label": "LFO2 Gain",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 44,
+          "label": "Panel · OSC1 VOL",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 45,
+          "label": "Panel · OSC1 PAN",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 46,
+          "label": "Panel · OSC2 VOL",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 47,
+          "label": "Panel · OSC2 PAN",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 48,
+          "label": "Panel · OSC3 VOL",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 49,
+          "label": "Panel · OSC3 PAN",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 52,
+          "label": "F1 Lfo1amt",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 54,
+          "label": "F1 Env1amt",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 57,
+          "label": "F2 Type",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 59,
+          "label": "F2 Lfo1amt",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 61,
+          "label": "F2 Env1amt",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 62,
+          "label": "AMP Lfo2amt",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 64,
+          "label": "SUS Pedal",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 66,
+          "label": "Panel · Glide",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 68,
+          "label": "Post Param1",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 69,
+          "label": "Post Param2",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 70,
+          "label": "LFO1 Gain",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 72,
+          "label": "LFO1 Rate",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 73,
+          "label": "LFO2 Rate",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 75,
+          "label": "LFO3 Gain",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 76,
+          "label": "LFO3 Rate",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 77,
+          "label": "LFO4 Gain",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 78,
+          "label": "LFO4 Rate",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 79,
+          "label": "LFO5 Gain",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 80,
+          "label": "LFO5 Rate",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 81,
+          "label": "ENV1 Attack",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 82,
+          "label": "ENV1 Decay",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 83,
+          "label": "Panel · ENV1 Sustain",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 84,
+          "label": "ENV1 Release",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 85,
+          "label": "ENV2 Attack",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 86,
+          "label": "ENV2 Decay",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 87,
+          "label": "Panel · ENV2 Sustain",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 88,
+          "label": "ENV2 Release",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 89,
+          "label": "ENV3 Attack",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 90,
+          "label": "ENV3 Decay",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 93,
+          "label": "PRE MIX",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 94,
+          "label": "Post MIX",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 95,
+          "label": "Detune",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 96,
+          "label": "Panel · ENV3 Sustain",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 97,
+          "label": "ENV3 Release",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 102,
+          "label": "ENV5 Attack",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 103,
+          "label": "ENV5 Decay",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 104,
+          "label": "Panel · ENV5 Sustain",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 105,
+          "label": "ENV5 Release",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 111,
+          "label": "OSC1 Cent",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 112,
+          "label": "OSC2 Cent",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 113,
+          "label": "OSC3 Cent",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 114,
+          "label": "OSC3 F Rate",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 115,
+          "label": "Noise F Rate",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 117,
+          "label": "ST Width",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 118,
+          "label": "OSC1 F Rate",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 119,
+          "label": "OSC2 F Rate",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        }
+      ]
+    },
+    {
+      "id": "blofeld",
+      "name": "Blofeld",
+      "defaults": [
+        1,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25
+      ],
+      "ccs": [
+        {
+          "cc": 1,
+          "label": "★ Mod wheel",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 15,
+          "label": "★ LFO 1 shape",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 16,
+          "label": "★ LFO 1 speed",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 17,
+          "label": "★ LFO 1 sync",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 18,
+          "label": "★ LFO 1 delay",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 19,
+          "label": "★ LFO 2 shape",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 20,
+          "label": "★ LFO 2 speed",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 21,
+          "label": "★ LFO 2 sync",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 22,
+          "label": "★ LFO 2 delay",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 23,
+          "label": "★ LFO 3 shape",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 24,
+          "label": "★ LFO 3 speed",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 25,
+          "label": "★ LFO 3 sync",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 26,
+          "label": "★ LFO 3 delay",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 67,
+          "label": "★ Filter Routing",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 68,
+          "label": "★ Filter 1 type",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 69,
+          "label": "★ Filter 1 cutoff",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 70,
+          "label": "★ Filter 1 resonance",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 71,
+          "label": "★ Filter 1 drive",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 72,
+          "label": "★ Filter 1 keytrack",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 73,
+          "label": "★ Filter 1 envelope amount",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 74,
+          "label": "★ Filter 1 envelope velocity",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 75,
+          "label": "★ Filter 1 cutoff modulation",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 76,
+          "label": "★ Filter 1 FM",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 79,
+          "label": "★ Filter 2 type",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 80,
+          "label": "★ Filter 2 cutoff",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 81,
+          "label": "★ Filter 2 resonance",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 82,
+          "label": "★ Filter 2 drive",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 83,
+          "label": "★ Filter 2 keytrack",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 84,
+          "label": "★ Filter 2 envelope amount",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 85,
+          "label": "★ Filter 2 envelope velocity",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 86,
+          "label": "★ Filter 2 cutoff modulation",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 87,
+          "label": "★ Filter 2 FM",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 93,
+          "label": "★ FX 1 mix",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 94,
+          "label": "★ FX 2 mix",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 95,
+          "label": "★ Filter envelope attack",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 96,
+          "label": "★ Filter envelope decay",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 98,
+          "label": "★ Filter envelope decay 2",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 100,
+          "label": "★ Filter envelope release",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 2,
+          "label": "Breath control",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 4,
+          "label": "Foot control",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 5,
+          "label": "Panel · Glide rate",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 7,
+          "label": "Panel · Channel volume",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 10,
+          "label": "Panel · Pan",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 12,
+          "label": "Arpeggiator range",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 13,
+          "label": "Arpeggiator length",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 14,
+          "label": "Arpeggiator active",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 27,
+          "label": "Panel · OSC 1 octave",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 28,
+          "label": "OSC 1 semitone",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 29,
+          "label": "OSC 1 detune",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 30,
+          "label": "OSC 1 FM",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 31,
+          "label": "OSC 1 shape",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 33,
+          "label": "OSC 1 pulsewidth",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 34,
+          "label": "OSC 1 PWM",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 35,
+          "label": "Panel · OSC 2 octave",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 36,
+          "label": "OSC 2 semitone",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 37,
+          "label": "OSC 2 detune",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 38,
+          "label": "OSC 2 FM",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 39,
+          "label": "OSC 2 shape",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 40,
+          "label": "OSC 2 pulsewidth",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 41,
+          "label": "OSC 2 PWM",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 42,
+          "label": "Panel · OSC 3 octave",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 43,
+          "label": "OSC 3 semitone",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 44,
+          "label": "OSC 3 detune",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 45,
+          "label": "OSC 3 FM",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 46,
+          "label": "OSC 3 shape",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 47,
+          "label": "OSC 3 pulsewidth",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 48,
+          "label": "OSC 3 PWM",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 49,
+          "label": "Sync",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 50,
+          "label": "Pitchmod",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 51,
+          "label": "Panel · Glide mode",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 52,
+          "label": "Panel · OSC 1 level",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 53,
+          "label": "Panel · OSC 1 balance",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 54,
+          "label": "Panel · Ringmod level",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 55,
+          "label": "Panel · Ringmod balance",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 56,
+          "label": "Panel · OSC 2 level",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 57,
+          "label": "Panel · OSC 2 balance",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 58,
+          "label": "Panel · OSC 3 level",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 59,
+          "label": "Panel · OSC 3 balance",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 60,
+          "label": "Panel · Noise level",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 61,
+          "label": "Panel · Noise balance",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 62,
+          "label": "Noise color",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 64,
+          "label": "Panel · Sustain pedal",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 65,
+          "label": "Panel · Glide active",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 66,
+          "label": "Sostenuto",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 77,
+          "label": "Panel · Filter 1 pan",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 78,
+          "label": "Panel · Filter 1 pan modulation",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 88,
+          "label": "Panel · Filter 2 pan",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 89,
+          "label": "Panel · Filter 2 pan modulation",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 90,
+          "label": "Panel · Amp volume",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 91,
+          "label": "Amp velocity",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 92,
+          "label": "Amp modulation",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 97,
+          "label": "Panel · Filter envelope sustain",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 99,
+          "label": "Panel · Filter envelope sustain 2",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 101,
+          "label": "Amp envelope attack",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 102,
+          "label": "Amp envelope decay",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 103,
+          "label": "Panel · Amp envelope sustain",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 104,
+          "label": "Amp envelope decay 2",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 105,
+          "label": "Panel · Amp envelope sustain 2",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 106,
+          "label": "Amp envelope release",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 107,
+          "label": "Envelope 3 attack",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 108,
+          "label": "Envelope 3 decay",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 109,
+          "label": "Panel · Envelope 3 sustain",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 110,
+          "label": "Envelope 3 decay 2",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 111,
+          "label": "Panel · Envelope 3 sustain 2",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 112,
+          "label": "Envelope 3 release",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 113,
+          "label": "Envelope 4 attack",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 114,
+          "label": "Envelope 4 decay",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 115,
+          "label": "Panel · Envelope 4 sustain",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 116,
+          "label": "Envelope 4 decay 2",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 117,
+          "label": "Panel · Envelope 4 sustain 2",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 118,
+          "label": "Envelope 4 release",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        }
+      ]
+    },
+    {
+      "id": "lxr_02",
+      "name": "LXR-02",
+      "defaults": [
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        30,
+        31,
+        32,
+        33,
+        34
+      ],
+      "ccs": [
+        {
+          "cc": 21,
+          "label": "★ V1 WF MOD OSC",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 22,
+          "label": "★ V2 WF MOD OSC",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 23,
+          "label": "★ V3 WF MOD OSC",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 24,
+          "label": "★ CP WF MOD OSC1",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 25,
+          "label": "★ CP WF MOD OSC2",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 26,
+          "label": "★ HH WF MOD OSC1",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 27,
+          "label": "★ HH WF MOD OSC2",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 30,
+          "label": "★ CP CT MOD OSC1",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 31,
+          "label": "★ CP CT MOD OSC2",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 32,
+          "label": "★ CP Gain MOD OSC1",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 33,
+          "label": "★ CP Gain MOD OSC2",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 34,
+          "label": "★ HH CT MOD OSC1",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 35,
+          "label": "★ HH CT MOD OSC2",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 36,
+          "label": "★ HH Gain MOD OSC1",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 37,
+          "label": "★ HH Gain MOD OSC2",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 44,
+          "label": "★ V1 FLT RES",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 45,
+          "label": "★ V2 FLT RES",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 46,
+          "label": "★ V3 FLT RES",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 47,
+          "label": "★ SN FLT RES",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 48,
+          "label": "★ CP FLT RES",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 49,
+          "label": "★ HH FLT RES",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 71,
+          "label": "★ V1 MOD ENV DEC",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 72,
+          "label": "★ V2 MOD ENV DEC",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 75,
+          "label": "★ V1 ENV MOD AMT",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 76,
+          "label": "★ V2 ENV MOD AMT",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 77,
+          "label": "★ V3 ENV MOD AMT",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 78,
+          "label": "★ SN ENV MOD AMT",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 79,
+          "label": "★ V1 MOD ENV SLP",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 80,
+          "label": "★ V2 MOD ENV SLP",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 81,
+          "label": "★ V3 MOD ENV SLP",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 82,
+          "label": "★ SN MOD ENV SLP",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 116,
+          "label": "★ V1 LFO FRQ",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 117,
+          "label": "★ V2 LFO FRQ",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 118,
+          "label": "★ V3 LFO FRQ",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 119,
+          "label": "★ SN LFO FRQ",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 2,
+          "label": "V1 OSC1 WF",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 3,
+          "label": "V2 OSC1 WF",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 4,
+          "label": "V3 OSC1 WF",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 5,
+          "label": "SN OSC1 WF",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 7,
+          "label": "CP OSC1 WF",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 8,
+          "label": "HH OSC1 WF",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 9,
+          "label": "V1 OSC1 CT",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 10,
+          "label": "V1 OSC1 FT",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 11,
+          "label": "V2 OSC1 CT",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 12,
+          "label": "V2 OSC1 FT",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 13,
+          "label": "V3 OSC1 CT",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 14,
+          "label": "V3 OSC1 FT",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 15,
+          "label": "SN OSC1 CT",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 16,
+          "label": "SN OSC1 FT",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 17,
+          "label": "CP OSC1 CT",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 18,
+          "label": "CP OSC1 FT",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 19,
+          "label": "HH OSC1 CT",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 20,
+          "label": "HH OSC1 FT",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 28,
+          "label": "SN NSE FRQ",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 29,
+          "label": "SN MIX OSC NSE",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 38,
+          "label": "V1 FLT FRQ",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 39,
+          "label": "V2 FLT FRQ",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 40,
+          "label": "V3 FLT FRQ",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 41,
+          "label": "SN FLT FRQ",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 42,
+          "label": "CP FLT FRQ",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 43,
+          "label": "HH FLT FRQ",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 50,
+          "label": "Panel · V1 VOL ENV ATK",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 51,
+          "label": "Panel · V1 VOL ENV DEC",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 52,
+          "label": "Panel · V2 VOL ENV ATK",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 53,
+          "label": "Panel · V2 VOL ENV DEC",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 54,
+          "label": "Panel · V3 VOL ENV ATK",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 56,
+          "label": "Panel · SN VOL ENV ATK",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 58,
+          "label": "Panel · CP VOL ENV ATK",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 59,
+          "label": "Panel · CP VOL ENV DEC",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 60,
+          "label": "Panel · HH VOL ENV ATK",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 61,
+          "label": "Panel · CH VOL ENV DEC",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 62,
+          "label": "Panel · OH VOL ENV DEC",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 63,
+          "label": "Panel · V1 VOL ENV SLP",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 64,
+          "label": "Panel · V2 VOL ENV SLP",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 65,
+          "label": "Panel · V3 VOL ENV SLP",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 66,
+          "label": "Panel · SN VOL EG SLP",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 67,
+          "label": "Panel · CP VOL EG SLP",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 68,
+          "label": "Panel · HH VOL EG SLP",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 69,
+          "label": "Panel · SN VOL EG RPT",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 70,
+          "label": "Panel · CP VOL EG RPT",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 73,
+          "label": "Panel · V3 VOL ENV DEC",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 74,
+          "label": "Panel · SN VOL ENV DEC",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 83,
+          "label": "V1 FM AMT",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 84,
+          "label": "V1 FM FRQ",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 85,
+          "label": "V2 FM AMT",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 86,
+          "label": "V2 FM FRQ",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 87,
+          "label": "V3 FM AMT",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 88,
+          "label": "V3 FM FRQ",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 89,
+          "label": "Panel · V1 VOL",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 90,
+          "label": "Panel · V2 VOL",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 91,
+          "label": "Panel · V3 VOL",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 92,
+          "label": "Panel · SN VOL",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 93,
+          "label": "Panel · CP VOL",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 94,
+          "label": "Panel · HH VOL",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 95,
+          "label": "Panel · V1 PAN",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 96,
+          "label": "Panel · V2 PAN",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 97,
+          "label": "Panel · V3 PAN",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 100,
+          "label": "Panel · SN PAN",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 101,
+          "label": "Panel · CP PAN",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 102,
+          "label": "Panel · HH PAN",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 103,
+          "label": "V1 Dist",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 104,
+          "label": "V2 Dist",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 105,
+          "label": "V3 Dist",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 106,
+          "label": "SN Dist",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 107,
+          "label": "CP Dist",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 108,
+          "label": "HH Dist",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 109,
+          "label": "V1 DCM",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 110,
+          "label": "V2 DCM",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 111,
+          "label": "V3 DCM",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 112,
+          "label": "SN DCM",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 113,
+          "label": "CP DCM",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 114,
+          "label": "HH DCM",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 115,
+          "label": "ALL DCM",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        }
+      ]
+    },
+    {
+      "id": "tempera",
+      "name": "Tempera",
+      "defaults": [
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        53,
+        54
+      ],
+      "ccs": [
+        {
+          "cc": 17,
+          "label": "★ Reverb size",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 18,
+          "label": "★ Reverb color",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 19,
+          "label": "★ Reverb mix",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 20,
+          "label": "★ Delay feedback",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 21,
+          "label": "★ Delay time",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 22,
+          "label": "★ Delay color",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 23,
+          "label": "★ Delay mix",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 24,
+          "label": "★ Filter cutoff",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 25,
+          "label": "★ Filter resonance",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 26,
+          "label": "★ Chorus depth",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 53,
+          "label": "★ Tone filter width",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 54,
+          "label": "★ Tone filter center",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 55,
+          "label": "★ Effects send",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 72,
+          "label": "★ Tone filter width",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 73,
+          "label": "★ Tone filter center",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 75,
+          "label": "★ Effects send",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 89,
+          "label": "★ Tone filter width",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 90,
+          "label": "★ Tone filter center",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 91,
+          "label": "★ Effects send",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 107,
+          "label": "★ Tone filter width",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 109,
+          "label": "★ Tone filter center",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 109,
+          "label": "★ Effects send",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 1,
+          "label": "Modwheel",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 10,
+          "label": "Active emitter",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 11,
+          "label": "Place emitter",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 12,
+          "label": "Remove emitter",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 13,
+          "label": "Attack",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 14,
+          "label": "Decay",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 15,
+          "label": "Panel · Sustain",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 16,
+          "label": "Release",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 27,
+          "label": "Chorus speed",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 28,
+          "label": "Chorus flange",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 29,
+          "label": "Chorus mix",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 30,
+          "label": "Panel · Track 1 volume",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 31,
+          "label": "Panel · Track 2 volume",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 33,
+          "label": "Panel · Track 3 volume",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 34,
+          "label": "Panel · Track 4 volume",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 35,
+          "label": "Panel · Track 5 volume",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 36,
+          "label": "Panel · Track 6 volume",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 37,
+          "label": "Panel · Track 7 volume",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 39,
+          "label": "Panel · Track 8 volume",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 40,
+          "label": "Panel · Volume",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 41,
+          "label": "Grain length, cell",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 42,
+          "label": "Grain length, note",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 43,
+          "label": "Grain density",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 44,
+          "label": "Grain shape",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 45,
+          "label": "Grain shape attack",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 46,
+          "label": "Panel · Grain pan",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 47,
+          "label": "Panel · Grain tune spread",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 48,
+          "label": "Panel · Octave",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 49,
+          "label": "Relative X",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 50,
+          "label": "Relative Y",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 50,
+          "label": "Grain density",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 51,
+          "label": "Spray X",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 52,
+          "label": "Spray Y",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 56,
+          "label": "Panel · Volume",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 57,
+          "label": "Grain length, cell",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 59,
+          "label": "Grain length, note",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 60,
+          "label": "Grain shape",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 61,
+          "label": "Grain shape attack",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 62,
+          "label": "Panel · Grain pan",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 63,
+          "label": "Panel · Grain tune spread",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 64,
+          "label": "Damper pedal",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 65,
+          "label": "Panel · Octave",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 67,
+          "label": "Relative X",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 68,
+          "label": "Relative Y",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 69,
+          "label": "Spray X",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 70,
+          "label": "Spray Y",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 76,
+          "label": "Panel · Volume",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 77,
+          "label": "Grain length, cell",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 78,
+          "label": "Grain length, note",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 79,
+          "label": "Grain density",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 80,
+          "label": "Grain shape",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 81,
+          "label": "Grain shape attack",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 82,
+          "label": "Panel · Grain pan",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 83,
+          "label": "Panel · Grain tune spread",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 84,
+          "label": "Panel · Octave",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 85,
+          "label": "Relative X",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 86,
+          "label": "Relative Y",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 87,
+          "label": "Spray X",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 88,
+          "label": "Spray Y",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 92,
+          "label": "Panel · Volume",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 93,
+          "label": "Grain length, cell",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 94,
+          "label": "Grain length, note",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 95,
+          "label": "Grain density",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 96,
+          "label": "Grain shape",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 97,
+          "label": "Grain shape attack",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 98,
+          "label": "Panel · Grain pan",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 99,
+          "label": "Panel · Grain tune spread",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 102,
+          "label": "Panel · Octave",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 103,
+          "label": "Relative X",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 104,
+          "label": "Relative Y",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 105,
+          "label": "Spray X",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 106,
+          "label": "Spray Y",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 110,
+          "label": "Modulator 1 size",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 111,
+          "label": "Modulator 2 size",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 112,
+          "label": "Modulator 3 size",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 113,
+          "label": "Modulator 4 size",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 114,
+          "label": "Modulator 5 size",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 115,
+          "label": "Modulator 6 size",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 116,
+          "label": "Modulator 7 size",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 117,
+          "label": "Modulator 8 size",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 118,
+          "label": "Modulator 9 size",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 119,
+          "label": "Modulator 10 size",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        }
+      ]
+    },
+    {
+      "id": "vector",
+      "name": "Vector",
+      "defaults": [
+        12,
+        18,
+        20,
+        21,
+        22,
+        23,
+        24,
+        26,
+        27,
+        29,
+        1,
+        2
+      ],
+      "ccs": [
+        {
+          "cc": 12,
+          "label": "★ Delay mix",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 18,
+          "label": "★ Vibrato depth",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 20,
+          "label": "★ Tremolo depth",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 21,
+          "label": "★ Drive amount",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 22,
+          "label": "★ Drive colour",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 23,
+          "label": "★ Reverb size",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 24,
+          "label": "★ Reverb colour",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 26,
+          "label": "★ Delay time",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 27,
+          "label": "★ Delay feedback",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 29,
+          "label": "★ Chorus depth",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 1,
+          "label": "Routable parameter",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 2,
+          "label": "Suborbit size",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 3,
+          "label": "Orbiter center position X",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 4,
+          "label": "Orbiter center position Y",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 5,
+          "label": "Orbiter width",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 6,
+          "label": "Data entry MSB",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 7,
+          "label": "Lissajous warp X",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 8,
+          "label": "Lissajous warp Y",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 9,
+          "label": "Routable parameter",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 10,
+          "label": "Reverb amount",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 11,
+          "label": "Chorus mix",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 13,
+          "label": "Envelope attack",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 14,
+          "label": "Envelope decay",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 15,
+          "label": "Panel · Envelope sustain",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 16,
+          "label": "Routable parameter",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 17,
+          "label": "Routable parameter",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 19,
+          "label": "Tremolo speed",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 25,
+          "label": "Global resonance",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 28,
+          "label": "Chorus speed",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 30,
+          "label": "Chorus colour",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 31,
+          "label": "Arpeggiator note length",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 32,
+          "label": "Panel · Bank select LSB",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 33,
+          "label": "Panel · Stack volume",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 34,
+          "label": "Detune stack",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 35,
+          "label": "Panel · Glide",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 36,
+          "label": "Voices",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 37,
+          "label": "Panel · Follower volume",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 38,
+          "label": "Data entry LSB",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 39,
+          "label": "Suborbit offset",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 40,
+          "label": "Stereo bias",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 41,
+          "label": "Detune drift",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 42,
+          "label": "Stereo scatter",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 43,
+          "label": "Orbit attack",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 44,
+          "label": "Orbit decay",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 45,
+          "label": "Orbit release",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 46,
+          "label": "Arpeggiator humanize",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 47,
+          "label": "Suborbit speed",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 48,
+          "label": "Orbiter height",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 49,
+          "label": "Panel · Volume",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 50,
+          "label": "Envelope release",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 51,
+          "label": "Vibrato speed",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 52,
+          "label": "Detune follower",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 64,
+          "label": "Panel · Damper/sustain pedal",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 66,
+          "label": "Sostenuto pedal",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 89,
+          "label": "Routable parameter",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 100,
+          "label": "Registered parameter number LSB",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 101,
+          "label": "Registered parameter number MSB",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 114,
+          "label": "Routable parameter",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 115,
+          "label": "Routable parameter",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        }
+      ]
+    },
+    {
+      "id": "minitaur",
+      "name": "Minitaur",
+      "defaults": [
+        82,
+        85,
+        86,
+        87,
+        89,
+        112,
+        5,
+        65,
+        70,
+        71,
+        72,
+        73
+      ],
+      "ccs": [
+        {
+          "cc": 82,
+          "label": "★ LFO: Key Trigger",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 85,
+          "label": "★ LFO: Shape",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 86,
+          "label": "★ LFO: Clock Divide",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 87,
+          "label": "★ LFO: MIDI Sync",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 89,
+          "label": "★ Filter: Vel Sens",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 112,
+          "label": "★ LFO: VCO 2 Only",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 5,
+          "label": "Panel · Glide: Rate",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 65,
+          "label": "Panel · Glide: Switch",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 70,
+          "label": "VCO 1: Wave",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 71,
+          "label": "VCO 2: Wave",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 72,
+          "label": "Release Switch",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 73,
+          "label": "EG Trigger Mode",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 80,
+          "label": "Hard Sync",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 81,
+          "label": "Note Sync",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 83,
+          "label": "Panel · Glide: Legato",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 90,
+          "label": "VCA: Vel Sens",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 91,
+          "label": "Key Priority",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 92,
+          "label": "Panel · Glide: Type",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 107,
+          "label": "PB: Up Range",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 108,
+          "label": "PB: Down Range",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        }
+      ]
+    },
+    {
+      "id": "p_6",
+      "name": "P-6",
+      "defaults": [
+        12,
+        24,
+        26,
+        71,
+        74,
+        78,
+        85,
+        86,
+        89,
+        90,
+        3,
+        7
+      ],
+      "ccs": [
+        {
+          "cc": 12,
+          "label": "★ Filter type",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 24,
+          "label": "★ Filter envelope depth",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 26,
+          "label": "★ Filter cutoff key follow",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 71,
+          "label": "★ Filter resonance",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 74,
+          "label": "★ Filter frequency",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 78,
+          "label": "★ Filter velocity sensitivity",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 85,
+          "label": "★ Send delay",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 86,
+          "label": "★ Send reverb",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 89,
+          "label": "★ Reverb time",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 90,
+          "label": "★ Delay time",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 3,
+          "label": "Grain reverse probability",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 7,
+          "label": "Panel · Level",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 9,
+          "label": "Panel · Auto pan",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 10,
+          "label": "Panel · Pan",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 13,
+          "label": "Detune",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 14,
+          "label": "Panel · Level jitter",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 15,
+          "label": "Grain shape",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 16,
+          "label": "Grain time key follow",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 17,
+          "label": "Lo-fi intensity",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 18,
+          "label": "Panel · Fine tune",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 19,
+          "label": "Head position",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 20,
+          "label": "Head speed",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 21,
+          "label": "Grains",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 23,
+          "label": "Grain size",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 25,
+          "label": "Spread",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 28,
+          "label": "Amp switch",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 29,
+          "label": "Envelope mode",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 30,
+          "label": "Panel · Envelope sustain",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 68,
+          "label": "Grain timing jitter",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 72,
+          "label": "Envelope release",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 73,
+          "label": "Envelope attack",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 75,
+          "label": "Envelope decay",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 76,
+          "label": "Panel · Coarse tune",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 77,
+          "label": "Envelope time key follow",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 79,
+          "label": "Start mode",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 84,
+          "label": "Output bus select",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 87,
+          "label": "Lo-fi switch",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 88,
+          "label": "Sample",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 91,
+          "label": "Panel · Reverb level",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 92,
+          "label": "Panel · Delay level",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        }
+      ]
+    },
+    {
+      "id": "drum_3p",
+      "name": "Drum 3P",
+      "defaults": [
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        30,
+        31,
+        44,
+        45,
+        46,
+        47
+      ],
+      "ccs": [
+        {
+          "cc": 12,
+          "label": "★ Reverb Type",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 13,
+          "label": "★ Reverb Color",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 14,
+          "label": "★ Noise Filter Frequency",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 15,
+          "label": "★ Noise Filter Type",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 16,
+          "label": "★ Noise DYN Filter",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 17,
+          "label": "★ Noise Filter Resonance",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 30,
+          "label": "★ Tone Spectra",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 31,
+          "label": "★ Tone Pitch MSB",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 44,
+          "label": "★ Delay Rate",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 45,
+          "label": "★ Delay Feedback",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 46,
+          "label": "★ Tone Wave",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 47,
+          "label": "★ Delay Amount",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 48,
+          "label": "★ Reverb Amount",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 49,
+          "label": "★ Tone Decay Mode",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 50,
+          "label": "★ Tone Decay",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 52,
+          "label": "★ Tone Freq",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 53,
+          "label": "★ Tone DYN Filter",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 54,
+          "label": "★ Tone Bend Amount",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 55,
+          "label": "★ Tone Bend Time",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 63,
+          "label": "★ Tone Pitch LSB",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 7,
+          "label": "Panel · Level",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 10,
+          "label": "Panel · PAN",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 18,
+          "label": "Panel · Noise Level",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 19,
+          "label": "Panel · Tone Level",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 20,
+          "label": "Noise Decay Mode",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 21,
+          "label": "Noise Decay",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 23,
+          "label": "Dist Amount",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 24,
+          "label": "Dist Type",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 25,
+          "label": "EQ Frequency",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 26,
+          "label": "EQ Gain",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 32,
+          "label": "Panel · Bank Select LSB",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 56,
+          "label": "Panel · Click Level",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 57,
+          "label": "Click Type",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 59,
+          "label": "Mono Group",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 70,
+          "label": "Channel Select",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        }
+      ]
+    },
+    {
+      "id": "streichfett",
+      "name": "Streichfett",
+      "defaults": [
+        1,
+        76,
+        91,
+        92,
+        93,
+        94,
+        64,
+        70,
+        71,
+        72,
+        73,
+        74
+      ],
+      "ccs": [
+        {
+          "cc": 1,
+          "label": "★ MOD Wheel",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 76,
+          "label": "★ Solo Tone",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 91,
+          "label": "★ FX Type",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 92,
+          "label": "★ FX Animate Amount",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 93,
+          "label": "★ FX Phaser Amount",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 94,
+          "label": "★ FX Reverb Amount",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 64,
+          "label": "Panel · Sustain",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 70,
+          "label": "STR Registration",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 71,
+          "label": "STR Octaves",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 72,
+          "label": "STR Release",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 73,
+          "label": "STR Crescendo",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 74,
+          "label": "STR ENS Type",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 75,
+          "label": "STR Ensemble",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 77,
+          "label": "Solo Tremolo",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 78,
+          "label": "Solo Split",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 79,
+          "label": "Panel · Solo Sustain",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        },
+        {
+          "cc": 80,
+          "label": "Solo Attack",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 81,
+          "label": "Solo Decay",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 82,
+          "label": "Panel · Balance",
+          "recommended": false,
+          "tier": "panel",
+          "section": ""
+        }
+      ]
+    },
+    {
+      "id": "polyphrase",
+      "name": "Polyphrase",
+      "defaults": [
+        2,
+        3,
+        1,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        13
+      ],
+      "ccs": [
+        {
+          "cc": 2,
+          "label": "★ Tone",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 3,
+          "label": "★ Depth",
+          "recommended": true,
+          "tier": "hidden",
+          "section": ""
+        },
+        {
+          "cc": 1,
+          "label": "Repeats",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 4,
+          "label": "Rate",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 5,
+          "label": "Slider L",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 6,
+          "label": "Slider R",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 7,
+          "label": "Mix",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 8,
+          "label": "Time",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 9,
+          "label": "Echo Style",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 10,
+          "label": "Sync",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 11,
+          "label": "Trig Mode",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 13,
+          "label": "Bypass",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 14,
+          "label": "Infinite",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 15,
+          "label": "Tap Tempo",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 16,
+          "label": "Trails",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        },
+        {
+          "cc": 17,
+          "label": "MIDI Clock Enable",
+          "recommended": false,
+          "tier": "other",
+          "section": ""
+        }
+      ]
+    },
+    {
+      "id": "fm1",
+      "name": "M-Vave FM1",
+      "defaults": [
+        1,
+        11,
+        70,
+        71,
+        73,
+        74,
+        75,
+        79,
+        91,
+        93,
+        94,
+        95
+      ],
+      "ccs": [
+        {
+          "cc": 1,
+          "label": "★ FX / Mod Wheel",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX"
+        },
+        {
+          "cc": 11,
+          "label": "★ FX / Expression",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX"
+        },
+        {
+          "cc": 70,
+          "label": "★ FX / LFO Rate",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX"
+        },
+        {
+          "cc": 71,
+          "label": "★ FX / Filter Res",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX"
+        },
+        {
+          "cc": 73,
+          "label": "★ FX / Attack",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX"
+        },
+        {
+          "cc": 74,
+          "label": "★ FX / Filter Cutoff",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX"
+        },
+        {
+          "cc": 75,
+          "label": "★ FX / Decay",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX"
+        },
+        {
+          "cc": 79,
+          "label": "★ FX / Release",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX"
+        },
+        {
+          "cc": 91,
+          "label": "★ FX Depth",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX"
+        },
+        {
+          "cc": 93,
+          "label": "★ FX / Chorus",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX"
+        },
+        {
+          "cc": 94,
+          "label": "★ FX / Delay",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX"
+        },
+        {
+          "cc": 95,
+          "label": "★ FX / Reverb",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX"
+        }
+      ]
+    },
+    {
+      "id": "digitone",
+      "name": "Digitone",
+      "defaults": [
+        9,
+        12,
+        13,
+        14,
+        19,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27
+      ],
+      "ccs": [
+        {
+          "cc": 9,
+          "label": "★ Amp parameters / Drive",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Amp parameters"
+        },
+        {
+          "cc": 12,
+          "label": "★ Amp parameters / Chorus send",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Amp parameters"
+        },
+        {
+          "cc": 13,
+          "label": "★ Trig parameters / Filter trig",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Trig parameters"
+        },
+        {
+          "cc": 14,
+          "label": "★ Trig parameters / LFO trig",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Trig parameters"
+        },
+        {
+          "cc": 19,
+          "label": "★ FM parameters (syn 1) / Feedback",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FM parameters (syn 1)"
+        },
+        {
+          "cc": 21,
+          "label": "★ Reverb / Predelay",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Reverb"
+        },
+        {
+          "cc": 22,
+          "label": "★ Reverb / Shelving gain",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Reverb"
+        },
+        {
+          "cc": 23,
+          "label": "★ Filter parameters / Filter frequency",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Filter parameters"
+        },
+        {
+          "cc": 24,
+          "label": "★ Filter parameters / Resonance",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Filter parameters"
+        },
+        {
+          "cc": 25,
+          "label": "★ Filter parameters / Env depth",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Filter parameters"
+        },
+        {
+          "cc": 26,
+          "label": "★ Filter parameters / Base",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Filter parameters"
+        },
+        {
+          "cc": 27,
+          "label": "★ Filter parameters / Width",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Filter parameters"
+        },
+        {
+          "cc": 28,
+          "label": "★ LFO parameters / Speed LFO 1",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO parameters"
+        },
+        {
+          "cc": 29,
+          "label": "★ LFO parameters / Depth LFO 1",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO parameters"
+        },
+        {
+          "cc": 30,
+          "label": "★ LFO parameters / Speed LFO 2",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO parameters"
+        },
+        {
+          "cc": 31,
+          "label": "★ LFO parameters / Depth LFO 2",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO parameters"
+        },
+        {
+          "cc": 43,
+          "label": "★ Filter parameters / Env delay",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Filter parameters"
+        },
+        {
+          "cc": 70,
+          "label": "★ Filter parameters / Attack time",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Filter parameters"
+        },
+        {
+          "cc": 71,
+          "label": "★ Filter parameters / Decay time",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Filter parameters"
+        },
+        {
+          "cc": 73,
+          "label": "★ Filter parameters / Release time",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Filter parameters"
+        },
+        {
+          "cc": 74,
+          "label": "★ Filter parameters / Filter type",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Filter parameters"
+        },
+        {
+          "cc": 75,
+          "label": "★ FM parameters (syn 2) / A env attack",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FM parameters (syn 2)"
+        },
+        {
+          "cc": 76,
+          "label": "★ FM parameters (syn 2) / A env decay",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FM parameters (syn 2)"
+        },
+        {
+          "cc": 77,
+          "label": "★ FM parameters (syn 2) / A env end",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FM parameters (syn 2)"
+        },
+        {
+          "cc": 79,
+          "label": "★ FM parameters (syn 2) / B env attack",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FM parameters (syn 2)"
+        },
+        {
+          "cc": 80,
+          "label": "★ FM parameters (syn 2) / B env decay",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FM parameters (syn 2)"
+        },
+        {
+          "cc": 81,
+          "label": "★ FM parameters (syn 2) / B env end",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FM parameters (syn 2)"
+        },
+        {
+          "cc": 83,
+          "label": "★ FM parameters (syn 2) / A delay",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FM parameters (syn 2)"
+        },
+        {
+          "cc": 85,
+          "label": "★ FM parameters (syn 2) / A env reset",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FM parameters (syn 2)"
+        },
+        {
+          "cc": 86,
+          "label": "★ FM parameters (syn 2) / B delay",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FM parameters (syn 2)"
+        },
+        {
+          "cc": 88,
+          "label": "★ FM parameters (syn 2) / B env reset",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FM parameters (syn 2)"
+        },
+        {
+          "cc": 91,
+          "label": "★ FM parameters (syn 1) / Ratio C",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FM parameters (syn 1)"
+        },
+        {
+          "cc": 92,
+          "label": "★ FM parameters (syn 1) / Ratio A",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FM parameters (syn 1)"
+        },
+        {
+          "cc": 102,
+          "label": "★ Amp parameters / Amp env reset",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Amp parameters"
+        },
+        {
+          "cc": 108,
+          "label": "★ LFO parameters / Multiplier LFO 1",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO parameters"
+        },
+        {
+          "cc": 109,
+          "label": "★ LFO parameters / Fade in/out LFO 1",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO parameters"
+        },
+        {
+          "cc": 110,
+          "label": "★ LFO parameters / Destination LFO 1",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO parameters"
+        },
+        {
+          "cc": 111,
+          "label": "★ LFO parameters / Waveform LFO 1",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO parameters"
+        },
+        {
+          "cc": 112,
+          "label": "★ LFO parameters / Start phase LFO 1",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO parameters"
+        },
+        {
+          "cc": 113,
+          "label": "★ LFO parameters / Trig mode LFO 1",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO parameters"
+        },
+        {
+          "cc": 114,
+          "label": "★ LFO parameters / Multiplier LFO 2",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO parameters"
+        },
+        {
+          "cc": 115,
+          "label": "★ LFO parameters / Fade in/out LFO 2",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO parameters"
+        },
+        {
+          "cc": 116,
+          "label": "★ LFO parameters / Destination LFO 2",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO parameters"
+        },
+        {
+          "cc": 117,
+          "label": "★ LFO parameters / Waveform LFO 2",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO parameters"
+        },
+        {
+          "cc": 118,
+          "label": "★ LFO parameters / Start phase LFO 2",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO parameters"
+        },
+        {
+          "cc": 119,
+          "label": "★ LFO parameters / Trig mode LFO 2",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO parameters"
+        },
+        {
+          "cc": 3,
+          "label": "Trig parameters / Root",
+          "recommended": false,
+          "tier": "other",
+          "section": "Trig parameters"
+        },
+        {
+          "cc": 4,
+          "label": "Trig parameters / Velocity",
+          "recommended": false,
+          "tier": "other",
+          "section": "Trig parameters"
+        },
+        {
+          "cc": 5,
+          "label": "Trig parameters / Length",
+          "recommended": false,
+          "tier": "other",
+          "section": "Trig parameters"
+        },
+        {
+          "cc": 7,
+          "label": "Panel · Amp parameters / Volume",
+          "recommended": false,
+          "tier": "panel",
+          "section": "Amp parameters"
+        },
+        {
+          "cc": 10,
+          "label": "Panel · Amp parameters / Pan",
+          "recommended": false,
+          "tier": "panel",
+          "section": "Amp parameters"
+        },
+        {
+          "cc": 15,
+          "label": "Trig parameters / Protamento time",
+          "recommended": false,
+          "tier": "other",
+          "section": "Trig parameters"
+        },
+        {
+          "cc": 16,
+          "label": "Panel · Trig parameters / Portamento on",
+          "recommended": false,
+          "tier": "panel",
+          "section": "Trig parameters"
+        },
+        {
+          "cc": 17,
+          "label": "FM parameters (syn 1) / Harmonics",
+          "recommended": false,
+          "tier": "other",
+          "section": "FM parameters (syn 1)"
+        },
+        {
+          "cc": 18,
+          "label": "FM parameters (syn 1) / Detune",
+          "recommended": false,
+          "tier": "other",
+          "section": "FM parameters (syn 1)"
+        },
+        {
+          "cc": 20,
+          "label": "FM parameters (syn 1) / Mix",
+          "recommended": false,
+          "tier": "other",
+          "section": "FM parameters (syn 1)"
+        },
+        {
+          "cc": 64,
+          "label": "Panel · Misc parameters / Sustain",
+          "recommended": false,
+          "tier": "panel",
+          "section": "Misc parameters"
+        },
+        {
+          "cc": 66,
+          "label": "Misc parameters / Sostenuto",
+          "recommended": false,
+          "tier": "other",
+          "section": "Misc parameters"
+        },
+        {
+          "cc": 72,
+          "label": "Panel · Filter parameters / Sustain level",
+          "recommended": false,
+          "tier": "panel",
+          "section": "Filter parameters"
+        },
+        {
+          "cc": 78,
+          "label": "Panel · FM parameters (syn 2) / A level",
+          "recommended": false,
+          "tier": "panel",
+          "section": "FM parameters (syn 2)"
+        },
+        {
+          "cc": 82,
+          "label": "Panel · FM parameters (syn 2) / B level",
+          "recommended": false,
+          "tier": "panel",
+          "section": "FM parameters (syn 2)"
+        },
+        {
+          "cc": 84,
+          "label": "FM parameters (syn 2) / A trig",
+          "recommended": false,
+          "tier": "other",
+          "section": "FM parameters (syn 2)"
+        },
+        {
+          "cc": 87,
+          "label": "FM parameters (syn 2) / B trig",
+          "recommended": false,
+          "tier": "other",
+          "section": "FM parameters (syn 2)"
+        },
+        {
+          "cc": 89,
+          "label": "FM parameters (syn 2) / Phase reset",
+          "recommended": false,
+          "tier": "other",
+          "section": "FM parameters (syn 2)"
+        },
+        {
+          "cc": 90,
+          "label": "FM parameters (syn 1) / Algorithm",
+          "recommended": false,
+          "tier": "other",
+          "section": "FM parameters (syn 1)"
+        },
+        {
+          "cc": 94,
+          "label": "Panel · Track parameters / Mute",
+          "recommended": false,
+          "tier": "panel",
+          "section": "Track parameters"
+        },
+        {
+          "cc": 95,
+          "label": "Panel · Track parameters / Track level",
+          "recommended": false,
+          "tier": "panel",
+          "section": "Track parameters"
+        },
+        {
+          "cc": 104,
+          "label": "Amp parameters / Attack time",
+          "recommended": false,
+          "tier": "other",
+          "section": "Amp parameters"
+        },
+        {
+          "cc": 105,
+          "label": "Amp parameters / Decay time",
+          "recommended": false,
+          "tier": "other",
+          "section": "Amp parameters"
+        },
+        {
+          "cc": 106,
+          "label": "Panel · Amp parameters / Sustain level",
+          "recommended": false,
+          "tier": "panel",
+          "section": "Amp parameters"
+        },
+        {
+          "cc": 107,
+          "label": "Amp parameters / Release time",
+          "recommended": false,
+          "tier": "other",
+          "section": "Amp parameters"
+        }
+      ]
+    },
+    {
+      "id": "digitakt",
+      "name": "Digitakt",
+      "defaults": [
+        2,
+        13,
+        14,
+        24,
+        25,
+        27,
+        28,
+        29,
+        70,
+        71,
+        73,
+        74
+      ],
+      "ccs": [
+        {
+          "cc": 2,
+          "label": "★ FX parameters - reverb / FX reverb shelving freq",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX parameters - reverb"
+        },
+        {
+          "cc": 13,
+          "label": "★ Trig parameters / Filter trig",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Trig parameters"
+        },
+        {
+          "cc": 14,
+          "label": "★ Trig parameters / LFO trig",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Trig parameters"
+        },
+        {
+          "cc": 24,
+          "label": "★ FX parameters - reverb / FX reverb predelay",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX parameters - reverb"
+        },
+        {
+          "cc": 25,
+          "label": "★ FX parameters - reverb / FX reverb decay time",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX parameters - reverb"
+        },
+        {
+          "cc": 27,
+          "label": "★ FX parameters - reverb / FX reverb shelving gain",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX parameters - reverb"
+        },
+        {
+          "cc": 28,
+          "label": "★ FX parameters - reverb / FX reverb highpass filter",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX parameters - reverb"
+        },
+        {
+          "cc": 29,
+          "label": "★ FX parameters - reverb / FX reverb lowpass filter",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX parameters - reverb"
+        },
+        {
+          "cc": 70,
+          "label": "★ Filter parameters / Filter attack time",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Filter parameters"
+        },
+        {
+          "cc": 71,
+          "label": "★ Filter parameters / Filter decay time",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Filter parameters"
+        },
+        {
+          "cc": 73,
+          "label": "★ Filter parameters / Filter release time",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Filter parameters"
+        },
+        {
+          "cc": 74,
+          "label": "★ Filter parameters / Filter frequency",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Filter parameters"
+        },
+        {
+          "cc": 75,
+          "label": "★ Filter parameters / Resonance",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Filter parameters"
+        },
+        {
+          "cc": 76,
+          "label": "★ Filter parameters / Filter type",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Filter parameters"
+        },
+        {
+          "cc": 77,
+          "label": "★ Filter parameters / Filter env depth",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Filter parameters"
+        },
+        {
+          "cc": 82,
+          "label": "★ Amp parameters / Amp delay send",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Amp parameters"
+        },
+        {
+          "cc": 83,
+          "label": "★ Amp parameters / Amp reverb send",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Amp parameters"
+        },
+        {
+          "cc": 85,
+          "label": "★ FX parameters - delay / FX delay time",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX parameters - delay"
+        },
+        {
+          "cc": 86,
+          "label": "★ FX parameters - delay / FX pingpong",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX parameters - delay"
+        },
+        {
+          "cc": 87,
+          "label": "★ FX parameters - delay / FX stereo width",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX parameters - delay"
+        },
+        {
+          "cc": 88,
+          "label": "★ FX parameters - delay / FX feedback",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX parameters - delay"
+        },
+        {
+          "cc": 89,
+          "label": "★ FX parameters - delay / FX highpass filter",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX parameters - delay"
+        },
+        {
+          "cc": 90,
+          "label": "★ FX parameters - delay / FX lowpass filter",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX parameters - delay"
+        },
+        {
+          "cc": 91,
+          "label": "★ FX parameters - delay / FX reverb send",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX parameters - delay"
+        },
+        {
+          "cc": 102,
+          "label": "★ LFO parameters / LFO speed",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO parameters"
+        },
+        {
+          "cc": 103,
+          "label": "★ LFO parameters / LFO multiplier",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO parameters"
+        },
+        {
+          "cc": 104,
+          "label": "★ LFO parameters / LFO fade in/out",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO parameters"
+        },
+        {
+          "cc": 105,
+          "label": "★ LFO parameters / LFO destination",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO parameters"
+        },
+        {
+          "cc": 106,
+          "label": "★ LFO parameters / LFO waveform",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO parameters"
+        },
+        {
+          "cc": 107,
+          "label": "★ LFO parameters / LFO start phase",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO parameters"
+        },
+        {
+          "cc": 108,
+          "label": "★ LFO parameters / LFO trig mode",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO parameters"
+        },
+        {
+          "cc": 109,
+          "label": "★ LFO parameters / LFO depth",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO parameters"
+        },
+        {
+          "cc": 3,
+          "label": "Trig parameters / Trig note",
+          "recommended": false,
+          "tier": "other",
+          "section": "Trig parameters"
+        },
+        {
+          "cc": 4,
+          "label": "Trig parameters / Trig velocity",
+          "recommended": false,
+          "tier": "other",
+          "section": "Trig parameters"
+        },
+        {
+          "cc": 5,
+          "label": "Trig parameters / Trig length",
+          "recommended": false,
+          "tier": "other",
+          "section": "Trig parameters"
+        },
+        {
+          "cc": 7,
+          "label": "Panel · Amp parameters / Amp volume",
+          "recommended": false,
+          "tier": "panel",
+          "section": "Amp parameters"
+        },
+        {
+          "cc": 10,
+          "label": "Panel · Amp parameters / Amp pan",
+          "recommended": false,
+          "tier": "panel",
+          "section": "Amp parameters"
+        },
+        {
+          "cc": 16,
+          "label": "Panel · Source parameters / Source tune",
+          "recommended": false,
+          "tier": "panel",
+          "section": "Source parameters"
+        },
+        {
+          "cc": 17,
+          "label": "Source parameters / Source play mode",
+          "recommended": false,
+          "tier": "other",
+          "section": "Source parameters"
+        },
+        {
+          "cc": 18,
+          "label": "Source parameters / Source bit reduction",
+          "recommended": false,
+          "tier": "other",
+          "section": "Source parameters"
+        },
+        {
+          "cc": 19,
+          "label": "Source parameters / Source sample slot",
+          "recommended": false,
+          "tier": "other",
+          "section": "Source parameters"
+        },
+        {
+          "cc": 20,
+          "label": "Source parameters / Source start",
+          "recommended": false,
+          "tier": "other",
+          "section": "Source parameters"
+        },
+        {
+          "cc": 21,
+          "label": "Source parameters / Source length",
+          "recommended": false,
+          "tier": "other",
+          "section": "Source parameters"
+        },
+        {
+          "cc": 22,
+          "label": "Source parameters / Source loop position",
+          "recommended": false,
+          "tier": "other",
+          "section": "Source parameters"
+        },
+        {
+          "cc": 23,
+          "label": "Panel · Source parameters / Source sample level",
+          "recommended": false,
+          "tier": "panel",
+          "section": "Source parameters"
+        },
+        {
+          "cc": 31,
+          "label": "Panel · FX parameters - reverb / FX reverb mix volume",
+          "recommended": false,
+          "tier": "panel",
+          "section": "FX parameters - reverb"
+        },
+        {
+          "cc": 72,
+          "label": "Panel · Filter parameters / Filter sustain level",
+          "recommended": false,
+          "tier": "panel",
+          "section": "Filter parameters"
+        },
+        {
+          "cc": 78,
+          "label": "Amp parameters / Amp attack time",
+          "recommended": false,
+          "tier": "other",
+          "section": "Amp parameters"
+        },
+        {
+          "cc": 79,
+          "label": "Panel · Amp parameters / Amp hold time",
+          "recommended": false,
+          "tier": "panel",
+          "section": "Amp parameters"
+        },
+        {
+          "cc": 80,
+          "label": "Amp parameters / Amp decay time",
+          "recommended": false,
+          "tier": "other",
+          "section": "Amp parameters"
+        },
+        {
+          "cc": 81,
+          "label": "Amp parameters / Amp overdrive",
+          "recommended": false,
+          "tier": "other",
+          "section": "Amp parameters"
+        },
+        {
+          "cc": 92,
+          "label": "Panel · FX parameters - delay / FX mix volume",
+          "recommended": false,
+          "tier": "panel",
+          "section": "FX parameters - delay"
+        },
+        {
+          "cc": 93,
+          "label": "Track parameters / Solo",
+          "recommended": false,
+          "tier": "other",
+          "section": "Track parameters"
+        },
+        {
+          "cc": 94,
+          "label": "Panel · Track parameters / Global mute",
+          "recommended": false,
+          "tier": "panel",
+          "section": "Track parameters"
+        },
+        {
+          "cc": 95,
+          "label": "Panel · Track parameters / Track level",
+          "recommended": false,
+          "tier": "panel",
+          "section": "Track parameters"
+        },
+        {
+          "cc": 110,
+          "label": "Panel · Track parameters / Pattern Mute",
+          "recommended": false,
+          "tier": "panel",
+          "section": "Track parameters"
+        }
+      ]
+    },
+    {
+      "id": "syntakt",
+      "name": "Syntakt",
+      "defaults": [
+        13,
+        14,
+        15,
+        16,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25
+      ],
+      "ccs": [
+        {
+          "cc": 13,
+          "label": "★ Trig: Filter",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Trig"
+        },
+        {
+          "cc": 14,
+          "label": "★ Trig: LFO",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Trig"
+        },
+        {
+          "cc": 15,
+          "label": "★ Analog FX: Synth / AFX Synth: Drive",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Analog FX: Synth"
+        },
+        {
+          "cc": 16,
+          "label": "★ FX: External Mixer / Input: LR",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX: External Mixer"
+        },
+        {
+          "cc": 18,
+          "label": "★ FX: External Mixer / Input: Delay Send",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX: External Mixer"
+        },
+        {
+          "cc": 19,
+          "label": "★ FX: External Mixer / Input: Reverb Send",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX: External Mixer"
+        },
+        {
+          "cc": 20,
+          "label": "★ FX: External Mixer / Input: FX Routing",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX: External Mixer"
+        },
+        {
+          "cc": 21,
+          "label": "★ FX: Delay / Delay: Time",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX: Delay"
+        },
+        {
+          "cc": 22,
+          "label": "★ FX: Delay / Delay: Pingpong",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX: Delay"
+        },
+        {
+          "cc": 23,
+          "label": "★ FX: Delay / Delay: Stereo Width",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX: Delay"
+        },
+        {
+          "cc": 24,
+          "label": "★ FX: Delay / Delay: Feedback",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX: Delay"
+        },
+        {
+          "cc": 25,
+          "label": "★ FX: Delay / Delay: Highpass Filter",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX: Delay"
+        },
+        {
+          "cc": 26,
+          "label": "★ Filter: Base",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Filter"
+        },
+        {
+          "cc": 27,
+          "label": "★ Filter: Width",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Filter"
+        },
+        {
+          "cc": 29,
+          "label": "★ FX: Reverb / Reverb: Predelay",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX: Reverb"
+        },
+        {
+          "cc": 30,
+          "label": "★ FX: Reverb / Reverb: Decay Time",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX: Reverb"
+        },
+        {
+          "cc": 31,
+          "label": "★ FX: Reverb / Reverb: Shelving Frequency",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX: Reverb"
+        },
+        {
+          "cc": 70,
+          "label": "★ Filter: Attack Time",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Filter"
+        },
+        {
+          "cc": 71,
+          "label": "★ Filter: Decay Time",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Filter"
+        },
+        {
+          "cc": 73,
+          "label": "★ Filter: Release Time",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Filter"
+        },
+        {
+          "cc": 74,
+          "label": "★ Filter: Frequency",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Filter"
+        },
+        {
+          "cc": 75,
+          "label": "★ Filter: Resonance",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Filter"
+        },
+        {
+          "cc": 76,
+          "label": "★ Filter: Type",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Filter"
+        },
+        {
+          "cc": 77,
+          "label": "★ Filter: Envelope Depth",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Filter"
+        },
+        {
+          "cc": 78,
+          "label": "★ Filter: Envelope Delay",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Filter"
+        },
+        {
+          "cc": 84,
+          "label": "★ Amp: Delay Send",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Amp"
+        },
+        {
+          "cc": 85,
+          "label": "★ Amp: Reverb Send",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Amp"
+        },
+        {
+          "cc": 86,
+          "label": "★ Analog FX: Amp / AFX Amp: Envelope Depth",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Analog FX: Amp"
+        },
+        {
+          "cc": 87,
+          "label": "★ Analog FX: Amp / AFX Amp: Mode",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Analog FX: Amp"
+        },
+        {
+          "cc": 88,
+          "label": "★ Analog FX: Amp / AFX Amp: Envelope Reset",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Analog FX: Amp"
+        },
+        {
+          "cc": 89,
+          "label": "★ FX: Reverb / Reverb: Shelving Gain",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX: Reverb"
+        },
+        {
+          "cc": 90,
+          "label": "★ FX: Reverb / Reverb: Highpass Filter",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX: Reverb"
+        },
+        {
+          "cc": 91,
+          "label": "★ FX: Reverb / Reverb: Lowpass Filter",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "FX: Reverb"
+        },
+        {
+          "cc": 102,
+          "label": "★ LFO1: Speed",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO"
+        },
+        {
+          "cc": 103,
+          "label": "★ LFO1: Multiplier",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO"
+        },
+        {
+          "cc": 104,
+          "label": "★ LFO1: Fade In/Out",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO"
+        },
+        {
+          "cc": 105,
+          "label": "★ LFO1: Destination",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO"
+        },
+        {
+          "cc": 106,
+          "label": "★ LFO1: Waveform",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO"
+        },
+        {
+          "cc": 107,
+          "label": "★ LFO1: Start Phase",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO"
+        },
+        {
+          "cc": 108,
+          "label": "★ LFO1: Trig Mode",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO"
+        },
+        {
+          "cc": 109,
+          "label": "★ LFO1: Depth",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO"
+        },
+        {
+          "cc": 111,
+          "label": "★ Filter: Envelope Reset",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "Filter"
+        },
+        {
+          "cc": 112,
+          "label": "★ LFO2: Speed",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO"
+        },
+        {
+          "cc": 113,
+          "label": "★ LFO2: Multiplier",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO"
+        },
+        {
+          "cc": 114,
+          "label": "★ LFO2: Fade In/Out",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO"
+        },
+        {
+          "cc": 115,
+          "label": "★ LFO2: Destination",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO"
+        },
+        {
+          "cc": 116,
+          "label": "★ LFO2: Waveform",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO"
+        },
+        {
+          "cc": 117,
+          "label": "★ LFO2: Start Phase",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO"
+        },
+        {
+          "cc": 118,
+          "label": "★ LFO2: Trig Mode",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO"
+        },
+        {
+          "cc": 119,
+          "label": "★ LFO2: Depth",
+          "recommended": true,
+          "tier": "hidden",
+          "section": "LFO"
+        },
+        {
+          "cc": 3,
+          "label": "Trig: Note",
+          "recommended": false,
+          "tier": "other",
+          "section": "Trig"
+        },
+        {
+          "cc": 4,
+          "label": "Trig: Velocity",
+          "recommended": false,
+          "tier": "other",
+          "section": "Trig"
+        },
+        {
+          "cc": 5,
+          "label": "Trig: Length",
+          "recommended": false,
+          "tier": "other",
+          "section": "Trig"
+        },
+        {
+          "cc": 7,
+          "label": "Panel · Amp: Volume",
+          "recommended": false,
+          "tier": "panel",
+          "section": "Amp"
+        },
+        {
+          "cc": 9,
+          "label": "Panel · Trig: Portamento Time",
+          "recommended": false,
+          "tier": "panel",
+          "section": "Trig"
+        },
+        {
+          "cc": 10,
+          "label": "Panel · Amp: Pan",
+          "recommended": false,
+          "tier": "panel",
+          "section": "Amp"
+        },
+        {
+          "cc": 17,
+          "label": "Panel · FX: External Mixer / Input: Balance",
+          "recommended": false,
+          "tier": "panel",
+          "section": "FX: External Mixer"
+        },
+        {
+          "cc": 28,
+          "label": "Panel · FX: Delay / Delay: Mix Volume",
+          "recommended": false,
+          "tier": "panel",
+          "section": "FX: Delay"
+        },
+        {
+          "cc": 64,
+          "label": "Panel · Misc / Sustain",
+          "recommended": false,
+          "tier": "panel",
+          "section": "Misc"
+        },
+        {
+          "cc": 65,
+          "label": "Panel · Trig: Portamento On/Off",
+          "recommended": false,
+          "tier": "panel",
+          "section": "Trig"
+        },
+        {
+          "cc": 66,
+          "label": "Misc / Sostenuto",
+          "recommended": false,
+          "tier": "other",
+          "section": "Misc"
+        },
+        {
+          "cc": 72,
+          "label": "Panel · Filter: Sustain Level",
+          "recommended": false,
+          "tier": "panel",
+          "section": "Filter"
+        },
+        {
+          "cc": 79,
+          "label": "Amp: Attack Time",
+          "recommended": false,
+          "tier": "other",
+          "section": "Amp"
+        },
+        {
+          "cc": 80,
+          "label": "Panel · Amp: Hold Time",
+          "recommended": false,
+          "tier": "panel",
+          "section": "Amp"
+        },
+        {
+          "cc": 81,
+          "label": "Amp: Decay Time",
+          "recommended": false,
+          "tier": "other",
+          "section": "Amp"
+        },
+        {
+          "cc": 82,
+          "label": "Panel · Amp: Sustain Level",
+          "recommended": false,
+          "tier": "panel",
+          "section": "Amp"
+        },
+        {
+          "cc": 83,
+          "label": "Amp: Release Time",
+          "recommended": false,
+          "tier": "other",
+          "section": "Amp"
+        },
+        {
+          "cc": 92,
+          "label": "Panel · FX: Reverb / Reverb: Mix Volume",
+          "recommended": false,
+          "tier": "panel",
+          "section": "FX: Reverb"
+        },
+        {
+          "cc": 93,
+          "label": "Panel · Analog FX: Filter / AFX Filter: Pan",
+          "recommended": false,
+          "tier": "panel",
+          "section": "Analog FX: Filter"
+        },
+        {
+          "cc": 94,
+          "label": "Panel · Track: Mute",
+          "recommended": false,
+          "tier": "panel",
+          "section": "Track"
+        },
+        {
+          "cc": 95,
+          "label": "Panel · Track: Level",
+          "recommended": false,
+          "tier": "panel",
+          "section": "Track"
+        },
+        {
+          "cc": 110,
+          "label": "Panel · Pattern: Mute",
+          "recommended": false,
+          "tier": "panel",
+          "section": "Pattern"
+        }
+      ]
+    }
+  ]
+}
