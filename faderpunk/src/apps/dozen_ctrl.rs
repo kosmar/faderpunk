@@ -33,7 +33,7 @@ const LED_BRIGHTNESS: Brightness = Brightness::Mid;
 
 pub static CONFIG: Config<PARAMS> = Config::new(
     "Dozen Ctrl",
-    "Curated 4×3 MIDI CC expander for one device",
+    "4x3 latched MIDI CC expander for one device",
     Color::Cyan,
     AppIcon::Fader,
 )
