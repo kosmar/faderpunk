@@ -51,6 +51,15 @@ DEVICE_SPECS: list[dict] = [
     {"key": "digitone", "label": "Digitone", "csv": "Elektron/Digitone.csv"},
     {"key": "digitakt", "label": "Digitakt", "csv": "Elektron/Digitakt.csv"},
     {"key": "syntakt", "label": "Syntakt", "csv": "Elektron/Syntakt.csv"},
+    {"key": "deepmind_12", "label": "DeepMind 12", "csv": "Behringer/Deepmind 12.csv"},
+    {"key": "minilogue_xd", "label": "Minilogue XD", "csv": "KORG/minilogue xd.csv"},
+    {"key": "minifreak", "label": "MiniFreak", "csv": "Arturia/MiniFreak.csv"},
+    {"key": "take_5", "label": "Take 5", "csv": "Sequential/Take 5.csv"},
+    {"key": "bass_station_ii", "label": "Bass Station II", "csv": "Novation/Bass Station II.csv"},
+    {"key": "s_1", "label": "S-1", "csv": "Roland/S-1.csv"},
+    {"key": "iridium", "label": "Iridium", "csv": "Waldorf/Iridium.csv"},
+    {"key": "subsequent_37", "label": "Subsequent 37", "csv": "Moog/Subsequent 37.csv"},
+    {"key": "microkorg", "label": "microKORG", "csv": "KORG/microKORG.csv"},
 ]
 
 PANEL_HINTS = re.compile(
